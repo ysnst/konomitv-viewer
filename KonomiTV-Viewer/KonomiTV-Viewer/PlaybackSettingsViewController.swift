@@ -207,13 +207,34 @@ final class PlaybackSettingsViewController: UIViewController {
         button.layer.cornerRadius = 4
         button.setTitleColor(AppPalette.text, for: .normal)
         button.titleLabel?.font = .systemFont(ofSize: 16)
-        button.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
+        // 右の余白は、右端に留める矢印の分 (12 + 12 + 8) を空ける。
+        button.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 32)
         button.heightAnchor.constraint(equalToConstant: 50).isActive = true
-        button.setImage(
-            UIImage(systemName: "chevron.down")?
-                .withTintColor(AppPalette.metaText, renderingMode: .alwaysOriginal),
-            for: .normal)
-        button.semanticContentAttribute = .forceRightToLeft
+        addSelectChevron(to: button)
+    }
+
+    /// 選択ボタンの右端に、下向きの矢印を留める。
+    /// ボタン標準の画像の並べ方 (semanticContentAttribute の
+    /// forceRightToLeft) は、左寄せの指定と干渉して文字まで右寄せに
+    /// なってしまう (実機確認)。設定の共通部品 (SettingsDetailViewController)
+    /// と同じく、画像を右端に留める形にする。
+    private func addSelectChevron(to button: UIButton) {
+        let tag = 0x5E1EC7
+        if button.viewWithTag(tag) != nil { return }
+        let chevron = UIImageView(
+            image: UIImage(systemName: "chevron.down")?
+                .withTintColor(AppPalette.metaText, renderingMode: .alwaysOriginal))
+        chevron.tag = tag
+        chevron.contentMode = .scaleAspectFit
+        chevron.isUserInteractionEnabled = false
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+        button.addSubview(chevron)
+        NSLayoutConstraint.activate([
+            chevron.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -12),
+            chevron.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+            chevron.widthAnchor.constraint(equalToConstant: 12),
+            chevron.heightAnchor.constraint(equalToConstant: 12),
+        ])
     }
 
     /// 説明文とスイッチを横に並べた行。

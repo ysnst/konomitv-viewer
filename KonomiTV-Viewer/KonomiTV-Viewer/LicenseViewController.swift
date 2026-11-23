@@ -54,32 +54,47 @@ final class LicenseViewController: SettingsDetailViewController {
 
     /// 部品名 (16px) とライセンス名 (12.5px) を重ねた行。
     /// 見た目はマイページの入口ボタンと同じ面と角丸にそろえる。
+    /// 文字と矢印はボタン標準の並べ方に頼らず、中に置いたラベルと
+    /// 画像を両端に留めて並べる。標準の並べ方では、矢印を右端に
+    /// 置く指定 (forceRightToLeft) と左寄せの指定が干渉して、
+    /// 文字が右寄せになってしまったため。
     private func makeRow(_ component: Component) -> UIButton {
         let button = RippleButton()
         button.backgroundColor = AppPalette.panel
         button.layer.cornerRadius = 6
-        button.contentHorizontalAlignment = .leading
-        button.contentEdgeInsets = UIEdgeInsets(top: 10, left: 16, bottom: 10, right: 12)
         button.heightAnchor.constraint(equalToConstant: 62).isActive = true
-        let title = NSMutableAttributedString(
-            string: component.name,
-            attributes: [
-                .font: UIFont.systemFont(ofSize: 16),
-                .foregroundColor: AppPalette.text,
-            ])
-        title.append(NSAttributedString(
-            string: "\n" + component.licenseName,
-            attributes: [
-                .font: UIFont.systemFont(ofSize: 12.5),
-                .foregroundColor: AppPalette.secondaryText,
-            ]))
-        button.setAttributedTitle(title, for: .normal)
-        button.titleLabel?.numberOfLines = 2
-        button.setImage(
-            UIImage(systemName: "chevron.right")?
-                .withTintColor(AppPalette.metaText, renderingMode: .alwaysOriginal),
-            for: .normal)
-        button.semanticContentAttribute = .forceRightToLeft
+
+        let nameLabel = UILabel()
+        nameLabel.text = component.name
+        nameLabel.font = .systemFont(ofSize: 16)
+        nameLabel.textColor = AppPalette.text
+        let licenseLabel = UILabel()
+        licenseLabel.text = component.licenseName
+        licenseLabel.font = .systemFont(ofSize: 12.5)
+        licenseLabel.textColor = AppPalette.secondaryText
+        let textStack = UIStackView(arrangedSubviews: [nameLabel, licenseLabel])
+        textStack.axis = .vertical
+        textStack.spacing = 2
+        textStack.isUserInteractionEnabled = false
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let chevronView = UIImageView(
+            image: UIImage(systemName: "chevron.right")?
+                .withTintColor(AppPalette.metaText, renderingMode: .alwaysOriginal))
+        chevronView.contentMode = .scaleAspectFit
+        chevronView.isUserInteractionEnabled = false
+        chevronView.translatesAutoresizingMaskIntoConstraints = false
+
+        button.addSubview(textStack)
+        button.addSubview(chevronView)
+        NSLayoutConstraint.activate([
+            textStack.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 16),
+            textStack.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+            textStack.trailingAnchor.constraint(
+                lessThanOrEqualTo: chevronView.leadingAnchor, constant: -8),
+            chevronView.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -12),
+            chevronView.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+        ])
         button.addAction(UIAction { [weak self] _ in
             self?.navigationController?.pushViewController(
                 LicenseDetailViewController(component: component), animated: true)
