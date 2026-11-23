@@ -12,6 +12,8 @@ final class ReservationListViewController: UIViewController, UITableViewDataSour
     private let listHeaderView = UIView()
     private let countLabel = UILabel()
     private let sortButton = RippleButton()
+    /// 「自動予約の条件」への入口のボタン (拡張版だけ、見出し行の下の行)。
+    private let conditionsButton = RippleButton()
     private let statusLabel = UILabel()
     private let refreshControl = UIRefreshControl()
 
@@ -65,16 +67,46 @@ final class ReservationListViewController: UIViewController, UITableViewDataSour
         sortButton.translatesAutoresizingMaskIntoConstraints = false
         listHeaderView.addSubview(sortButton)
 
+        // 「自動予約の条件」への入口 (拡張版だけ)。Web 版の録画予約一覧では
+        // 見出しの上にこの入口の行がある。アプリでは見出し行の下に置く。
+        let headerHeight: CGFloat = AppEdition.isHousehold ? 86 : 46
+        if AppEdition.isHousehold {
+            conditionsButton.setTitle("自動予約の条件", for: .normal)
+            conditionsButton.titleLabel?.font = .scaledSystemFont(ofSize: 14)
+            conditionsButton.setTitleColor(AppPalette.text, for: .normal)
+            conditionsButton.setImage(
+                UIImage(systemName: "calendar.badge.plus")?
+                    .withConfiguration(UIImage.SymbolConfiguration(pointSize: 14, weight: .regular)),
+                for: .normal)
+            conditionsButton.tintColor = AppPalette.text
+            conditionsButton.imageEdgeInsets = UIEdgeInsets(top: 0, left: -2, bottom: 0, right: 2)
+            conditionsButton.titleEdgeInsets = UIEdgeInsets(top: 0, left: 2, bottom: 0, right: -2)
+            conditionsButton.contentHorizontalAlignment = .leading
+            conditionsButton.addTarget(
+                self, action: #selector(conditionsTapped), for: .touchUpInside)
+            conditionsButton.translatesAutoresizingMaskIntoConstraints = false
+            listHeaderView.addSubview(conditionsButton)
+            NSLayoutConstraint.activate([
+                conditionsButton.leadingAnchor.constraint(
+                    equalTo: listHeaderView.leadingAnchor, constant: 16),
+                conditionsButton.topAnchor.constraint(
+                    equalTo: listHeaderView.topAnchor, constant: 46),
+                conditionsButton.heightAnchor.constraint(equalToConstant: 40),
+                conditionsButton.trailingAnchor.constraint(
+                    lessThanOrEqualTo: listHeaderView.trailingAnchor, constant: -16),
+            ])
+        }
+
         NSLayoutConstraint.activate([
             titleLabel.leadingAnchor.constraint(equalTo: listHeaderView.leadingAnchor, constant: 16),
-            titleLabel.centerYAnchor.constraint(equalTo: listHeaderView.centerYAnchor),
+            titleLabel.topAnchor.constraint(equalTo: listHeaderView.topAnchor, constant: 13),
             countLabel.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 7),
-            countLabel.centerYAnchor.constraint(equalTo: listHeaderView.centerYAnchor),
+            countLabel.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
             sortButton.trailingAnchor.constraint(equalTo: listHeaderView.trailingAnchor, constant: -12),
-            sortButton.centerYAnchor.constraint(equalTo: listHeaderView.centerYAnchor),
+            sortButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
             sortButton.leadingAnchor.constraint(greaterThanOrEqualTo: countLabel.trailingAnchor, constant: 8),
         ])
-        listHeaderView.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: 46)
+        listHeaderView.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: headerHeight)
 
         // ロゴ帯と見出し行は一覧と一緒に流れる (Web 版のスマホ表示と同じ)。
         let tableHeader = UIView(
@@ -216,6 +248,14 @@ final class ReservationListViewController: UIViewController, UITableViewDataSour
         statusLabel.isHidden = true
     }
 
+    // MARK: - 自動予約の条件
+
+    /// 「自動予約の条件」の画面を開く (拡張版だけに出る入口)。
+    @objc private func conditionsTapped() {
+        let conditions = ReservationConditionsViewController()
+        navigationController?.pushViewController(conditions, animated: true)
+    }
+
     // MARK: - 並び替え
 
     private func makeSortMenu() -> UIMenu {
@@ -244,6 +284,19 @@ final class ReservationListViewController: UIViewController, UITableViewDataSour
     /// カード上の切り替え。設定一式の is_enabled だけを反転させて送る
     /// (Web 版のカードと同じ)。失敗したら切り替えを元に戻して知らせる。
     private func toggleReservation(_ reservation: Reservation, toggle: WebToggle) {
+        // 手動予約の無効化は録画側に対応する状態が無いため、送らずに
+        // 案内する (Web 版の保存時の守りと同じ)。切り替え自体は手動予約
+        // のカードでは出していないため、通常はここへは来ない。
+        if reservation.isManualReservation {
+            toggle.isOn = reservation.record_settings.is_enabled
+            let alert = UIAlertController(
+                title: "手動予約は無効化できません",
+                message: "予約を取りやめる場合は「予約を削除」を使ってください。",
+                preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            present(alert, animated: true)
+            return
+        }
         var settings = reservation.record_settings
         settings.is_enabled = toggle.isOn
         Task { [weak self] in
@@ -568,9 +621,13 @@ final class ReservationCell: UITableViewCell {
 
         priorityLabel.text = "\(reservation.record_settings.priority)"
         toggle.isOn = isEnabled
-        toggleStateLabel.text = isEnabled ? "有効" : "無効"
+        // 手動予約には録画側に「無効」の状態が無いため、切り替え自体を
+        // 出さず「有効」の固定表示にする (Web 版の予約カードと同じ)。
+        // 切り替えを出してしまうと、押したときにサーバー側で失敗する。
+        let isManual = reservation.isManualReservation
+        toggleStateLabel.text = isManual ? "有効" : (isEnabled ? "有効" : "無効")
         // 録画中は切り替えを出さない (Web 版と同じ)。
-        toggle.isHidden = isRecording
+        toggle.isHidden = isRecording || isManual
         toggleStateLabel.isHidden = isRecording
         recordingStack.isHidden = !isRecording
 

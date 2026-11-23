@@ -390,6 +390,26 @@ final class PlayerViewController: UIViewController {
     private let protectButton = RippleButton()
     private let watchedButton = RippleButton()
     private let sleepTimerButton = RippleButton()
+    // MARK: 拡張版の再生画面まわりの機能 (改造サーバー前提)
+    /// 前の話・次の話ボタン。前後が有るかどうかは、開いたあとに単体取得で
+    /// 確かめてから出し分ける (一覧の応答には前後の情報が無いため)。
+    private let prevEpisodeButton = RippleButton()
+    private let nextEpisodeButton = RippleButton()
+    /// 場面一覧を開くボタン。場面の画像の材料が無い録画では出さない。
+    private let sceneListButton = RippleButton()
+    /// いまの再生位置にしおりを足すボタン。
+    private let addBookmarkButton = RippleButton()
+    /// ダイジェスト再生の切り替え。見どころ区間が取れたときだけ出す。
+    private let digestButton = RippleButton()
+    /// コメント検索を開くボタン。
+    private let commentSearchButton = RippleButton()
+    /// 次回の放送を探して予約するボタン。
+    private let nextReserveButton = RippleButton()
+    /// シリーズ予約 (キーワード自動予約の条件) を作るボタン。
+    private let seriesReserveButton = RippleButton()
+    /// 次回予約・シリーズ予約の実行中フラグ (二重実行の防止)。
+    private var isReservingNext = false
+    private var isCreatingSeries = false
     /// ジャンルの印の並び (Web 版パネルの genre-container に相当)。材料が無いときは隠す。
     private let genreFlowView = ChipFlowView()
     /// ボタン群の並び (Web 版パネルのボタンの流し並べに相当)。
@@ -418,6 +438,67 @@ final class PlayerViewController: UIViewController {
     /// 操作帯の出し入れ (Web 版と同じく、再生中はしばらく触らなければ消える)。
     private var controlsVisible = true
     private var hideTimer: Timer?
+    /// 操作帯の並び (映像の下辺)。盛り上がりの帯を差し込むために控えを持つ。
+    private let controlsStackView = UIStackView()
+    /// 操作帯の高さの決まり。盛り上がりの帯を差し込んだときに広げる。
+    private var controlsHeightConstraint: NSLayoutConstraint?
+    // MARK: 拡張版の再生画面まわりの状態
+    /// 単体取得で分かった前の話・次の話の録画 ID。無い間は nil。
+    private var previousEpisodeID: Int?
+    private var nextEpisodeID: Int?
+    /// 実況コメントから計算した盛り上がりの密度と見どころ区間。
+    private var excitementDensity: CommentDensity?
+    private var highlightSegments: [HighlightSegment] = []
+    /// シークバーの上に重ねる盛り上がりの波形の帯。
+    /// 材料が揃った時点で操作帯の並びへ差し込む。
+    private let excitementStrip = ExcitementStripView()
+    /// ダイジェスト再生 (見どころ区間だけを続けて再生) が入っているか。
+    private var digestPlaybackEnabled = false
+    /// ダイジェスト再生の見張りの間引き用 (Web 版と同じ 300ミリ秒間隔)。
+    private var lastDigestCheckAt: TimeInterval = 0
+    /// 映像の上に短く出す知らせ (Web 版の画面下のお知らせと同じ役割)。
+    /// 情報欄の文 (messageLabel) は映像の上では見えないため、再生中の
+    /// 知らせはこちらに出す。
+    private let playerNoticeView = UIView()
+    private let playerNoticeLabel = UILabel()
+    private var playerNoticeDismissWork: DispatchWorkItem?
+    /// ハイライト横断再生の印 (映像の左上に出す「ハイライト再生中 n/m」
+    /// と取り消しのボタン) と、その状態。
+    private let reelBadgeView = UIView()
+    private let reelBadgeLabel = UILabel()
+    /// この再生画面がハイライト横断再生の対象になっているか。
+    private var reelActive = false
+    /// 横断再生の見張りの間引き用 (Web 版と同じ 500ミリ秒間隔)。
+    private var lastReelCheckAt: TimeInterval = 0
+    /// 次の話の自動再生の数え下げカードと、その材料。
+    private let autoplayCard = UIView()
+    private let autoplayTitleLabel = UILabel()
+    private let autoplayCountdownLabel = UILabel()
+    private var autoplayTimer: Timer?
+    private var autoplayRemainingSeconds = 0
+    private var autoplayNextProgram: RecordedProgram?
+    /// 長押しの高速シーク (送り・戻し)。
+    private let fastSeekBackController = FastSeekController(direction: -1)
+    private let fastSeekForwardController = FastSeekController(direction: 1)
+    /// VLCKit 経路で高速シークのために音を消す前の音量の控え。
+    private var savedVLCVolume: Int32?
+    /// AVPlayer 経路で、再生が終わったことを知るための見張りの控え。
+    private var itemEndObserver: NSObjectProtocol?
+    /// 追いかけ再生の先端追従が効いているか (録画中の番組を開いたときだけ)。
+    private var chaseFollowActive = false
+    /// 先端に追いついた知らせを出したかどうか (出すのは1回だけ)。
+    private var chaseEdgeNoticeShown = false
+    /// 利用者が自分で止めたかどうか。止めた場合は先端へ戻して再開しない。
+    private var chaseUserPaused = false
+    /// 追従の見張りの間引き用 (Web 版と同じ: 確認は2秒ごと、
+    /// 録画が続いているかの確認は30秒ごと)。
+    private var chaseLastTickAt: TimeInterval = 0
+    private var chaseLastStatusPollAt: TimeInterval = 0
+    /// 先端で止まったままの検出用 (位置の控えと、止まり始めた時刻)。
+    private var chaseStallPosition: Double = -1
+    private var chaseStallSince: TimeInterval = 0
+    /// 先端への復帰が続けて起きすぎないための間引き用。
+    private var chaseLastRecoveryAt: TimeInterval = 0
 
     init(program: RecordedProgram) {
         self.program = program
@@ -455,10 +536,24 @@ final class PlayerViewController: UIViewController {
         applyCommentDisplayState()
         applyCaptionDisplayState()
         loadJikkyoComments()
+        // 拡張版の再生画面まわりの用意 (一般版では何もしない)。
+        if AppEdition.isHousehold {
+            loadEpisodeNeighbors()
+            setupFastSeek()
+            setupHighlightReel()
+            // 録画中の番組は追いかけ再生として、先端追従を効かせる。
+            chaseFollowActive = program.isRecording
+        }
         beginNowPlaying()
         resolveInitialStartPosition { [weak self] position in
             guard let self, !self.didLeaveScreen else { return }
-            self.startPlayback(at: position)
+            // ハイライト横断再生の対象なら、続きの位置ではなく
+            // 区間の開始から始める (Web 版と同じ)。
+            if self.reelActive, let item = HighlightReelStore.shared.currentItem {
+                self.startPlayback(at: item.start)
+            } else {
+                self.startPlayback(at: position)
+            }
         }
     }
 
@@ -519,6 +614,15 @@ final class PlayerViewController: UIViewController {
         // フルスクリーンから戻ってきたとき用に、消えるタイマーを仕掛け直す。
         if hasActiveEngine {
             scheduleHideControls()
+        }
+        // ハイライト横断再生の対象だった画面に戻ってきたとき、順番が
+        // すでに先の録画へ進んでいたら、この画面は対象から外れたもの
+        // として扱い、横断再生自体も取り消す (Web 版で別の録画を
+        // 開いたときにキューが消えるのと同じ扱い)。
+        if reelActive, HighlightReelStore.shared.currentItem?.videoID != program.id {
+            HighlightReelStore.shared.clear()
+            reelActive = false
+            updateReelBadge()
         }
         // 見出し帯の時計を毎秒進める。
         headerClockTimer?.invalidate()
@@ -664,12 +768,13 @@ final class PlayerViewController: UIViewController {
         // シークバーは Web 版スマホ縦と同じく、映像の下辺いっぱいに置く。
         bottomGradient.translatesAutoresizingMaskIntoConstraints = false
         videoContainer.addSubview(bottomGradient)
-        let controlsStack = UIStackView(arrangedSubviews: [transportRow, seekContainer])
-        controlsStack.axis = .vertical
-        controlsStack.spacing = 2
-        controlsStack.translatesAutoresizingMaskIntoConstraints = false
+        controlsStackView.addArrangedSubview(transportRow)
+        controlsStackView.addArrangedSubview(seekContainer)
+        controlsStackView.axis = .vertical
+        controlsStackView.spacing = 2
+        controlsStackView.translatesAutoresizingMaskIntoConstraints = false
         controlsContainer.translatesAutoresizingMaskIntoConstraints = false
-        controlsContainer.addSubview(controlsStack)
+        controlsContainer.addSubview(controlsStackView)
         videoContainer.addSubview(controlsContainer)
         // 真ん中の並びは操作帯より上に置く (映像が低いときでも帯に
         // 触れて押せなくならないように)。
@@ -709,6 +814,143 @@ final class PlayerViewController: UIViewController {
             // タイル1枚は 320x180 (16:9)。表示は幅 128pt に合わせる。
             seekPreviewImageView.widthAnchor.constraint(equalToConstant: 128),
             seekPreviewImageView.heightAnchor.constraint(equalToConstant: 72),
+        ])
+
+        // 盛り上がりの波形の帯: 高さだけ決めておき、実況コメントから
+        // 密度が計算できた時点で操作帯の並び (シークバーの上) へ差し込む。
+        excitementStrip.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        excitementStrip.onTapped = { [weak self] ratio in
+            guard let self, self.hasActiveEngine else { return }
+            self.seek(to: ratio * self.effectiveDuration)
+            self.playAtCurrentRate()
+            self.setControlsVisible(true)
+            self.scheduleHideControls()
+        }
+
+        // 映像の上に短く出す知らせ (生放送一覧の知らせと同じ見た目)。
+        // 操作帯のすぐ上に置く。
+        playerNoticeView.backgroundColor = AppPalette.pressed
+        playerNoticeView.layer.cornerRadius = 8
+        playerNoticeView.layer.shadowColor = UIColor.black.cgColor
+        playerNoticeView.layer.shadowOpacity = 0.4
+        playerNoticeView.layer.shadowRadius = 6
+        playerNoticeView.layer.shadowOffset = CGSize(width: 0, height: 2)
+        playerNoticeView.alpha = 0
+        playerNoticeView.isUserInteractionEnabled = false
+        playerNoticeView.translatesAutoresizingMaskIntoConstraints = false
+        playerNoticeLabel.font = .scaledSystemFont(ofSize: 14)
+        playerNoticeLabel.textColor = AppPalette.text
+        playerNoticeLabel.numberOfLines = 0
+        playerNoticeLabel.translatesAutoresizingMaskIntoConstraints = false
+        playerNoticeView.addSubview(playerNoticeLabel)
+        videoContainer.addSubview(playerNoticeView)
+        NSLayoutConstraint.activate([
+            playerNoticeView.centerXAnchor.constraint(equalTo: videoContainer.centerXAnchor),
+            playerNoticeView.bottomAnchor.constraint(equalTo: controlsContainer.topAnchor, constant: -12),
+            playerNoticeView.leadingAnchor.constraint(greaterThanOrEqualTo: videoContainer.leadingAnchor, constant: 24),
+            playerNoticeView.trailingAnchor.constraint(lessThanOrEqualTo: videoContainer.trailingAnchor, constant: -24),
+            playerNoticeLabel.topAnchor.constraint(equalTo: playerNoticeView.topAnchor, constant: 10),
+            playerNoticeLabel.bottomAnchor.constraint(equalTo: playerNoticeView.bottomAnchor, constant: -10),
+            playerNoticeLabel.leadingAnchor.constraint(equalTo: playerNoticeView.leadingAnchor, constant: 16),
+            playerNoticeLabel.trailingAnchor.constraint(equalTo: playerNoticeView.trailingAnchor, constant: -16),
+        ])
+
+        // 次の話の自動再生の数え下げカード (Web 版の右下のカードと同じ置き場所)。
+        // 数え下げが始まるまで隠しておく。
+        autoplayCard.backgroundColor = AppPalette.panel.withAlphaComponent(0.95)
+        autoplayCard.layer.cornerRadius = 8
+        autoplayCard.layer.shadowColor = UIColor.black.cgColor
+        autoplayCard.layer.shadowOpacity = 0.4
+        autoplayCard.layer.shadowRadius = 6
+        autoplayCard.layer.shadowOffset = CGSize(width: 0, height: 2)
+        autoplayCard.isHidden = true
+        autoplayCard.translatesAutoresizingMaskIntoConstraints = false
+        let autoplayHeaderLabel = UILabel()
+        autoplayHeaderLabel.text = "次の話を再生します"
+        autoplayHeaderLabel.font = .scaledSystemFont(ofSize: 12)
+        autoplayHeaderLabel.textColor = AppPalette.metaText
+        autoplayTitleLabel.font = .scaledSystemFont(ofSize: 14, weight: .bold)
+        autoplayTitleLabel.textColor = AppPalette.text
+        autoplayTitleLabel.numberOfLines = 1
+        autoplayTitleLabel.lineBreakMode = .byTruncatingTail
+        autoplayCountdownLabel.font = .scaledSystemFont(ofSize: 13)
+        autoplayCountdownLabel.textColor = AppPalette.text
+        let autoplayPlayButton = UIButton(type: .system)
+        autoplayPlayButton.setTitle("今すぐ再生", for: .normal)
+        autoplayPlayButton.setTitleColor(.white, for: .normal)
+        autoplayPlayButton.titleLabel?.font = .scaledSystemFont(ofSize: 13, weight: .bold)
+        autoplayPlayButton.backgroundColor = AppPalette.accent
+        autoplayPlayButton.layer.cornerRadius = 14
+        autoplayPlayButton.contentEdgeInsets = UIEdgeInsets(top: 6, left: 14, bottom: 6, right: 14)
+        autoplayPlayButton.addTarget(self, action: #selector(autoplayNowTapped), for: .touchUpInside)
+        let autoplayCancelButton = UIButton(type: .system)
+        autoplayCancelButton.setTitle("キャンセル", for: .normal)
+        autoplayCancelButton.setTitleColor(AppPalette.text, for: .normal)
+        autoplayCancelButton.titleLabel?.font = .scaledSystemFont(ofSize: 13)
+        autoplayCancelButton.layer.cornerRadius = 14
+        autoplayCancelButton.layer.borderWidth = 1
+        autoplayCancelButton.layer.borderColor = AppPalette.metaText.cgColor
+        autoplayCancelButton.contentEdgeInsets = UIEdgeInsets(top: 6, left: 14, bottom: 6, right: 14)
+        autoplayCancelButton.addTarget(self, action: #selector(autoplayCancelTapped), for: .touchUpInside)
+        let autoplayButtonRow = UIStackView(arrangedSubviews: [
+            autoplayCountdownLabel, UIView(), autoplayPlayButton, autoplayCancelButton,
+        ])
+        autoplayButtonRow.axis = .horizontal
+        autoplayButtonRow.spacing = 10
+        autoplayButtonRow.alignment = .center
+        let autoplayStack = UIStackView(arrangedSubviews: [
+            autoplayHeaderLabel, autoplayTitleLabel, autoplayButtonRow,
+        ])
+        autoplayStack.axis = .vertical
+        autoplayStack.spacing = 8
+        autoplayStack.isLayoutMarginsRelativeArrangement = true
+        autoplayStack.layoutMargins = UIEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
+        autoplayStack.translatesAutoresizingMaskIntoConstraints = false
+        autoplayCard.addSubview(autoplayStack)
+        videoContainer.addSubview(autoplayCard)
+        NSLayoutConstraint.activate([
+            autoplayCard.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor, constant: -16),
+            autoplayCard.bottomAnchor.constraint(equalTo: controlsContainer.topAnchor, constant: -16),
+            autoplayCard.leadingAnchor.constraint(greaterThanOrEqualTo: videoContainer.leadingAnchor, constant: 16),
+            autoplayCard.widthAnchor.constraint(lessThanOrEqualToConstant: 320),
+            autoplayStack.topAnchor.constraint(equalTo: autoplayCard.topAnchor),
+            autoplayStack.bottomAnchor.constraint(equalTo: autoplayCard.bottomAnchor),
+            autoplayStack.leadingAnchor.constraint(equalTo: autoplayCard.leadingAnchor),
+            autoplayStack.trailingAnchor.constraint(equalTo: autoplayCard.trailingAnchor),
+        ])
+
+        // ハイライト横断再生の印 (Web 版と同じく映像の左上)。
+        // 横断再生の対象になっている間だけ出す。
+        reelBadgeView.backgroundColor = UIColor.black.withAlphaComponent(0.65)
+        reelBadgeView.layer.cornerRadius = 6
+        reelBadgeView.isHidden = true
+        reelBadgeView.translatesAutoresizingMaskIntoConstraints = false
+        reelBadgeLabel.font = .scaledSystemFont(ofSize: 12.5, weight: .semibold)
+        reelBadgeLabel.textColor = .white
+        reelBadgeLabel.translatesAutoresizingMaskIntoConstraints = false
+        reelBadgeView.addSubview(reelBadgeLabel)
+        let reelCloseButton = UIButton(type: .system)
+        reelCloseButton.setImage(UIImage(
+            systemName: "xmark",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .bold)),
+            for: .normal)
+        reelCloseButton.tintColor = .white
+        reelCloseButton.accessibilityLabel = "ハイライト再生を終了する"
+        reelCloseButton.addTarget(self, action: #selector(reelAbortTapped), for: .touchUpInside)
+        reelCloseButton.translatesAutoresizingMaskIntoConstraints = false
+        reelBadgeView.addSubview(reelCloseButton)
+        videoContainer.addSubview(reelBadgeView)
+        NSLayoutConstraint.activate([
+            reelBadgeView.topAnchor.constraint(equalTo: videoContainer.topAnchor, constant: 12),
+            reelBadgeView.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor, constant: 12),
+            reelBadgeLabel.topAnchor.constraint(equalTo: reelBadgeView.topAnchor, constant: 6),
+            reelBadgeLabel.bottomAnchor.constraint(equalTo: reelBadgeView.bottomAnchor, constant: -6),
+            reelBadgeLabel.leadingAnchor.constraint(equalTo: reelBadgeView.leadingAnchor, constant: 10),
+            reelCloseButton.leadingAnchor.constraint(equalTo: reelBadgeLabel.trailingAnchor, constant: 2),
+            reelCloseButton.trailingAnchor.constraint(equalTo: reelBadgeView.trailingAnchor, constant: -2),
+            reelCloseButton.centerYAnchor.constraint(equalTo: reelBadgeView.centerYAnchor),
+            reelCloseButton.widthAnchor.constraint(equalToConstant: 28),
+            reelCloseButton.heightAnchor.constraint(equalToConstant: 28),
         ])
 
         // MARK: 映像の下の情報欄 (Web 版パネル)
@@ -908,7 +1150,34 @@ final class PlayerViewController: UIViewController {
             for: .normal)
         sleepTimerButton.imageEdgeInsets = UIEdgeInsets(top: 0, left: 0, bottom: 0, right: 6)
         sleepTimerButton.addTarget(self, action: #selector(cycleSleepTimer), for: .touchUpInside)
-        for button in [qualityButton, profileButton, rateButton, audioOnlyButton, fullscreenButton, protectButton, watchedButton, sleepTimerButton] {
+        // 拡張版の再生画面まわりのボタン (Web 版パネルの並びに合わせ、
+        // 前の話・次の話・場面一覧・しおりを追加・ダイジェスト再生・
+        // コメント検索の順)。前後は有無が分かるまで隠し、場面一覧は
+        // 場面の画像の材料が無い録画では出さず、ダイジェスト再生は
+        // 見どころ区間が取れるまで出さない。
+        prevEpisodeButton.setTitle("前の話", for: .normal)
+        prevEpisodeButton.addTarget(self, action: #selector(goToPreviousEpisode), for: .touchUpInside)
+        prevEpisodeButton.isHidden = true
+        nextEpisodeButton.setTitle("次の話", for: .normal)
+        nextEpisodeButton.addTarget(self, action: #selector(goToNextEpisode), for: .touchUpInside)
+        nextEpisodeButton.isHidden = true
+        sceneListButton.setTitle("場面一覧", for: .normal)
+        sceneListButton.addTarget(self, action: #selector(showSceneList), for: .touchUpInside)
+        sceneListButton.isHidden = seekTileInfo == nil
+        addBookmarkButton.setTitle("しおりを追加", for: .normal)
+        addBookmarkButton.addTarget(self, action: #selector(addBookmark), for: .touchUpInside)
+        digestButton.setTitle("ダイジェスト再生", for: .normal)
+        digestButton.addTarget(self, action: #selector(toggleDigestPlayback), for: .touchUpInside)
+        digestButton.isHidden = true
+        commentSearchButton.setTitle("コメント検索", for: .normal)
+        commentSearchButton.addTarget(self, action: #selector(showCommentSearch), for: .touchUpInside)
+        nextReserveButton.setTitle("次回を予約", for: .normal)
+        nextReserveButton.addTarget(self, action: #selector(reserveNextBroadcast), for: .touchUpInside)
+        seriesReserveButton.setTitle("シリーズ予約", for: .normal)
+        seriesReserveButton.addTarget(self, action: #selector(createSeriesReservation), for: .touchUpInside)
+        for button in [qualityButton, profileButton, rateButton, audioOnlyButton, fullscreenButton, protectButton, watchedButton, sleepTimerButton,
+                       prevEpisodeButton, nextEpisodeButton, sceneListButton, addBookmarkButton, digestButton, commentSearchButton,
+                       nextReserveButton, seriesReserveButton] {
             stylePlayerChip(button)
         }
         updateSleepTimerButton()
@@ -916,9 +1185,14 @@ final class PlayerViewController: UIViewController {
         // 収まらなければ次の行へ。横の間隔 10pt、行の間隔 16pt。
         buttonsFlowView.horizontalSpacing = 10
         buttonsFlowView.verticalSpacing = 16
-        // 保護ボタンは拡張版だけ並べる (一般版では保護の機能自体を出さない)。
+        // 保護ボタンと再生画面まわりのボタンは拡張版だけ並べる
+        // (一般版では、それらの機能自体を出さない)。
         var infoButtons: [UIButton] = [qualityButton, audioOnlyButton, fullscreenButton, rateButton]
-        if AppEdition.isHousehold { infoButtons.append(protectButton) }
+        if AppEdition.isHousehold {
+            infoButtons += [prevEpisodeButton, nextEpisodeButton, sceneListButton,
+                            addBookmarkButton, digestButton, commentSearchButton,
+                            nextReserveButton, seriesReserveButton, protectButton]
+        }
         infoButtons += [watchedButton, profileButton, sleepTimerButton]
         for button in infoButtons {
             buttonsFlowView.addSubview(button)
@@ -967,6 +1241,8 @@ final class PlayerViewController: UIViewController {
         ]
         NSLayoutConstraint.activate(captionHomeConstraints)
 
+        // 操作帯の高さは控えに持ち、盛り上がりの帯を差し込むときに広げる。
+        controlsHeightConstraint = controlsContainer.heightAnchor.constraint(equalToConstant: 88)
         NSLayoutConstraint.activate([
             videoContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             videoContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -983,12 +1259,12 @@ final class PlayerViewController: UIViewController {
             controlsContainer.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
             controlsContainer.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
             controlsContainer.bottomAnchor.constraint(equalTo: videoContainer.bottomAnchor),
-            controlsContainer.heightAnchor.constraint(equalToConstant: 88),
+            controlsHeightConstraint!,
             centerTransport.centerXAnchor.constraint(equalTo: videoContainer.centerXAnchor),
             centerTransport.centerYAnchor.constraint(equalTo: videoContainer.centerYAnchor),
-            controlsStack.leadingAnchor.constraint(equalTo: controlsContainer.leadingAnchor, constant: 16),
-            controlsStack.trailingAnchor.constraint(equalTo: controlsContainer.trailingAnchor, constant: -16),
-            controlsStack.bottomAnchor.constraint(equalTo: controlsContainer.bottomAnchor, constant: -4),
+            controlsStackView.leadingAnchor.constraint(equalTo: controlsContainer.leadingAnchor, constant: 16),
+            controlsStackView.trailingAnchor.constraint(equalTo: controlsContainer.trailingAnchor, constant: -16),
+            controlsStackView.bottomAnchor.constraint(equalTo: controlsContainer.bottomAnchor, constant: -4),
             seekContainer.heightAnchor.constraint(equalToConstant: 20),
             infoTabBar.topAnchor.constraint(equalTo: videoContainer.bottomAnchor),
             infoTabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -1208,6 +1484,9 @@ final class PlayerViewController: UIViewController {
     /// AVPlayer の play() は速度が 1倍に戻るため、再生の開始はここへ集約する
     /// (VLCKit 経路でも、再生を始めてから速度を合わせる順番は同じにする)。
     private func playAtCurrentRate() {
+        // 再生が再開されたら、次の話の自動再生の数え下げは取り消す
+        // (Web 版も、再生が再開されたら数え下げを取り消す)。
+        cancelAutoplayCountdown()
 #if canImport(MobileVLCKit)
         if let vlcPlayer {
             vlcPlayer.play()
@@ -1273,6 +1552,11 @@ final class PlayerViewController: UIViewController {
                 self.jikkyoLoadState = .failed(detail.isEmpty ? "コメントを取得できませんでした。" : detail)
                 self.updateCommentEmptyState()
                 return
+            }
+            // 盛り上がりの計算は、ミュートで取り除く前のコメント全体から
+            // 行う (Web 版も同じ材料で計算する)。拡張版だけ。
+            if AppEdition.isHousehold {
+                self.buildExcitement(from: result.comments)
             }
             // 一覧と流れる表示で共用する。時刻の昇順に並べ直しておく。
             // 設定のミュート (キーワード・ユーザー ID・機械的な判定) に
@@ -1701,6 +1985,17 @@ final class PlayerViewController: UIViewController {
         let item = AVPlayerItem(asset: asset)
         // 字幕データの受け取り口を、この再生項目へ付ける。
         attachCaptionMetadataOutput(to: item)
+        // 再生が終わったことを知る見張り (次の話の自動再生と、
+        // 追いかけ再生の先端到達の扱いに使う)。項目を作り直すたびに
+        // 見張りも付け替える。
+        if let itemEndObserver {
+            NotificationCenter.default.removeObserver(itemEndObserver)
+        }
+        itemEndObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main
+        ) { [weak self] _ in
+            self?.handlePlaybackEnded()
+        }
         // 読み込みに失敗したら、真っ黒のまま無言にせず、その旨を表示する。
         itemStatusObservation?.invalidate()
         itemStatusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
@@ -1881,6 +2176,10 @@ final class PlayerViewController: UIViewController {
 
     /// AVPlayer 経路の後片付け。
     private func teardownAVPlayback() {
+        if let itemEndObserver {
+            NotificationCenter.default.removeObserver(itemEndObserver)
+            self.itemEndObserver = nil
+        }
         if let player, let timeObserver {
             player.removeTimeObserver(timeObserver)
         }
@@ -1899,6 +2198,10 @@ final class PlayerViewController: UIViewController {
 
     private func stopPlayback() {
         commentOverlay.stop()
+        cancelAutoplayCountdown()
+        fastSeekBackController.invalidate()
+        fastSeekForwardController.invalidate()
+        chaseFollowActive = false
         stopSleepTimerTicker()
         keepAliveTimer?.invalidate()
         keepAliveTimer = nil
@@ -2046,6 +2349,9 @@ final class PlayerViewController: UIViewController {
                 seekSlider.value = duration > 0 ? Float(current / duration) : 0
             }
             applyCMAutoSkipIfNeeded(current: current)
+            applyDigestSkipIfNeeded(current: current)
+            updateHighlightReel(current: current)
+            updateChaseFollow(current: current)
             updateCommentListFollow(current: current)
             reportWatchedPositionIfNeeded(current: current)
             syncWatchedHistoryIfNeeded(current: current)
@@ -2177,6 +2483,539 @@ final class PlayerViewController: UIViewController {
         }
     }
 
+    // MARK: - 拡張版の再生画面まわりの機能
+
+    /// 映像の上に知らせを出して、少し経ったら消す (生放送一覧の知らせと同じ出方)。
+    private func showPlayerNotice(_ text: String) {
+        playerNoticeLabel.text = text
+        playerNoticeDismissWork?.cancel()
+        UIView.animate(withDuration: 0.2) { self.playerNoticeView.alpha = 1 }
+        let work = DispatchWorkItem { [weak self] in
+            UIView.animate(withDuration: 0.3) { self?.playerNoticeView.alpha = 0 }
+        }
+        playerNoticeDismissWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2, execute: work)
+    }
+
+    // MARK: 前の話・次の話
+
+    /// 前の話・次の話の有無を、単体取得の応答で確かめる
+    /// (改造サーバーは単体取得の応答にだけ前後の ID を付ける)。
+    /// ボタンは、有ることが分かったものだけ出す。
+    private func loadEpisodeNeighbors() {
+        let videoID = program.id
+        Task { [weak self] in
+            guard let self,
+                  let latest = await APIClient.shared.fetchVideo(videoID: videoID) else { return }
+            self.previousEpisodeID = latest.previous_episode_id
+            self.nextEpisodeID = latest.next_episode_id
+            self.prevEpisodeButton.isHidden = latest.previous_episode_id == nil
+            self.nextEpisodeButton.isHidden = latest.next_episode_id == nil
+            self.buttonsFlowView.setNeedsLayout()
+        }
+    }
+
+    @objc private func goToPreviousEpisode() {
+        navigateToEpisode(id: previousEpisodeID)
+    }
+
+    @objc private func goToNextEpisode() {
+        navigateToEpisode(id: nextEpisodeID)
+    }
+
+    /// 指定した録画の再生画面へ移る。番組データを取り直してから開く
+    /// (開き先でも前後の確認などが要るため)。
+    private func navigateToEpisode(id: Int?) {
+        guard let id else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            if let target = await APIClient.shared.fetchVideo(videoID: id) {
+                self.navigationController?.pushViewController(
+                    PlayerViewController(program: target), animated: true)
+            } else {
+                self.messageLabel.text = "番組を取得できませんでした。"
+            }
+        }
+    }
+
+    // MARK: しおり
+
+    /// いまの再生位置にしおりを足す (表示名は付けない。Web 版と同じ)。
+    @objc private func addBookmark() {
+        let position = currentPosition()
+        guard position.isFinite else { return }
+        let videoID = program.id
+        Task { [weak self] in
+            guard let self else { return }
+            if await APIClient.shared.createBookmark(
+                videoID: videoID, position: position, label: "") != nil {
+                self.showPlayerNotice("しおりを追加しました (\(TimeFormat.hms(position)))")
+            } else {
+                self.showPlayerNotice("しおりの追加に失敗しました。")
+            }
+        }
+    }
+
+    // MARK: 場面一覧・コメント検索
+
+    @objc private func showSceneList() {
+        let sceneList = SceneListViewController(
+            program: program, highlightSegments: highlightSegments)
+        sceneList.onSeek = { [weak self] time in
+            self?.seek(to: time)
+        }
+        present(sceneList, animated: true)
+    }
+
+    @objc private func showCommentSearch() {
+        // 検索の対象は、再生画面が取得済みのコメントの一覧
+        // (ミュート設定で取り除いた分は含まれない)。
+        let search = CommentSearchViewController(comments: jikkyoComments)
+        search.onSeek = { [weak self] time in
+            self?.seek(to: time)
+        }
+        present(search, animated: true)
+    }
+
+    // MARK: 次回を予約・シリーズ予約
+
+    /// 次回の放送を番組表から探し、既定の録画設定でそのまま予約する
+    /// (Web 版パネルの「次回を予約」と同じ手順)。
+    /// 検索キーワードは番組名からマークと話数表記を除いたもの、
+    /// チャンネルはこの番組のものに固定する。候補は未来の放送で、
+    /// この録画と同じ放送でないものから、開始が一番早いものを選ぶ。
+    @objc private func reserveNextBroadcast() {
+        guard !isReservingNext else { return }
+        isReservingNext = true
+        let source = program
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.isReservingNext = false }
+            let condition = ReservationConditions.buildSeriesSearchCondition(
+                title: source.title, seriesTitle: source.series_title,
+                networkID: source.network_id, serviceID: source.service_id,
+                transportStreamID: source.channel?.transport_stream_id)
+            do {
+                let result = try await APIClient.shared.searchPrograms(condition: condition)
+                let now = Date()
+                let candidates = result.programs
+                    .filter { candidate in
+                        guard let start = candidate.startDate, start > now else { return false }
+                        // この録画と同じ放送 (イベント) は次回ではないため除く。
+                        if let eventID = source.event_id, let candidateEventID = candidate.event_id {
+                            return candidateEventID != eventID
+                        }
+                        return true
+                    }
+                    .sorted { ($0.startDate ?? .distantFuture) < ($1.startDate ?? .distantFuture) }
+                guard let next = candidates.first else {
+                    self.showPlayerNotice("次回の放送が見つかりませんでした。")
+                    return
+                }
+                let recordSettings = await APIClient.shared.fetchDefaultRecordSettings()
+                try await APIClient.shared.addReservation(
+                    programID: next.id, recordSettings: recordSettings)
+                if let start = next.startDate {
+                    let formatter = DateFormatter()
+                    formatter.locale = Locale(identifier: "ja_JP")
+                    formatter.dateFormat = "M/d H:mm"
+                    self.showPlayerNotice(
+                        "次回「\(next.title)」(\(formatter.string(from: start))〜) を予約しました。")
+                } else {
+                    self.showPlayerNotice("次回「\(next.title)」を予約しました。")
+                }
+            } catch {
+                self.showPlayerNotice(Self.noticeMessage(
+                    from: error, fallback: "次回の放送を予約できませんでした。"))
+            }
+        }
+    }
+
+    /// シリーズ予約 (キーワード自動予約の条件) を作る。以後は同じ
+    /// シリーズが自動で予約される (Web 版パネルの「シリーズ予約」と同じ)。
+    @objc private func createSeriesReservation() {
+        guard !isCreatingSeries else { return }
+        isCreatingSeries = true
+        let source = program
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.isCreatingSeries = false }
+            let recordSettings = await APIClient.shared.fetchDefaultRecordSettings()
+            let result = await ReservationConditions.addSeriesReservation(
+                title: source.title, seriesTitle: source.series_title,
+                networkID: source.network_id, serviceID: source.service_id,
+                transportStreamID: source.channel?.transport_stream_id,
+                recordSettings: recordSettings)
+            switch result {
+            case .created(let keyword):
+                self.showPlayerNotice(
+                    "シリーズ予約を作成しました。以後の「\(keyword)」は自動で予約されます。")
+            case .duplicate:
+                self.showPlayerNotice("このシリーズの自動予約はすでに作成されています。")
+            case .failed(let error):
+                self.showPlayerNotice(Self.noticeMessage(
+                    from: error, fallback: "シリーズ予約を作成できませんでした。"))
+            }
+        }
+    }
+
+    /// サーバーからの文が入っている失敗はその文を、それ以外は予備の文を返す。
+    private static func noticeMessage(from error: Error, fallback: String) -> String {
+        if let apiError = error as? APIError, case .message(let text) = apiError {
+            return text
+        }
+        return fallback
+    }
+
+    // MARK: 盛り上がりの波形とダイジェスト再生
+
+    /// 実況コメント (ミュートで取り除く前の全体) から盛り上がりの密度と
+    /// 見どころ区間を計算し、波形の帯を操作帯へ差し込む。
+    /// コメントが50件に満たない録画では、帯も見どころも出さない (Web 版と同じ)。
+    private func buildExcitement(from rawComments: [JikkyoComment]) {
+        guard rawComments.count >= minCommentsForHighlights else { return }
+        let density = computeCommentDensity(
+            positions: rawComments.map { $0.time }, duration: program.duration)
+        let segments = extractHighlightSegments(density: density)
+        excitementDensity = density
+        highlightSegments = segments
+        excitementStrip.densities = density.densities
+        excitementStrip.segments = segments
+        excitementStrip.duration = density.duration
+        // 帯は操作帯の並びの中で、シークバーの真上に差し込む。
+        // 操作帯はその分だけ高くする。
+        if excitementStrip.superview == nil {
+            controlsStackView.insertArrangedSubview(excitementStrip, at: 1)
+            controlsHeightConstraint?.constant = 88 + 28
+        }
+        if !segments.isEmpty {
+            digestButton.isHidden = false
+            buttonsFlowView.setNeedsLayout()
+        }
+    }
+
+    @objc private func toggleDigestPlayback() {
+        setDigestPlayback(!digestPlaybackEnabled)
+        showPlayerNotice(digestPlaybackEnabled
+            ? "ダイジェスト再生を開始しました"
+            : "ダイジェスト再生を終了しました")
+    }
+
+    /// ダイジェスト再生の入り切りと、ボタンの見た目 (入っている間は
+    /// Web 版と同じくピンクの地に白い文字で、文にも (ON) を付ける)。
+    private func setDigestPlayback(_ enabled: Bool) {
+        digestPlaybackEnabled = enabled
+        digestButton.setTitle(enabled ? "ダイジェスト再生（ON）" : "ダイジェスト再生", for: .normal)
+        if enabled {
+            digestButton.backgroundColor = AppPalette.accent
+            digestButton.setTitleColor(.white, for: .normal)
+        } else {
+            digestButton.backgroundColor = AppPalette.panel
+            digestButton.setTitleColor(AppPalette.metaText, for: .normal)
+        }
+        buttonsFlowView.setNeedsLayout()
+    }
+
+    /// ダイジェスト再生の見張り (Web 版と同じく 300ミリ秒に間引く)。
+    /// 再生位置が見どころ区間の外にあれば、次の区間の開始へ飛ばす。
+    /// 区間がもう無ければ、ダイジェスト再生を終える。
+    private func applyDigestSkipIfNeeded(current: Double) {
+        guard digestPlaybackEnabled, !highlightSegments.isEmpty else { return }
+        let now = Date().timeIntervalSince1970
+        guard now - lastDigestCheckAt >= 0.3 else { return }
+        lastDigestCheckAt = now
+        guard isCurrentlyPlaying(), !isScrubbing else { return }
+        if highlightSegments.contains(where: { current >= $0.start && current < $0.end }) {
+            return
+        }
+        if let next = highlightSegments.first(where: { $0.start > current }) {
+            seek(to: next.start)
+            showPlayerNotice("盛り上がりシーンへスキップしました")
+        } else {
+            setDigestPlayback(false)
+            showPlayerNotice("ダイジェスト再生が終了しました")
+        }
+    }
+
+    // MARK: 長押しの高速シーク
+
+    /// 送り・戻しボタンへ長押しの高速シークを取り付ける (拡張版だけ)。
+    private func setupFastSeek() {
+        fastSeekBackController.attach(to: skipBackButton)
+        fastSeekForwardController.attach(to: skipForwardButton)
+        for controller in [fastSeekBackController, fastSeekForwardController] {
+            controller.positionProvider = { [weak self] in self?.currentPosition() ?? 0 }
+            controller.seekHandler = { [weak self] position in self?.seek(to: position) }
+            controller.isMutedProvider = { [weak self] in self?.isEngineMuted ?? false }
+            controller.setMutedHandler = { [weak self] muted in self?.setEngineMuted(muted) }
+            controller.onStart = { [weak self] direction in
+                self?.showPlayerNotice(direction > 0 ? "高速早送り中 (長押し)" : "高速巻き戻し中 (長押し)")
+            }
+            controller.onKeepControlsVisible = { [weak self] in
+                guard let self else { return }
+                self.hideTimer?.invalidate()
+                self.hideTimer = nil
+                self.setControlsVisible(true)
+            }
+            controller.onEnd = { [weak self] in self?.scheduleHideControls() }
+        }
+    }
+
+    /// いま音が消えているかどうか (再生の仕組みによらない読み取り口)。
+    private var isEngineMuted: Bool {
+#if canImport(MobileVLCKit)
+        if let vlcPlayer {
+            return (vlcPlayer.audio?.volume ?? 100) == 0
+        }
+#endif
+        return player?.isMuted ?? false
+    }
+
+    /// 音を消す・戻す (再生の仕組みによらない操作口)。
+    /// VLCKit 経路には音を消す専用の入り口が無いため、音量を 0 にして
+    /// 戻すときは元の音量へ戻す。
+    private func setEngineMuted(_ muted: Bool) {
+#if canImport(MobileVLCKit)
+        if let vlcPlayer {
+            if muted {
+                savedVLCVolume = vlcPlayer.audio?.volume ?? 100
+                vlcPlayer.audio?.volume = 0
+            } else {
+                vlcPlayer.audio?.volume = savedVLCVolume ?? 100
+                savedVLCVolume = nil
+            }
+            return
+        }
+#endif
+        player?.isMuted = muted
+    }
+
+    // MARK: 再生の終わり (次の話の自動再生・追いかけ再生の先端到達)
+
+    /// 再生できる範囲の末端 (秒)。録画中の追いかけ再生では、番組全体の
+    /// 長さではなく「いま録れているところまで」が末端になる。
+    private var seekableEndSeconds: Double {
+#if canImport(MobileVLCKit)
+        if vlcPlayer != nil {
+            let length = vlcLengthSeconds
+            if length.isFinite, length > 0 { return length }
+        }
+#endif
+        if let ranges = player?.currentItem?.seekableTimeRanges,
+           let last = ranges.last?.timeRangeValue {
+            let end = (last.start + last.duration).seconds
+            if end.isFinite, end > 0 { return end }
+        }
+        let itemDuration = currentItemDurationSeconds
+        if itemDuration.isFinite, itemDuration > 0 { return itemDuration }
+        return program.duration
+    }
+
+    /// 再生が終わったときの扱い (拡張版だけ)。
+    /// 追いかけ再生の先端到達なら先端への復帰を、おやすみタイマーの
+    /// 「番組の終わりで停止」が入っていれば停止の知らせを、
+    /// それ以外で次の話があれば自動再生の数え下げを始める。
+    private func handlePlaybackEnded() {
+        guard AppEdition.isHousehold, !didLeaveScreen, hasActiveEngine else { return }
+        if chaseFollowActive {
+            recoverChasePlayback()
+            return
+        }
+        if sleepTimerMode == .end {
+            showPlayerNotice("おやすみタイマーのため、ここで停止します")
+            return
+        }
+        guard let nextID = nextEpisodeID else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            guard let next = await APIClient.shared.fetchVideo(videoID: nextID) else { return }
+            self.startAutoplayCountdown(nextProgram: next)
+        }
+    }
+
+    /// 次の話の自動再生の数え下げを始める (Web 版と同じ10秒)。
+    private func startAutoplayCountdown(nextProgram: RecordedProgram) {
+        autoplayNextProgram = nextProgram
+        autoplayRemainingSeconds = 10
+        autoplayTitleLabel.text = nextProgram.title
+        autoplayCountdownLabel.text = "あと \(autoplayRemainingSeconds) 秒"
+        autoplayCard.isHidden = false
+        setControlsVisible(true)
+        autoplayTimer?.invalidate()
+        autoplayTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.autoplayRemainingSeconds -= 1
+            if self.autoplayRemainingSeconds <= 0 {
+                self.navigateToAutoplayNext()
+            } else {
+                self.autoplayCountdownLabel.text = "あと \(self.autoplayRemainingSeconds) 秒"
+            }
+        }
+    }
+
+    /// 数え下げを取り消してカードを隠す。
+    private func cancelAutoplayCountdown() {
+        autoplayTimer?.invalidate()
+        autoplayTimer = nil
+        autoplayNextProgram = nil
+        autoplayCard.isHidden = true
+    }
+
+    @objc private func autoplayNowTapped() {
+        navigateToAutoplayNext()
+    }
+
+    @objc private func autoplayCancelTapped() {
+        cancelAutoplayCountdown()
+    }
+
+    /// 数え下げの終わり (または「今すぐ再生」) で、次の話の再生画面へ移る。
+    private func navigateToAutoplayNext() {
+        guard let next = autoplayNextProgram else { return }
+        cancelAutoplayCountdown()
+        navigationController?.pushViewController(
+            PlayerViewController(program: next), animated: true)
+    }
+
+    // MARK: ハイライト横断再生
+
+    /// ハイライト横断再生の対象かどうかを開くときに確かめる。
+    /// 順番の先頭がこの録画なら対象にし、別の録画が開かれた場合は
+    /// 横断再生自体を取り消す (Web 版と同じ)。
+    private func setupHighlightReel() {
+        let store = HighlightReelStore.shared
+        guard store.isActive, let item = store.currentItem else { return }
+        if item.videoID == program.id {
+            reelActive = true
+            updateReelBadge()
+        } else {
+            store.clear()
+        }
+    }
+
+    /// 左上の印の表示を、順番の進み具合に合わせる。
+    private func updateReelBadge() {
+        let store = HighlightReelStore.shared
+        guard reelActive, store.isActive else {
+            reelBadgeView.isHidden = true
+            return
+        }
+        reelBadgeLabel.text = "ハイライト再生中 \(store.index + 1)/\(store.items.count)"
+        reelBadgeView.isHidden = false
+    }
+
+    /// 印の取り消しボタン。横断再生をやめて、知らせを出す
+    /// (Web 版と同じ文面)。再生自体はそのまま続ける。
+    @objc private func reelAbortTapped() {
+        HighlightReelStore.shared.clear()
+        reelActive = false
+        updateReelBadge()
+        showPlayerNotice("ハイライト再生を終了しました")
+    }
+
+    /// 横断再生の見張り (進み具合の更新から呼ばれ、Web 版と同じ
+    /// 500ミリ秒に間引く)。区間の終わり (0.25秒手前) に達したら
+    /// 次の区間へ進む: 同じ録画ならその場で移動し、別の録画なら
+    /// その再生画面を開く。最後の区間が終わったら、キューを破棄して
+    /// 止め、終わったことを知らせる。
+    private func updateHighlightReel(current: Double) {
+        guard reelActive, !didLeaveScreen else { return }
+        let now = Date().timeIntervalSince1970
+        guard now - lastReelCheckAt >= 0.5 else { return }
+        lastReelCheckAt = now
+        let store = HighlightReelStore.shared
+        guard let item = store.currentItem, item.videoID == program.id else { return }
+        guard current >= item.end - 0.25 else { return }
+        guard let next = store.advance() else {
+            reelActive = false
+            updateReelBadge()
+            pauseEngine()
+            showPlayerNotice("ハイライト再生が終了しました")
+            return
+        }
+        if next.videoID == program.id {
+            seek(to: next.start)
+            updateReelBadge()
+        } else {
+            let nextID = next.videoID
+            Task { [weak self] in
+                guard let self else { return }
+                if let nextProgram = await APIClient.shared.fetchVideo(videoID: nextID) {
+                    self.navigationController?.pushViewController(
+                        PlayerViewController(program: nextProgram), animated: true)
+                }
+            }
+        }
+    }
+
+    // MARK: 追いかけ再生の先端追従
+
+    /// 先端追従の見張り (進み具合の更新から呼ばれる)。
+    /// 確認は2秒に間引き、録画が続いているかの確認は30秒ごとに行う。
+    /// 先端 (いま録れているところ) に追いついたら1回だけ知らせ、
+    /// 先端で止まったまま6秒続いたら、先端へ戻して再生を作り直す。
+    private func updateChaseFollow(current: Double) {
+        guard chaseFollowActive, hasActiveEngine, !didLeaveScreen else { return }
+        let now = Date().timeIntervalSince1970
+        if now - chaseLastStatusPollAt >= 30 {
+            chaseLastStatusPollAt = now
+            pollChaseRecordingStatus()
+        }
+        guard now - chaseLastTickAt >= 2 else { return }
+        chaseLastTickAt = now
+        let edge = seekableEndSeconds
+        guard edge.isFinite, edge > 0 else { return }
+        if current >= edge - 3 {
+            if !chaseEdgeNoticeShown {
+                chaseEdgeNoticeShown = true
+                showPlayerNotice("録画の先端に追いつきました。そのまま流れ続けます")
+            }
+            // 再生中のはずなのに位置が進まない状態が続いたら、止まったものとみなす。
+            if !chaseUserPaused, isCurrentlyPlaying() {
+                if abs(current - chaseStallPosition) < 0.1 {
+                    if chaseStallSince == 0 {
+                        chaseStallSince = now
+                    } else if now - chaseStallSince >= 6 {
+                        recoverChasePlayback()
+                    }
+                } else {
+                    chaseStallPosition = current
+                    chaseStallSince = 0
+                }
+            }
+        } else {
+            chaseStallPosition = current
+            chaseStallSince = 0
+        }
+    }
+
+    /// 録画がまだ続いているかをサーバーへ確かめる。
+    /// 終わっていたら先端追従をやめる (以降は通常の録画として扱う)。
+    private func pollChaseRecordingStatus() {
+        let videoID = program.id
+        Task { [weak self] in
+            guard let self else { return }
+            if let latest = await APIClient.shared.fetchVideo(videoID: videoID),
+               !latest.isRecording {
+                self.chaseFollowActive = false
+            }
+        }
+    }
+
+    /// 先端へ戻して再生を作り直す (Web 版の、先端へ戻して流れを
+    /// 読み直す復帰にあたる)。利用者が自分で止めている間は再開しない。
+    /// 続けて起きすぎないよう、復帰は5秒に1回までに間引く。
+    private func recoverChasePlayback() {
+        let now = Date().timeIntervalSince1970
+        guard now - chaseLastRecoveryAt >= 5 else { return }
+        chaseLastRecoveryAt = now
+        chaseStallSince = 0
+        guard !chaseUserPaused, !didLeaveScreen else { return }
+        let edge = seekableEndSeconds
+        let target = (edge.isFinite && edge > 1.5) ? edge - 0.5 : currentPosition()
+        startPlayback(at: target)
+    }
+
     // MARK: - ロック画面の「再生中」表示
 
     /// ロック画面やコントロールセンターへの表示と、そちらからの操作の受け付けを始める。
@@ -2185,10 +3024,12 @@ final class PlayerViewController: UIViewController {
         NowPlayingManager.shared.begin(owner: self, handlers: .init(
             play: { [weak self] in
                 self?.playAtCurrentRate()
+                self?.chaseUserPaused = false
             },
             pause: { [weak self] in
                 self?.pauseEngine()
                 self?.updatePlayPauseIcon()
+                self?.chaseUserPaused = true
             },
             togglePlayPause: { [weak self] in
                 self?.togglePlayPause()
@@ -2233,8 +3074,12 @@ final class PlayerViewController: UIViewController {
         guard hasActiveEngine else { return }
         if isCurrentlyPlaying() {
             pauseEngine()
+            // 利用者が自分で止めた間は、追いかけ再生の先端追従で
+            // 勝手に再開しない。
+            chaseUserPaused = true
         } else {
             playAtCurrentRate()
+            chaseUserPaused = false
         }
         updatePlayPauseIcon()
         scheduleHideControls()
@@ -2320,6 +3165,7 @@ final class PlayerViewController: UIViewController {
         seek(to: target)
         if wasPlayingBeforeScrub {
             playAtCurrentRate()
+            chaseUserPaused = false
         }
         scheduleHideControls()
     }
@@ -2509,6 +3355,12 @@ final class PlayerViewController: UIViewController {
             },
             seek: { [weak self] seconds in
                 self?.seek(to: seconds)
+            },
+            isMuted: { [weak self] in
+                self?.isEngineMuted ?? false
+            },
+            setMuted: { [weak self] muted in
+                self?.setEngineMuted(muted)
             }
         )
     }
@@ -2604,6 +3456,14 @@ extension PlayerViewController: VLCMediaPlayerDelegate {
                    pending == self.quality {
                     SettingsStore.shared.setStreamingQuality(pending, media: .video, profile: self.profile)
                     self.pendingQualityWriteBack = nil
+                }
+            } else if vlcPlayer.state == .ended {
+                // 再生が最後まで進んだ合図。ただし、途中の壊れた区間などで
+                // 手前で止まっただけの場合は、終わったものとして扱わない
+                // (追いかけ再生の先端到達は、先端付近での停止として扱う)。
+                if self.chaseFollowActive
+                    || self.currentPosition() >= self.effectiveDuration - 5 {
+                    self.handlePlaybackEnded()
                 }
             } else if vlcPlayer.state == .error {
                 // 開始に失敗した (合言葉が通らない・サーバーに届かない等)。

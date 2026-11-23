@@ -230,6 +230,42 @@ final class SyncedSettingsStore {
         return true
     }
 
+    /// 自動取り込みを試したアクセストークン (ログインごとに1回だけ試す)。
+    private var lastAdoptAttemptedToken = ""
+
+    /// ログイン時のサーバー設定の自動取り込み (Web 版の
+    /// adoptServerSettingsOnLogin と同じ条件・動き)。拡張版だけが使う。
+    ///
+    /// 効くのは、ログインしていて同期がまだ有効でなく、かつこの端末が
+    /// 一度も同期したことがない (端末側の控えが 0 の) ときだけ。
+    /// サーバーに保存済みの設定があれば (サーバー側の同期時刻が 0 で
+    /// なければ) 取り込んで、同期も有効にする。同期を意図的に切った
+    /// 端末 (同期したことがある端末) では発動しない。試すのは
+    /// アクセストークンごとに1回まで。
+    func adoptServerSettingsOnLogin() async {
+        let store = SettingsStore.shared
+        guard store.isLoggedIn, !store.syncSettings else { return }
+        let token = store.accessToken
+        guard token != lastAdoptAttemptedToken else { return }
+        lastAdoptAttemptedToken = token
+        // この端末が一度でも同期していたら、同期を切ったのは意図的と
+        // みなして何もしない。
+        guard store.lastSyncedAt == 0 else { return }
+        guard let settings = try? await APIClient.shared.fetchClientSettings() else { return }
+        // サーバー側に保存済みの設定が無ければ何もしない。
+        let serverSyncedAt = (settings["last_synced_at"] as? NSNumber)?.doubleValue ?? 0
+        guard serverSyncedAt > 0 else { return }
+        // サーバー側の値を正として取り込み、同期を有効にする
+        // (Web 版の「強制的にサーバーから同期」と同じ扱い)。
+        let server = Self.settings(fromClientSettings: settings, fallback: current)
+        current = server
+        saveToLocal(server)
+        store.lastSyncedAt = serverSyncedAt
+        store.syncSettings = true
+        // 番組表の表示設定も、同期が有効になったので合わせて取り込む。
+        _ = await TimeTableSettingsStore.shared.refreshFromServer()
+    }
+
     // MARK: - 端末内の控え
 
     /// 端末内の控えから組み立てる。控えが無い項目は Web 版の既定値で受ける。

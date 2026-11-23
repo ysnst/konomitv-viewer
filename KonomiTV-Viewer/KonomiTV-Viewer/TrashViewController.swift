@@ -1,0 +1,796 @@
+import UIKit
+
+/// ゴミ箱の画面。録画一覧の「ゴミ箱を開く」から開く (拡張版だけ)。
+///
+/// 本家 Web 版のゴミ箱 (views/Videos/Trash.vue) と同じ作り:
+/// - 中身は GET /recorder/trash で取る。並びは見出し右のボタンで
+///   切り替えられ (録画が新しい順・古い順・削除が近い順・遠い順)、
+///   既定は録画が新しい順。並び替えは表示の写しにだけ効かせ、
+///   取得した元の並びは変えない。並び順は開くたびに既定に戻る。
+/// - 管理者は「選択する」から複数選択に入れ、選んだ分をまとめて
+///   復元・完全削除できる。まとめて削除も1件のときと同じ流儀で、
+///   確認を挟み、項目ごとに事前確認を取ってから削除する。
+/// - 見出しの下に保持期間の説明を出し、各カードには録画一覧と同じ
+///   カード部品 (VideoCell) に「あと○日で完全に削除されます」の行と、
+///   「復元する」「完全に削除」のボタンの行を足して出す。
+/// - 操作ボタンは Web 版と同じく管理者だけに出す (一覧自体は
+///   ログインしていれば見られる)。
+/// - 完全削除は取り返しがつかないため、Web 版と同じ手順で
+///   事前確認 (delete-preview) を取ってから確認を出し、確認用の
+///   合言葉を付けて削除する。
+/// - カードを押しても再生画面へは移らない (Web 版のゴミ箱の行にも
+///   再生へのリンクは無い)。
+///
+/// 見出し帯は設定まわりの画面・視聴履歴と同じ形: 高さ 60px・地は
+/// background-lighten-1、左端は矢印だけの戻るボタン、ページ名 22px。
+/// 端からの横スワイプでも戻れる。
+final class TrashViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+    /// 並び順 (Web 版のゴミ箱の並び替えと同じ4通り)。
+    /// 既定は「録画が新しい順」で、画面を開くたびに既定に戻る
+    /// (端末への保存はしない。Web 版と同じ)。
+    private enum SortKind: CaseIterable {
+        case newest
+        case oldest
+        case purgeNear
+        case purgeFar
+
+        var title: String {
+            switch self {
+            case .newest: return "録画が新しい順"
+            case .oldest: return "録画が古い順"
+            case .purgeNear: return "削除が近い順"
+            case .purgeFar: return "削除が遠い順"
+            }
+        }
+    }
+
+    private let backButton = RippleButton()
+    /// 見出し帯。一覧まわりはこの帯の下端に留めて組むため保持する。
+    private let headingBar = UIView()
+    /// 並び替えのボタン (見出しの右。Web 版のプルダウンに相当)。
+    private let sortButton = RippleButton()
+    /// 「選択する」のピルの行 (見出し帯の下、右寄せ)。
+    private let selectRowView = UIView()
+    private let selectButton = RippleButton()
+    private var selectRowHeightConstraint: NSLayoutConstraint?
+    private var noteTopConstraint: NSLayoutConstraint?
+    /// 保持期間の説明 (Web 版の見出し下の説明と同じ文面)。
+    private let noteLabel = UILabel()
+    private let tableView = UITableView(frame: .zero, style: .plain)
+    private let refreshControl = UIRefreshControl()
+    private let statusLabel = UILabel()
+    /// 選択中の下部に固定で出す操作帯とその中身。
+    private let bulkBar = UIView()
+    private let bulkCountLabel = UILabel()
+    private let bulkSelectAllButton = RippleButton()
+    private let bulkClearButton = RippleButton()
+    private let bulkRestoreButton = RippleButton()
+    private let bulkDeleteButton = RippleButton()
+    /// 操作帯の高さ (2段組み)。
+    private static let bulkBarHeight: CGFloat = 104
+
+    /// ゴミ箱の中身 (サーバーから返った並びのまま)。
+    private var items: [TrashItem] = []
+    /// 表示用の並び (並び替えを適用した写し。元の並びは変えない)。
+    private var displayItems: [TrashItem] = []
+    /// いまの並び順。
+    private var sortKind: SortKind = .newest
+    /// 複数選択の状態 (この画面の中だけに持ち、保存はしない)。
+    private var isSelectionMode = false
+    private var selectedIDs: Set<Int> = []
+    /// まとめて操作の実行中かどうか (二重実行の防止)。
+    private var isBulkRunning = false
+    /// 保持期間 (日)。取得前はサーバーの既定値 30 で仮置きし、
+    /// 取得できたら実際の値で説明を出し直す。
+    private var retentionDays = 30
+    /// ログイン中の利用者が管理者かどうか (操作ボタンの出し分け)。
+    private var isAdminUser = false
+    private var isLoading = false
+
+    private let thumbnailCache = NSCache<NSNumber, UIImage>()
+    /// 局ロゴのキャッシュと、ロゴが無かった局の控え (録画一覧と同じ方式)。
+    private let logoCache = NSCache<NSString, UIImage>()
+    private var failedLogoIDs: Set<String> = []
+
+    init() {
+        super.init(nibName: nil, bundle: nil)
+        title = "ゴミ箱"
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = AppPalette.background
+        buildHeadingBar()
+        buildSelectRow()
+        buildBulkBar()
+
+        noteLabel.font = .scaledSystemFont(ofSize: 13.5)
+        noteLabel.textColor = AppPalette.text.withAlphaComponent(0.8)
+        noteLabel.numberOfLines = 0
+        noteLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(noteLabel)
+
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.register(VideoCell.self, forCellReuseIdentifier: VideoCell.reuseID)
+        tableView.rowHeight = UITableView.automaticDimension
+        tableView.estimatedRowHeight = 125
+        tableView.backgroundColor = AppPalette.background
+        tableView.separatorStyle = .none
+        tableView.contentInset = UIEdgeInsets(top: 0, left: 0, bottom: 10, right: 0)
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        refreshControl.tintColor = AppPalette.accent
+        refreshControl.addTarget(self, action: #selector(refresh), for: .valueChanged)
+        tableView.refreshControl = refreshControl
+        view.addSubview(tableView)
+
+        statusLabel.textAlignment = .center
+        statusLabel.textColor = AppPalette.secondaryText
+        statusLabel.numberOfLines = 0
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(statusLabel)
+
+        noteTopConstraint = noteLabel.topAnchor.constraint(
+            equalTo: selectRowView.bottomAnchor, constant: 10)
+        NSLayoutConstraint.activate([
+            noteTopConstraint!,
+            noteLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            noteLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            tableView.topAnchor.constraint(equalTo: noteLabel.bottomAnchor, constant: 6),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            statusLabel.centerXAnchor.constraint(equalTo: tableView.centerXAnchor),
+            statusLabel.centerYAnchor.constraint(equalTo: tableView.centerYAnchor),
+            statusLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 24),
+            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -24),
+        ])
+    }
+
+    /// 見出し帯 (設定まわりの画面・視聴履歴と同じ形)。
+    private func buildHeadingBar() {
+        headingBar.backgroundColor = AppPalette.panel
+        headingBar.translatesAutoresizingMaskIntoConstraints = false
+        headingBar.layer.shadowColor = UIColor.black.cgColor
+        headingBar.layer.shadowOpacity = 0.12
+        headingBar.layer.shadowOffset = CGSize(width: 0, height: 3)
+        headingBar.layer.shadowRadius = 7
+        let headingLabel = UILabel()
+        headingLabel.text = "ゴミ箱"
+        headingLabel.font = .scaledSystemFont(ofSize: 22, weight: .semibold)
+        headingLabel.textColor = AppPalette.text
+        backButton.setImage(
+            UIImage(systemName: "chevron.left")?
+                .withTintColor(AppPalette.text, renderingMode: .alwaysOriginal),
+            for: .normal)
+        backButton.addTarget(self, action: #selector(goBack), for: .touchUpInside)
+        backButton.contentEdgeInsets = UIEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+        let headingStack = UIStackView(arrangedSubviews: [backButton, headingLabel])
+        headingStack.axis = .horizontal
+        headingStack.alignment = .center
+        headingStack.spacing = 4
+        headingStack.translatesAutoresizingMaskIntoConstraints = false
+        headingBar.addSubview(headingStack)
+        // 並び替えのボタンは見出しの右に置く (Web 版のプルダウンと同じ
+        // 置き場所)。いまの並び順の名前を出し、押すとメニューが開く。
+        sortButton.setTitleColor(AppPalette.text, for: .normal)
+        sortButton.titleLabel?.font = .scaledSystemFont(ofSize: 13)
+        sortButton.backgroundColor = AppPalette.pressed
+        sortButton.layer.cornerRadius = 6
+        sortButton.contentEdgeInsets = UIEdgeInsets(top: 6, left: 10, bottom: 6, right: 8)
+        sortButton.setImage(
+            UIImage(systemName: "chevron.down",
+                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .semibold))?
+                .withTintColor(AppPalette.text, renderingMode: .alwaysOriginal),
+            for: .normal)
+        // 絵は文字の右に置く (プルダウンの見た目に合わせる)。
+        sortButton.semanticContentAttribute = .forceRightToLeft
+        sortButton.imageEdgeInsets = UIEdgeInsets(top: 0, left: 4, bottom: 0, right: -4)
+        sortButton.showsMenuAsPrimaryAction = true
+        sortButton.translatesAutoresizingMaskIntoConstraints = false
+        headingBar.addSubview(sortButton)
+        view.addSubview(headingBar)
+        NSLayoutConstraint.activate([
+            headingBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            headingBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            headingBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            headingBar.heightAnchor.constraint(equalToConstant: 60),
+            headingStack.leadingAnchor.constraint(equalTo: headingBar.leadingAnchor, constant: 8),
+            headingStack.centerYAnchor.constraint(equalTo: headingBar.centerYAnchor),
+            headingStack.trailingAnchor.constraint(lessThanOrEqualTo: sortButton.leadingAnchor, constant: -8),
+            sortButton.trailingAnchor.constraint(equalTo: headingBar.trailingAnchor, constant: -12),
+            sortButton.centerYAnchor.constraint(equalTo: headingBar.centerYAnchor),
+        ])
+        updateSortButton()
+        // 画面の左端からの横スワイプでも前の画面へ戻れるようにする。
+        installEdgeSwipeBack(action: #selector(goBack))
+    }
+
+    /// 並び替えボタンの表示 (題名とメニュー) をいまの並び順に合わせる。
+    private func updateSortButton() {
+        sortButton.setTitle(sortKind.title, for: .normal)
+        sortButton.menu = UIMenu(children: SortKind.allCases.map { kind in
+            UIAction(title: kind.title, state: kind == sortKind ? .on : .off) { [weak self] _ in
+                guard let self, kind != self.sortKind else { return }
+                self.sortKind = kind
+                self.updateSortButton()
+                self.applyItems()
+            }
+        })
+    }
+
+    /// 「選択する」のピルの行を作る。管理者で、ゴミ箱が空でない
+    /// ときだけ出す (出し分けは updateControlsVisibility)。
+    private func buildSelectRow() {
+        selectRowView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(selectRowView)
+        selectButton.setTitle("選択する", for: .normal)
+        selectButton.setTitleColor(AppPalette.text, for: .normal)
+        selectButton.titleLabel?.font = .scaledSystemFont(ofSize: 13, weight: .semibold)
+        selectButton.contentEdgeInsets = UIEdgeInsets(top: 5, left: 14, bottom: 5, right: 14)
+        selectButton.layer.cornerRadius = 15
+        selectButton.layer.borderWidth = 1
+        selectButton.layer.borderColor = AppPalette.fieldBorder.cgColor
+        selectButton.addTarget(self, action: #selector(toggleSelectionMode), for: .touchUpInside)
+        selectButton.translatesAutoresizingMaskIntoConstraints = false
+        selectRowView.addSubview(selectButton)
+        selectRowHeightConstraint = selectRowView.heightAnchor.constraint(equalToConstant: 0)
+        NSLayoutConstraint.activate([
+            selectRowView.topAnchor.constraint(equalTo: headingBar.bottomAnchor),
+            selectRowView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            selectRowView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            selectRowHeightConstraint!,
+            selectButton.trailingAnchor.constraint(equalTo: selectRowView.trailingAnchor, constant: -16),
+            selectButton.centerYAnchor.constraint(equalTo: selectRowView.centerYAnchor),
+        ])
+        selectRowView.isHidden = true
+    }
+
+    /// 選択中の操作帯を作る (画面の下部に固定、タブバーの上)。
+    /// 並びは Web 版と同じ: 選んだ件数・すべて選択・選択を解除・
+    /// 復元する・完全に削除。幅の都合で2段に分ける。
+    private func buildBulkBar() {
+        bulkBar.backgroundColor = AppPalette.panel
+        bulkBar.translatesAutoresizingMaskIntoConstraints = false
+        bulkBar.isHidden = true
+        let topBorder = UIView()
+        topBorder.backgroundColor = AppPalette.pressed
+        topBorder.translatesAutoresizingMaskIntoConstraints = false
+        bulkBar.addSubview(topBorder)
+
+        bulkCountLabel.font = .scaledSystemFont(ofSize: 13.5, weight: .semibold)
+        bulkCountLabel.textColor = AppPalette.text
+        bulkSelectAllButton.setTitle("すべて選択", for: .normal)
+        bulkClearButton.setTitle("選択を解除", for: .normal)
+        for button in [bulkSelectAllButton, bulkClearButton] {
+            button.setTitleColor(AppPalette.text, for: .normal)
+            button.titleLabel?.font = .scaledSystemFont(ofSize: 13)
+            button.contentEdgeInsets = UIEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
+        }
+        bulkSelectAllButton.addTarget(self, action: #selector(selectAllItems), for: .touchUpInside)
+        bulkClearButton.addTarget(self, action: #selector(clearSelection), for: .touchUpInside)
+        // 復元・完全削除の見た目は、カードのボタンと揃える。
+        bulkRestoreButton.setTitle("復元する", for: .normal)
+        bulkRestoreButton.setTitleColor(AppPalette.text, for: .normal)
+        bulkRestoreButton.titleLabel?.font = .scaledSystemFont(ofSize: 13.5, weight: .semibold)
+        bulkRestoreButton.contentEdgeInsets = UIEdgeInsets(top: 8, left: 16, bottom: 8, right: 16)
+        bulkRestoreButton.layer.cornerRadius = 4
+        bulkRestoreButton.layer.borderWidth = 1
+        bulkRestoreButton.layer.borderColor = AppPalette.fieldBorder.cgColor
+        bulkRestoreButton.addTarget(self, action: #selector(bulkRestore), for: .touchUpInside)
+        bulkDeleteButton.setTitle("完全に削除", for: .normal)
+        bulkDeleteButton.setTitleColor(.white, for: .normal)
+        bulkDeleteButton.titleLabel?.font = .scaledSystemFont(ofSize: 13.5, weight: .semibold)
+        bulkDeleteButton.contentEdgeInsets = UIEdgeInsets(top: 8, left: 16, bottom: 8, right: 16)
+        bulkDeleteButton.layer.cornerRadius = 4
+        bulkDeleteButton.backgroundColor = AppPalette.error
+        bulkDeleteButton.addTarget(self, action: #selector(bulkDelete), for: .touchUpInside)
+
+        let topRow = UIStackView(arrangedSubviews: [
+            bulkCountLabel, UIView(), bulkSelectAllButton, bulkClearButton,
+        ])
+        topRow.axis = .horizontal
+        topRow.alignment = .center
+        topRow.spacing = 4
+        let bottomRow = UIStackView(arrangedSubviews: [
+            UIView(), bulkRestoreButton, bulkDeleteButton,
+        ])
+        bottomRow.axis = .horizontal
+        bottomRow.alignment = .center
+        bottomRow.spacing = 8
+        let stack = UIStackView(arrangedSubviews: [topRow, bottomRow])
+        stack.axis = .vertical
+        stack.spacing = 6
+        stack.isLayoutMarginsRelativeArrangement = true
+        stack.layoutMargins = UIEdgeInsets(top: 8, left: 16, bottom: 10, right: 16)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        bulkBar.addSubview(stack)
+        view.addSubview(bulkBar)
+        NSLayoutConstraint.activate([
+            bulkBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            bulkBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            bulkBar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            bulkBar.heightAnchor.constraint(equalToConstant: Self.bulkBarHeight),
+            topBorder.topAnchor.constraint(equalTo: bulkBar.topAnchor),
+            topBorder.leadingAnchor.constraint(equalTo: bulkBar.leadingAnchor),
+            topBorder.trailingAnchor.constraint(equalTo: bulkBar.trailingAnchor),
+            topBorder.heightAnchor.constraint(equalToConstant: 1),
+            stack.topAnchor.constraint(equalTo: bulkBar.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bulkBar.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: bulkBar.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: bulkBar.trailingAnchor),
+        ])
+    }
+
+    @objc private func goBack() {
+        navigationController?.popViewController(animated: true)
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // 見出し帯を自前で出すため、ナビゲーションバーは隠す
+        // (設定まわりの画面・視聴履歴と同じ扱い)。
+        navigationController?.setNavigationBarHidden(true, animated: animated)
+        navigationController?.interactivePopGestureRecognizer?.isEnabled = true
+        reloadTrash()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        navigationController?.setNavigationBarHidden(false, animated: animated)
+    }
+
+    @objc private func refresh() {
+        reloadTrash()
+    }
+
+    // MARK: - 読み込み
+
+    /// ゴミ箱の中身を取り直す。未ログインのときは通信せず案内だけ出す
+    /// (ゴミ箱の口はログイン必須)。
+    private func reloadTrash() {
+        guard !isLoading else {
+            refreshControl.endRefreshing()
+            return
+        }
+        guard SettingsStore.shared.isLoggedIn else {
+            items = []
+            displayItems = []
+            selectedIDs = []
+            if isSelectionMode { exitSelectionMode() }
+            updateControlsVisibility()
+            statusLabel.text = "ゴミ箱を使うには、ログインが必要です。\n"
+                + "アカウントの設定でログインしてください。"
+            noteLabel.text = nil
+            tableView.reloadData()
+            refreshControl.endRefreshing()
+            return
+        }
+        isLoading = true
+        if items.isEmpty {
+            statusLabel.text = "読み込み中です…"
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            // 管理者かどうかも一緒に取り直す (操作ボタンの出し分け)。
+            if let user = try? await APIClient.shared.fetchCurrentUser() {
+                self.isAdminUser = user.is_admin
+            }
+            do {
+                let response = try await APIClient.shared.fetchTrashList()
+                self.items = response.items
+                self.retentionDays = response.retention_days
+                self.applyItems()
+            } catch let error as APIError {
+                if case .badStatus(401) = error {
+                    self.items = []
+                    self.displayItems = []
+                    self.selectedIDs = []
+                    if self.isSelectionMode { self.exitSelectionMode() }
+                    self.updateControlsVisibility()
+                    self.statusLabel.text = "ログインの有効期限が切れています。\n"
+                        + "アカウントの設定でログインし直してください。"
+                    self.noteLabel.text = nil
+                    self.tableView.reloadData()
+                } else if self.items.isEmpty {
+                    self.statusLabel.text = "読み込めませんでした。\n接続先とネットワークを確認してください。"
+                }
+            } catch {
+                if self.items.isEmpty {
+                    self.statusLabel.text = "読み込めませんでした。\n接続先とネットワークを確認してください。"
+                }
+            }
+            self.isLoading = false
+            self.refreshControl.endRefreshing()
+        }
+    }
+
+    /// 取得した中身を画面へ反映する (説明文・空の表示・一覧)。
+    /// 一覧は並び替えを適用した写しで出し、取得した元の並びは変えない。
+    private func applyItems() {
+        noteLabel.text = "ゴミ箱に移動した録画は \(retentionDays) 日間保持され、"
+            + "期間を過ぎると自動的に完全に削除されます。"
+        statusLabel.text = items.isEmpty ? "ゴミ箱は空です" : nil
+        displayItems = Self.sorted(items, by: sortKind)
+        // 消えた録画が選択に残っていたら取り除く。
+        selectedIDs.formIntersection(Set(items.map { $0.program.id }))
+        if items.isEmpty, isSelectionMode {
+            exitSelectionMode()
+        }
+        updateControlsVisibility()
+        tableView.reloadData()
+    }
+
+    /// 並び替えを適用した写しを作る (Web 版と同じ規則)。
+    private static func sorted(_ items: [TrashItem], by kind: SortKind) -> [TrashItem] {
+        switch kind {
+        case .newest:
+            return items.sorted { ($0.program.startDate ?? .distantPast) > ($1.program.startDate ?? .distantPast) }
+        case .oldest:
+            return items.sorted { ($0.program.startDate ?? .distantPast) < ($1.program.startDate ?? .distantPast) }
+        case .purgeNear:
+            return items.sorted { ($0.purgeDate ?? .distantFuture) < ($1.purgeDate ?? .distantFuture) }
+        case .purgeFar:
+            return items.sorted { ($0.purgeDate ?? .distantPast) > ($1.purgeDate ?? .distantPast) }
+        }
+    }
+
+    /// 並び替え・選択まわりの出し分けを現在の状態に合わせる。
+    /// 「選択する」のピルは管理者で、ゴミ箱が空でないときだけ出す。
+    private func updateControlsVisibility() {
+        let showsSelectRow = isAdminUser && !items.isEmpty
+        selectRowView.isHidden = !showsSelectRow
+        selectRowHeightConstraint?.constant = showsSelectRow ? 38 : 0
+        noteTopConstraint?.constant = showsSelectRow ? 2 : 10
+        bulkBar.isHidden = !isSelectionMode
+        if isSelectionMode {
+            // 操作帯は一覧より前面に出す (組み立て順では一覧が後から
+            // 重なっているため)。
+            view.bringSubviewToFront(bulkBar)
+        }
+        // 選択中は、操作帯の分だけ一覧の下に余白を空ける (Web 版と同じ)。
+        tableView.contentInset.bottom = isSelectionMode ? Self.bulkBarHeight + 10 : 10
+        updateBulkBar()
+    }
+
+    /// 操作帯の表示 (件数と各ボタンの有効・無効) を合わせる。
+    /// 1件も選んでいないときは復元・削除を押せない (Web 版と同じ)。
+    private func updateBulkBar() {
+        bulkCountLabel.text = "\(selectedIDs.count) 件選択中"
+        let hasSelection = !selectedIDs.isEmpty
+        bulkRestoreButton.isEnabled = hasSelection && !isBulkRunning
+        bulkDeleteButton.isEnabled = hasSelection && !isBulkRunning
+        bulkRestoreButton.alpha = bulkRestoreButton.isEnabled ? 1 : 0.5
+        bulkDeleteButton.alpha = bulkDeleteButton.isEnabled ? 1 : 0.5
+        bulkSelectAllButton.isEnabled = !isBulkRunning
+        bulkClearButton.isEnabled = hasSelection && !isBulkRunning
+        bulkClearButton.alpha = bulkClearButton.isEnabled ? 1 : 0.5
+    }
+
+    // MARK: - UITableViewDataSource
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        displayItems.count
+    }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: VideoCell.reuseID, for: indexPath) as! VideoCell
+        let item = displayItems[indexPath.row]
+        cell.configure(with: item.program)
+        cell.configureTrash(
+            notice: "あと \(item.remainingDays) 日で完全に削除されます",
+            // 選択中はカードごとのボタンを隠す (Web 版と同じ)。
+            showsActions: isAdminUser && !isSelectionMode,
+            onRestore: { [weak self] in self?.restore(item: item) },
+            onDelete: { [weak self] in self?.confirmDelete(item: item) }
+        )
+        cell.configureSelection(
+            active: isSelectionMode,
+            selected: selectedIDs.contains(item.program.id))
+        loadThumbnail(for: item.program, at: indexPath)
+        if let channelID = item.program.channel?.id {
+            if let cached = logoCache.object(forKey: channelID as NSString) {
+                cell.setLogo(cached)
+            } else {
+                loadLogo(channelID: channelID, at: indexPath)
+            }
+        }
+        return cell
+    }
+
+    // MARK: - UITableViewDelegate
+
+    /// 選択中は、カードを選ぶと選択の付け外しになる。
+    /// 選択中でないときは今までどおり何もしない (再生画面へは移らない)。
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: false)
+        guard isSelectionMode, displayItems.indices.contains(indexPath.row) else { return }
+        let id = displayItems[indexPath.row].program.id
+        if selectedIDs.contains(id) {
+            selectedIDs.remove(id)
+        } else {
+            selectedIDs.insert(id)
+        }
+        if let cell = tableView.cellForRow(at: indexPath) as? VideoCell {
+            cell.configureSelection(active: true, selected: selectedIDs.contains(id))
+        }
+        updateBulkBar()
+    }
+
+    /// 局ロゴを取ってきて、表示中の行がまだ同じ番組ならその場で反映する
+    /// (録画一覧と同じ方式)。
+    private func loadLogo(channelID: String, at indexPath: IndexPath) {
+        guard !failedLogoIDs.contains(channelID) else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            guard let data = try? await APIClient.shared.fetchChannelLogo(channelID: channelID),
+                  let image = UIImage(data: data) else {
+                self.failedLogoIDs.insert(channelID)
+                return
+            }
+            self.logoCache.setObject(image, forKey: channelID as NSString)
+            if let cell = self.tableView.cellForRow(at: indexPath) as? VideoCell,
+               self.displayItems.indices.contains(indexPath.row),
+               self.displayItems[indexPath.row].program.channel?.id == channelID {
+                cell.setLogo(image)
+            }
+        }
+    }
+
+    private func loadThumbnail(for program: RecordedProgram, at indexPath: IndexPath) {
+        let key = NSNumber(value: program.id)
+        if let cached = thumbnailCache.object(forKey: key) {
+            (tableView.cellForRow(at: indexPath) as? VideoCell)?.setThumbnail(cached)
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            guard let data = try? await APIClient.shared.fetchThumbnail(videoID: program.id),
+                  let image = UIImage(data: data) else { return }
+            self.thumbnailCache.setObject(image, forKey: key)
+            if let cell = self.tableView.cellForRow(at: indexPath) as? VideoCell,
+               self.displayItems.indices.contains(indexPath.row),
+               self.displayItems[indexPath.row].program.id == program.id {
+                cell.setThumbnail(image)
+            }
+        }
+    }
+
+    // MARK: - 復元と完全削除
+
+    /// ゴミ箱から復元する。成功したらその行を取り除く。
+    private func restore(item: TrashItem) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await APIClient.shared.restoreFromTrash(videoID: item.program.id)
+                self.items.removeAll { $0.program.id == item.program.id }
+                self.applyItems()
+            } catch let error as APIError {
+                self.showAlert(title: error.restoreFromTrashFailureMessage, message: nil)
+            } catch {
+                self.showAlert(title: "ゴミ箱から復元できませんでした", message: nil)
+            }
+        }
+    }
+
+    /// 完全削除の確認を出す。Web 版と同じく、まず事前確認を取って
+    /// 管理元と削除対象を確かめる。取れなければ削除自体を中止する。
+    private func confirmDelete(item: TrashItem) {
+        Task { [weak self] in
+            guard let self else { return }
+            let preview: RecordingDeletePreview
+            do {
+                preview = try await APIClient.shared.fetchDeletePreview(videoID: item.program.id)
+            } catch {
+                self.showAlert(
+                    title: "管理元と削除対象を確認できないため、削除を中止しました。", message: nil)
+                return
+            }
+            self.presentDeleteConfirmation(item: item, preview: preview)
+        }
+    }
+
+    private func presentDeleteConfirmation(item: TrashItem, preview: RecordingDeletePreview) {
+        var message = item.program.title
+        if preview.enabled, let plan = preview.plan {
+            message += "\n\n管理元: EPGStation / 録画ID: \(plan.epgstation_id)\n"
+                + "録画本体はEPGStationで削除し、KonomiTVとJellyfinの一覧も更新します。"
+        }
+        message += "\n\nゴミ箱からも消え、元に戻すことはできません。"
+        let alert = UIAlertController(
+            title: "本当に完全に削除しますか？",
+            message: message,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "キャンセル", style: .cancel))
+        alert.addAction(UIAlertAction(title: "完全に削除", style: .destructive) { [weak self] _ in
+            self?.performDelete(item: item, preview: preview)
+        })
+        present(alert, animated: true)
+    }
+
+    /// 完全に削除する。削除には時間がかかることがあるため、実行中は
+    /// 進み具合の表示を出す (Web 版の「削除を開始します」の知らせに相当)。
+    private func performDelete(item: TrashItem, preview: RecordingDeletePreview) {
+        let progress = UIAlertController(title: "削除しています…", message: nil, preferredStyle: .alert)
+        present(progress, animated: true)
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let jellyfinPending = try await APIClient.shared.deleteVideo(
+                    videoID: item.program.id, confirmationToken: preview.confirmation_token)
+                progress.dismiss(animated: true) { [weak self] in
+                    guard let self else { return }
+                    self.items.removeAll { $0.program.id == item.program.id }
+                    self.applyItems()
+                    if jellyfinPending {
+                        self.showAlert(
+                            title: "完全に削除しました",
+                            message: "Jellyfinの一覧更新はバックグラウンドで再試行しています。")
+                    }
+                }
+            } catch let error as APIError {
+                progress.dismiss(animated: true) { [weak self] in
+                    self?.showAlert(title: error.deleteVideoFailureMessage, message: nil)
+                }
+            } catch {
+                progress.dismiss(animated: true) { [weak self] in
+                    self?.showAlert(title: "完全に削除できませんでした", message: nil)
+                }
+            }
+        }
+    }
+
+    // MARK: - 複数選択とまとめて操作
+
+    /// 「選択する／選択を終える」のピルの切り替え。
+    /// まとめて操作の実行中は切り替えない。
+    @objc private func toggleSelectionMode() {
+        guard !isBulkRunning else { return }
+        if isSelectionMode {
+            exitSelectionMode()
+        } else {
+            isSelectionMode = true
+            selectButton.setTitle("選択を終える", for: .normal)
+            updateControlsVisibility()
+            tableView.reloadData()
+        }
+    }
+
+    /// 選択中を終える。選んでいた内容は破棄する。
+    private func exitSelectionMode() {
+        isSelectionMode = false
+        selectedIDs = []
+        selectButton.setTitle("選択する", for: .normal)
+        updateControlsVisibility()
+        tableView.reloadData()
+    }
+
+    @objc private func selectAllItems() {
+        guard !isBulkRunning else { return }
+        selectedIDs = Set(items.map { $0.program.id })
+        tableView.reloadData()
+        updateBulkBar()
+    }
+
+    @objc private func clearSelection() {
+        guard !isBulkRunning else { return }
+        selectedIDs = []
+        tableView.reloadData()
+        updateBulkBar()
+    }
+
+    /// 選んだ分をまとめて復元する。1件ずつのときと同じ受け口を
+    /// 順に使う (Web 版と同じ)。成功分だけ一覧と選択から取り除き、
+    /// 失敗分は残して件数と題名入りの警告を出す。全部成功したら
+    /// 選択中を終える。
+    @objc private func bulkRestore() {
+        guard !isBulkRunning, !selectedIDs.isEmpty else { return }
+        let targets = items.filter { selectedIDs.contains($0.program.id) }
+        guard !targets.isEmpty else { return }
+        isBulkRunning = true
+        updateBulkBar()
+        Task { [weak self] in
+            guard let self else { return }
+            var failed: [TrashItem] = []
+            for item in targets {
+                do {
+                    try await APIClient.shared.restoreFromTrash(videoID: item.program.id)
+                    self.items.removeAll { $0.program.id == item.program.id }
+                    self.selectedIDs.remove(item.program.id)
+                } catch {
+                    failed.append(item)
+                }
+            }
+            self.isBulkRunning = false
+            self.applyItems()
+            if failed.isEmpty {
+                self.exitSelectionMode()
+            } else {
+                self.showAlert(
+                    title: "\(failed.count) 件を復元できませんでした",
+                    message: failed.map { $0.program.title }.joined(separator: "\n"))
+            }
+        }
+    }
+
+    /// 選んだ分をまとめて完全に削除する。まず対象の件数と題名を
+    /// 出して確認し、実行時は項目ごとに事前確認を取ってから
+    /// 削除する (事前確認が取れない項目は削除しない。1件のときと
+    /// 同じ流儀)。一部失敗時は成功分だけ取り除き、失敗分は残して
+    /// 警告を出す。全部成功したら選択中を終える。
+    @objc private func bulkDelete() {
+        guard !isBulkRunning, !selectedIDs.isEmpty else { return }
+        let targets = items.filter { selectedIDs.contains($0.program.id) }
+        guard !targets.isEmpty else { return }
+        let message = "対象: \(targets.count) 件\n"
+            + targets.map { $0.program.title }.joined(separator: "\n")
+            + "\n\nゴミ箱からも消え、元に戻すことはできません。"
+        let alert = UIAlertController(
+            title: "本当に完全に削除しますか？",
+            message: message,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "キャンセル", style: .cancel))
+        alert.addAction(UIAlertAction(title: "完全に削除", style: .destructive) { [weak self] _ in
+            self?.performBulkDelete(targets: targets)
+        })
+        present(alert, animated: true)
+    }
+
+    private func performBulkDelete(targets: [TrashItem]) {
+        guard !isBulkRunning else { return }
+        isBulkRunning = true
+        updateBulkBar()
+        let progress = UIAlertController(title: "削除しています…", message: nil, preferredStyle: .alert)
+        present(progress, animated: true)
+        Task { [weak self] in
+            guard let self else { return }
+            var failed: [TrashItem] = []
+            var jellyfinPending = false
+            for item in targets {
+                guard let preview = try? await APIClient.shared.fetchDeletePreview(
+                    videoID: item.program.id) else {
+                    failed.append(item)
+                    continue
+                }
+                do {
+                    let pending = try await APIClient.shared.deleteVideo(
+                        videoID: item.program.id, confirmationToken: preview.confirmation_token)
+                    jellyfinPending = jellyfinPending || pending
+                    self.items.removeAll { $0.program.id == item.program.id }
+                    self.selectedIDs.remove(item.program.id)
+                } catch {
+                    failed.append(item)
+                }
+            }
+            self.isBulkRunning = false
+            progress.dismiss(animated: true) { [weak self] in
+                guard let self else { return }
+                self.applyItems()
+                if failed.isEmpty {
+                    self.exitSelectionMode()
+                    if jellyfinPending {
+                        self.showAlert(
+                            title: "完全に削除しました",
+                            message: "Jellyfinの一覧更新はバックグラウンドで再試行しています。")
+                    }
+                } else {
+                    self.showAlert(
+                        title: "\(failed.count) 件を完全に削除できませんでした",
+                        message: failed.map { $0.program.title }.joined(separator: "\n"))
+                }
+            }
+        }
+    }
+
+    private func showAlert(title: String, message: String?) {
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+}

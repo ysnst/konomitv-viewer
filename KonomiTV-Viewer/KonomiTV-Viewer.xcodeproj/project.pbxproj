@@ -42,6 +42,17 @@
 		2000000000000000000000AD /* AccountSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000AC /* AccountSettingsViewController.swift */; };
 		2000000000000000000000AF /* LicenseViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000AE /* LicenseViewController.swift */; };
 		2000000000000000000000BA /* WatchedHistoryViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000B9 /* WatchedHistoryViewController.swift */; };
+		2000000000000000000000C5 /* TrashViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000C4 /* TrashViewController.swift */; };
+		2000000000000000000000C7 /* CommentHighlights.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000C6 /* CommentHighlights.swift */; };
+		2000000000000000000000C9 /* ExcitementStripView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000C8 /* ExcitementStripView.swift */; };
+		2000000000000000000000CB /* SceneListViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000CA /* SceneListViewController.swift */; };
+		2000000000000000000000CD /* CommentSearchViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000CC /* CommentSearchViewController.swift */; };
+		2000000000000000000000CF /* FastSeekController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000CE /* FastSeekController.swift */; };
+		2000000000000000000000D1 /* ReservationConditions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000D0 /* ReservationConditions.swift */; };
+		2000000000000000000000D3 /* ReservationConditionsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000D2 /* ReservationConditionsViewController.swift */; };
+		2000000000000000000000D5 /* HighlightReel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000D4 /* HighlightReel.swift */; };
+		2000000000000000000000D7 /* HighlightsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000D6 /* HighlightsViewController.swift */; };
+		2000000000000000000000D9 /* RecordingResultsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000D8 /* RecordingResultsViewController.swift */; };
 		2000000000000000000000B2 /* MobileVLCKit.txt in Resources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000B1 /* MobileVLCKit.txt */; };
 		2000000000000000000000B4 /* libaribcaption.txt in Resources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000B3 /* libaribcaption.txt */; };
 		2000000000000000000000B6 /* FluentUISystemIcons.txt in Resources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000B5 /* FluentUISystemIcons.txt */; };
@@ -93,6 +104,17 @@
 		2000000000000000000000AC /* AccountSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountSettingsViewController.swift; sourceTree = "<group>"; };
 		2000000000000000000000AE /* LicenseViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LicenseViewController.swift; sourceTree = "<group>"; };
 		2000000000000000000000B9 /* WatchedHistoryViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchedHistoryViewController.swift; sourceTree = "<group>"; };
+		2000000000000000000000C4 /* TrashViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrashViewController.swift; sourceTree = "<group>"; };
+		2000000000000000000000C6 /* CommentHighlights.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentHighlights.swift; sourceTree = "<group>"; };
+		2000000000000000000000C8 /* ExcitementStripView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExcitementStripView.swift; sourceTree = "<group>"; };
+		2000000000000000000000CA /* SceneListViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneListViewController.swift; sourceTree = "<group>"; };
+		2000000000000000000000CC /* CommentSearchViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentSearchViewController.swift; sourceTree = "<group>"; };
+		2000000000000000000000CE /* FastSeekController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FastSeekController.swift; sourceTree = "<group>"; };
+		2000000000000000000000D0 /* ReservationConditions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReservationConditions.swift; sourceTree = "<group>"; };
+		2000000000000000000000D2 /* ReservationConditionsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReservationConditionsViewController.swift; sourceTree = "<group>"; };
+		2000000000000000000000D4 /* HighlightReel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightReel.swift; sourceTree = "<group>"; };
+		2000000000000000000000D6 /* HighlightsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightsViewController.swift; sourceTree = "<group>"; };
+		2000000000000000000000D8 /* RecordingResultsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingResultsViewController.swift; sourceTree = "<group>"; };
 		2000000000000000000000B1 /* MobileVLCKit.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = MobileVLCKit.txt; sourceTree = "<group>"; };
 		2000000000000000000000B3 /* libaribcaption.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = libaribcaption.txt; sourceTree = "<group>"; };
 		2000000000000000000000B5 /* FluentUISystemIcons.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = FluentUISystemIcons.txt; sourceTree = "<group>"; };
@@ -187,6 +209,17 @@
 				2000000000000000000000AC /* AccountSettingsViewController.swift */,
 				2000000000000000000000AE /* LicenseViewController.swift */,
 				2000000000000000000000B9 /* WatchedHistoryViewController.swift */,
+				2000000000000000000000C4 /* TrashViewController.swift */,
+				2000000000000000000000C6 /* CommentHighlights.swift */,
+				2000000000000000000000C8 /* ExcitementStripView.swift */,
+				2000000000000000000000CA /* SceneListViewController.swift */,
+				2000000000000000000000CC /* CommentSearchViewController.swift */,
+				2000000000000000000000CE /* FastSeekController.swift */,
+				2000000000000000000000D0 /* ReservationConditions.swift */,
+				2000000000000000000000D2 /* ReservationConditionsViewController.swift */,
+				2000000000000000000000D4 /* HighlightReel.swift */,
+				2000000000000000000000D6 /* HighlightsViewController.swift */,
+				2000000000000000000000D8 /* RecordingResultsViewController.swift */,
 				2000000000000000000000B0 /* Licenses */,
 				200000000000000000000090 /* ReservationListViewController.swift */,
 				200000000000000000000092 /* ReservationDetailViewController.swift */,
@@ -311,6 +344,17 @@
 				2000000000000000000000AD /* AccountSettingsViewController.swift in Sources */,
 				2000000000000000000000AF /* LicenseViewController.swift in Sources */,
 				2000000000000000000000BA /* WatchedHistoryViewController.swift in Sources */,
+				2000000000000000000000C5 /* TrashViewController.swift in Sources */,
+				2000000000000000000000C7 /* CommentHighlights.swift in Sources */,
+				2000000000000000000000C9 /* ExcitementStripView.swift in Sources */,
+				2000000000000000000000CB /* SceneListViewController.swift in Sources */,
+				2000000000000000000000CD /* CommentSearchViewController.swift in Sources */,
+				2000000000000000000000CF /* FastSeekController.swift in Sources */,
+				2000000000000000000000D1 /* ReservationConditions.swift in Sources */,
+				2000000000000000000000D3 /* ReservationConditionsViewController.swift in Sources */,
+				2000000000000000000000D5 /* HighlightReel.swift in Sources */,
+				2000000000000000000000D7 /* HighlightsViewController.swift in Sources */,
+				2000000000000000000000D9 /* RecordingResultsViewController.swift in Sources */,
 				200000000000000000000091 /* ReservationListViewController.swift in Sources */,
 				200000000000000000000093 /* ReservationDetailViewController.swift in Sources */,
 				200000000000000000000095 /* JikkyoCommentOverlay.swift in Sources */,

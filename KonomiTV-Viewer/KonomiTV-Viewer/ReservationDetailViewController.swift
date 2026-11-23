@@ -76,6 +76,9 @@ final class ReservationDetailViewController: UIViewController {
     private var watchButton: RippleButton?
     private var addButton: RippleButton?
     private var deleteButton: RippleButton?
+    private var seriesButton: RippleButton?
+    /// シリーズ予約の作成中フラグ (二重実行の防止)。
+    private var isCreatingSeries = false
 
     /// 予約一覧から開く場合。
     init(reservation: Reservation) {
@@ -438,6 +441,9 @@ final class ReservationDetailViewController: UIViewController {
         contentStack.addArrangedSubview(sizeLabel)
 
         // 有効/無効の切り替え。録画中は切り替えられない (Web 版と同じ)。
+        // 手動予約には録画側に「無効」の状態が無いため、切り替え自体を
+        // 出さず「有効」の固定表示にする (Web 版の予約詳細と同じ)。
+        // 切り替えを出してしまうと、押したときにサーバー側で失敗する。
         let toggleRow = UIStackView()
         toggleRow.axis = .horizontal
         toggleRow.alignment = .center
@@ -454,6 +460,12 @@ final class ReservationDetailViewController: UIViewController {
             recordingLabel.font = .scaledSystemFont(ofSize: 13)
             recordingLabel.textColor = AppPalette.accent
             toggleRow.addArrangedSubview(recordingLabel)
+        } else if reservation.isManualReservation {
+            let enabledLabel = UILabel()
+            enabledLabel.text = "有効"
+            enabledLabel.font = .scaledSystemFont(ofSize: 13)
+            enabledLabel.textColor = AppPalette.metaText
+            toggleRow.addArrangedSubview(enabledLabel)
         } else {
             let toggle = WebToggle()
             toggle.isOn = reservation.record_settings.is_enabled
@@ -479,6 +491,7 @@ final class ReservationDetailViewController: UIViewController {
         watchButton = nil
         addButton = nil
         deleteButton = nil
+        seriesButton = nil
 
         let isLoadingReservation = reservation == nil && reservationID != nil
         guard !isPast, !isLoadingReservation else {
@@ -512,6 +525,20 @@ final class ReservationDetailViewController: UIViewController {
             button.isEnabled = backendIsEDCB == true && !isWorking
             button.alpha = button.isEnabled ? 1 : 0.5
             addButton = button
+            actionsStack.addArrangedSubview(button)
+        }
+        // 「シリーズ予約」(拡張版だけ)。Web 版の予約詳細と同じく、
+        // 並びの最後に地のないボタンで出す。押すと、この番組の名前から
+        // 作ったキーワード + 同じチャンネルの自動予約の条件が作られ、
+        // 以後は自動で予約される。
+        if AppEdition.isHousehold {
+            let button = makeActionButton(
+                title: "シリーズ予約", systemImage: "calendar.badge.plus", filled: false,
+                action: #selector(seriesTapped))
+            // 土台が EDCB でない間は押せない (Web 版と同じ)。
+            button.isEnabled = backendIsEDCB == true && !isWorking && !isCreatingSeries
+            button.alpha = button.isEnabled ? 1 : 0.5
+            seriesButton = button
             actionsStack.addArrangedSubview(button)
         }
         setActionsBarVisible(true)
@@ -645,8 +672,63 @@ final class ReservationDetailViewController: UIViewController {
         }
     }
 
+    /// 「シリーズ予約」が押されたら、この番組の名前から作った
+    /// キーワード + 同じチャンネルの自動予約の条件を作る
+    /// (Web 版の予約詳細の「シリーズ予約」と同じ手順)。
+    /// 使う録画設定は、この予約の設定 (予約がある場合) か既定の設定
+    /// (Web 版は編集中の設定を優先するが、この画面には録画設定の
+    /// 編集が無いため、予約の設定から取る)。
+    @objc private func seriesTapped() {
+        guard !isCreatingSeries, !isWorking else { return }
+        isCreatingSeries = true
+        rebuildContent()
+        let source = program
+        let channelInfo = channel
+        let existingSettings = reservation?.record_settings
+        Task { [weak self] in
+            guard let self else { return }
+            let recordSettings: RecordSettings
+            if let existingSettings {
+                recordSettings = existingSettings
+            } else {
+                recordSettings = await APIClient.shared.fetchDefaultRecordSettings()
+            }
+            let result = await ReservationConditions.addSeriesReservation(
+                title: source.title, seriesTitle: nil,
+                networkID: source.network_id, serviceID: source.service_id,
+                transportStreamID: channelInfo.transport_stream_id,
+                recordSettings: recordSettings)
+            self.isCreatingSeries = false
+            self.rebuildContent()
+            switch result {
+            case .created(let keyword):
+                self.showAlert(
+                    title: "シリーズ予約を作成しました",
+                    message: "以後の「\(keyword)」は自動で予約されます。")
+            case .duplicate:
+                self.showAlert(
+                    title: "すでに作成されています",
+                    message: "このシリーズの自動予約はすでに作成されています。")
+            case .failed(let error):
+                self.showAlert(
+                    title: "シリーズ予約を作成できませんでした",
+                    message: Self.message(from: error, fallback: "キーワード自動予約条件の追加に失敗しました。"))
+            }
+        }
+    }
+
     @objc private func toggleChanged(_ sender: WebToggle) {
         guard let reservation, !isWorking else { return }
+        // 手動予約の無効化は録画側に対応する状態が無いため、送らずに
+        // 案内する (Web 版の保存時の守りと同じ)。切り替え自体は手動予約
+        // では出していないため、通常はここへは来ない。
+        if reservation.isManualReservation, !sender.isOn,
+           reservation.record_settings.is_enabled {
+            sender.isOn = true
+            showAlert(title: "手動予約は無効化できません",
+                      message: "予約を取りやめる場合は「予約を削除」を使ってください。")
+            return
+        }
         isWorking = true
         var settings = reservation.record_settings
         settings.is_enabled = sender.isOn

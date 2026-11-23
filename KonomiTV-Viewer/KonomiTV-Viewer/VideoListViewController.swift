@@ -25,6 +25,9 @@ enum AppPalette {
     static let warning = UIColor(red: 0xFB / 255, green: 0x8C / 255, blue: 0x00 / 255, alpha: 1)
     /// 録画中ドットの色 (Web 版の #FF4444)。
     static let recordingDot = UIColor(red: 0xFF / 255, green: 0x44 / 255, blue: 0x44 / 255, alpha: 1)
+    /// 警告・完全削除の色 (テーマの error: #FF5252)。ゴミ箱の
+    /// 「あと○日で完全に削除されます」の文字と「完全に削除」ボタンで使う。
+    static let error = UIColor(red: 0xFF / 255, green: 0x52 / 255, blue: 0x52 / 255, alpha: 1)
     /// サムネイルやロゴが読み込まれるまでの地 (gray: #66514C)。
     static let placeholder = UIColor(red: 0x66 / 255, green: 0x51 / 255, blue: 0x4C / 255, alpha: 1)
     /// 入力欄の枠線 (background-lighten-3: #4C3C38)。設定画面で使う。
@@ -63,6 +66,13 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     private let storageRowView = UIView()
     private let storageIconView = UIImageView()
     private let storageLabel = UILabel()
+    /// 録画結果への入口 (Web 版の「ビデオをみる」先頭の左側のボタンに
+    /// 相当)。容量行の左端に置く。拡張版だけに出すため、容量情報が
+    /// 取れていないときでも拡張版では容量行自体を出す。
+    private let recordingResultsButton = RippleButton()
+    /// 容量行を出すかどうか。容量が取れたとき、または拡張版
+    /// (録画結果の入口を出すため) のとき。
+    private var showsStorageRow: Bool { storageStatus != nil || AppEdition.isHousehold }
     /// 取得できた容量情報。nil の間は容量行を出さない。
     private var storageStatus: StorageStatus?
     /// 容量情報の定期取得 (Web 版と同じ30秒間隔) 用。
@@ -74,6 +84,18 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     private let filterButton = RippleButton()
     /// フィルタボタン右上の、ON になっているフィルタの件数の印。
     private let filterBadgeLabel = UILabel()
+    /// ゴミ箱への入口の行 (Web 版の録画番組一覧にある「ゴミ箱を開く」の
+    /// リンクに相当)。拡張版かつ管理者でログインしているときだけ出す。
+    private let trashLinkRowView = UIView()
+    private let trashLinkButton = RippleButton()
+    /// ログイン中の利用者が管理者かどうか。ゴミ箱の入口と、長押し
+    /// メニューの「ゴミ箱に移動する」の出し分けに使う (Web 版と同じく、
+    /// ゴミ箱まわりは管理者だけに出す)。
+    private var isAdminUser = false
+    /// ゴミ箱の入口の行を出すかどうか。
+    private var showsTrashLink: Bool { AppEdition.isHousehold && isAdminUser }
+    /// ゴミ箱の入口の行の高さ (出すときだけ)。
+    private static let trashLinkRowHeight: CGFloat = 26
     /// 一覧の上に置くページ送り (見出し行の下に固定表示)。
     private let topPaginationView = PaginationView()
     private let tableView = UITableView(frame: .zero, style: .plain)
@@ -98,6 +120,33 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     private var sortOrder = "desc"
     /// 起動直後の最初の読み込みで復元するページ。復元が済んだら nil にする。
     private var pendingRestorePage: Int?
+
+    // MARK: スクロール位置の保存と復元
+
+    /// スクロール位置の目印: 画面の上端付近に見えている録画の ID と、
+    /// その録画の上端から画面の上端までの距離 (Web 版と同じ持ち方)。
+    /// 目印がどのページのものかも一緒に持つ。
+    private var scrollMarkerProgramID: Int?
+    private var scrollMarkerOffset: CGFloat = 0
+    private var scrollMarkerPage: Int?
+    /// 目印が使えないときのための、ピクセルの控え。
+    private var scrollFallbackTop: CGFloat = 0
+    /// 起動時に読み戻した復元待ちのスクロール位置と、その保存時点の
+    /// 表示条件 (ページ・並び順・両フィルタ)。最初の読み込みの後に
+    /// 条件が一致するときだけ戻す。
+    private var pendingScrollRestore: (programID: Int, offset: CGFloat, fallbackTop: CGFloat,
+                                       page: Int, order: String,
+                                       unwatchedOnly: Bool, protectedOnly: Bool)?
+    /// スクロール位置の保存が有効か。最初の読み込みと復元が終わるまで
+    /// 無効にしておき、読み込み中の先頭への移動で保存済みの位置を
+    /// 潰さないようにする。
+    private var scrollSaveEnabled = false
+    /// 復元の合わせ直しが動いているか (その間は保存しない)。
+    private var isScrollRestoring = false
+    private var scrollRestoreTimer: Timer?
+    private var scrollRestoreTicks = 0
+    /// スクロール中の保存の間引き用。
+    private var lastScrollSaveAt: TimeInterval = 0
     /// フィルタが1つでも有効か。
     private var isFilterActive: Bool { unwatchedOnly || protectedOnly }
     /// フィルタ中に全件取得して絞り込んだ結果。ページ表示はここから切り出す。
@@ -148,6 +197,23 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         storageLabel.numberOfLines = 1
         storageLabel.lineBreakMode = .byTruncatingTail
         storageRowView.addSubview(storageLabel)
+        // 録画結果の入口は容量行の左端に置く (Web 版の並びと同じ:
+        // 左に録画結果、右に容量)。文字は容量行に合わせて 13.5px。
+        // 絵は Web 版のクリップボードの印に近い標準アイコンで近似する。
+        recordingResultsButton.setTitle("録画結果", for: .normal)
+        recordingResultsButton.setTitleColor(AppPalette.text.withAlphaComponent(0.85), for: .normal)
+        recordingResultsButton.titleLabel?.font = .scaledSystemFont(ofSize: 13.5)
+        recordingResultsButton.setImage(
+            UIImage(systemName: "doc.on.clipboard",
+                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 13))?
+                .withTintColor(AppPalette.text.withAlphaComponent(0.85), renderingMode: .alwaysOriginal),
+            for: .normal)
+        recordingResultsButton.imageEdgeInsets = UIEdgeInsets(top: 0, left: -3, bottom: 0, right: 3)
+        recordingResultsButton.titleEdgeInsets = UIEdgeInsets(top: 0, left: 3, bottom: 0, right: -3)
+        recordingResultsButton.contentEdgeInsets = UIEdgeInsets(top: 2, left: 6, bottom: 2, right: 6)
+        recordingResultsButton.addTarget(self, action: #selector(openRecordingResults), for: .touchUpInside)
+        recordingResultsButton.isHidden = !AppEdition.isHousehold
+        storageRowView.addSubview(recordingResultsButton)
 
         // 見出し行。Web 版と同じく「録画番組一覧」の右に全件数を出し、
         // 右端にフィルタのボタンを置く。見出しの横に Web 版にある戻る印 (＜) は、
@@ -189,6 +255,22 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         filterBadgeLabel.isHidden = true
         filterBadgeLabel.translatesAutoresizingMaskIntoConstraints = false
         listHeaderView.addSubview(filterBadgeLabel)
+        // ゴミ箱への入口。Web 版と同じく右寄せの小さなリンクで、
+        // アイコン (アーカイブの箱) +「ゴミ箱を開く」、文字 14px。
+        trashLinkButton.setTitle("ゴミ箱を開く", for: .normal)
+        trashLinkButton.setTitleColor(AppPalette.text.withAlphaComponent(0.85), for: .normal)
+        trashLinkButton.titleLabel?.font = .scaledSystemFont(ofSize: 14)
+        let trashSymbol = UIImage.SymbolConfiguration(pointSize: 13)
+        trashLinkButton.setImage(
+            UIImage(systemName: "archivebox", withConfiguration: trashSymbol)?
+                .withTintColor(AppPalette.text.withAlphaComponent(0.85), renderingMode: .alwaysOriginal),
+            for: .normal)
+        trashLinkButton.imageEdgeInsets = UIEdgeInsets(top: 0, left: -3, bottom: 0, right: 3)
+        trashLinkButton.titleEdgeInsets = UIEdgeInsets(top: 0, left: 3, bottom: 0, right: -3)
+        trashLinkButton.contentEdgeInsets = UIEdgeInsets(top: 2, left: 6, bottom: 2, right: 6)
+        trashLinkButton.addTarget(self, action: #selector(openTrash), for: .touchUpInside)
+        trashLinkRowView.addSubview(trashLinkButton)
+        trashLinkRowView.isHidden = true
         // 前回保存した表示状態 (ページ・並び順・両フィルタ) を復元する。
         restoreViewState()
         updateFilterButtonAppearance()
@@ -262,9 +344,11 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         updatePagination()
     }
 
-    /// 先頭まわり一式の高さ。容量行は取得できたときだけ 22 (文字の行 18 + 下の余白 4)。
+    /// 先頭まわり一式の高さ。容量行は取得できたときだけ 22 (文字の行 18 + 下の余白 4)、
+    /// ゴミ箱の入口の行は出すときだけ 26。
     private var headContainerHeight: CGFloat {
-        SPHeaderView.height + (storageStatus != nil ? 22 : 0) + 44 + PaginationView.preferredHeight
+        SPHeaderView.height + (showsStorageRow ? 22 : 0)
+            + (showsTrashLink ? Self.trashLinkRowHeight : 0) + 44 + PaginationView.preferredHeight
     }
 
     /// 先頭まわり一式をテーブルの先頭に付ける。テーブルの先頭に付けたビューは
@@ -273,29 +357,85 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     private func installHeadContainer() {
         headContainerView.addSubview(headerView)
         headContainerView.addSubview(storageRowView)
+        headContainerView.addSubview(trashLinkRowView)
         refreshHeadContainer()
     }
 
     /// 先頭まわり一式の並びと大きさを決め直して、テーブルへ付け直す。
-    /// 並びは Web 版と同じ ロゴ帯 → 容量行 → 見出し行 → 上のページ送り。
+    /// 並びは Web 版と同じ ロゴ帯 → 容量行 → 見出し行 → 上のページ送りで、
+    /// ゴミ箱の入口の行は Web 版の置き場所 (一覧の見出しの上、右寄せ) に
+    /// 合わせて容量行と見出し行の間に入れる。
     private func refreshHeadContainer() {
         let width = tableView.bounds.width
-        let storageHeight: CGFloat = storageStatus != nil ? 22 : 0
+        let storageHeight: CGFloat = showsStorageRow ? 22 : 0
         headerView.frame = CGRect(x: 0, y: 0, width: width, height: SPHeaderView.height)
         storageRowView.frame = CGRect(x: 0, y: SPHeaderView.height, width: width, height: storageHeight)
+        // 録画結果の入口は容量行の左端 (左に 8px)。容量の表示は右寄せで、
+        // 容量が取れていないときは容量側だけ隠す。
+        if AppEdition.isHousehold {
+            recordingResultsButton.sizeToFit()
+            let buttonWidth = recordingResultsButton.frame.width
+            recordingResultsButton.frame = CGRect(
+                x: 8, y: 0, width: buttonWidth, height: storageHeight)
+        }
+        storageIconView.isHidden = storageStatus == nil
+        storageLabel.isHidden = storageStatus == nil
+        // ゴミ箱の入口の行。ボタンは右寄せで、右端は容量行に合わせる (右に 8px)。
+        let trashHeight: CGFloat = showsTrashLink ? Self.trashLinkRowHeight : 0
+        trashLinkRowView.frame = CGRect(
+            x: 0, y: SPHeaderView.height + storageHeight, width: width, height: trashHeight)
+        trashLinkRowView.isHidden = !showsTrashLink
+        if showsTrashLink {
+            trashLinkButton.sizeToFit()
+            let buttonWidth = trashLinkButton.frame.width
+            trashLinkButton.frame = CGRect(
+                x: width - 8 - buttonWidth, y: 0, width: buttonWidth, height: trashHeight)
+        }
         // 容量行の中身は右寄せ (Web 版と同じ)。右端はカードの余白 (8px) に合わせ、
         // アイコン (16px) と文字の間は 6px。
         storageLabel.sizeToFit()
         let labelWidth = min(storageLabel.frame.width, max(0, width - 8 - 16 - 6 - 8))
         storageLabel.frame = CGRect(x: width - 8 - labelWidth, y: 0, width: labelWidth, height: 18)
         storageIconView.frame = CGRect(x: width - 8 - labelWidth - 6 - 16, y: 1, width: 16, height: 16)
-        storageRowView.isHidden = storageStatus == nil
-        let listHeaderY = SPHeaderView.height + storageHeight
+        storageRowView.isHidden = !showsStorageRow
+        let listHeaderY = SPHeaderView.height + storageHeight + trashHeight
         listHeaderView.frame = CGRect(x: 0, y: listHeaderY, width: width, height: 44)
         topPaginationView.frame = CGRect(
             x: 0, y: listHeaderY + 44, width: width, height: PaginationView.preferredHeight)
         headContainerView.frame = CGRect(x: 0, y: 0, width: width, height: headContainerHeight)
         tableView.tableHeaderView = headContainerView
+    }
+
+    /// 管理者かどうかを取り直す。ゴミ箱まわり (改造サーバー前提の機能) の
+    /// 出し分けに使うため、拡張版でログインしているときだけ通信する。
+    /// 変わっていたら先頭まわりを組み直して、入口の行の出し隠しを反映する。
+    private func refreshAdminState() {
+        guard AppEdition.isHousehold, SettingsStore.shared.isLoggedIn else {
+            if isAdminUser {
+                isAdminUser = false
+                refreshHeadContainer()
+            }
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            let user = try? await APIClient.shared.fetchCurrentUser()
+            let isAdmin = user?.is_admin ?? false
+            if isAdmin != self.isAdminUser {
+                self.isAdminUser = isAdmin
+                self.refreshHeadContainer()
+            }
+        }
+    }
+
+    /// ゴミ箱の画面を開く。
+    @objc private func openTrash() {
+        navigationController?.pushViewController(TrashViewController(), animated: true)
+    }
+
+    /// 録画結果一覧の画面を開く (拡張版だけ)。
+    @objc private func openRecordingResults() {
+        navigationController?.pushViewController(RecordingResultsViewController(), animated: true)
     }
 
     /// 容量情報を取り直して容量行に反映する。取得できないときは Web 版と同じく
@@ -373,6 +513,8 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         if programs.isEmpty || current != loadedBaseURLString {
             refresh()
         }
+        // ゴミ箱まわりの出し分けのため、管理者かどうかも開くたびに取り直す。
+        refreshAdminState()
         // 容量情報は開くたびに取り直し、開いている間は Web 版と同じ30秒間隔で更新する。
         refreshStorageStatus()
         storageTimer?.invalidate()
@@ -387,6 +529,15 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         navigationController?.setNavigationBarHidden(false, animated: animated)
         storageTimer?.invalidate()
         storageTimer = nil
+        // 離れる前に、いまのスクロール位置を目印として保存する
+        // (Web 版の画面を離れるときの保存と同じ)。
+        scrollRestoreTimer?.invalidate()
+        scrollRestoreTimer = nil
+        isScrollRestoring = false
+        if scrollSaveEnabled {
+            captureScrollMarker()
+            saveViewState()
+        }
     }
 
     @objc private func refresh() {
@@ -451,6 +602,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                     self.programs = response.recorded_programs
                     self.applyLoadedPage()
                     self.saveViewState()
+                    self.restoreScrollPositionIfNeeded()
                 } catch {
                     if self.programs.isEmpty {
                         self.statusLabel.text = "読み込めませんでした。\n接続先とネットワークを確認してください。\n(\(error.localizedDescription))"
@@ -488,6 +640,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                 self.currentPage = min(max(targetPage, 1), self.totalPages)
                 self.showFilteredPage()
                 self.saveViewState()
+                self.restoreScrollPositionIfNeeded()
             } catch {
                 if self.programs.isEmpty {
                     self.statusLabel.text = "読み込めませんでした。\n接続先とネットワークを確認してください。\n(\(error.localizedDescription))"
@@ -539,8 +692,9 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     /// フィルタボタンのメニューを、いまの状態に合わせて作り直す。
     /// 中身は Web 版のスマホ縦のメニューと同じ並び:
     /// 未視聴のみ／保護中のみ (トグル) → 区切り → 新しい順／古い順 (並び替え)。
-    /// 「今日のハイライト」は絞り込みではなく別機能のダイアログなので、
-    /// 今回は入れていない (足すときは区切りの下に1段追加する)。
+    /// 拡張版ではさらに区切りの下に「今日のハイライト」を足す
+    /// (Web 版では録画一覧の見出し横のチップボタンだが、アプリでは
+    /// このメニューに寄せる。絞り込みではなく別の画面が開く)。
     private func makeFilterMenu() -> UIMenu {
         let unwatchedAction = UIAction(
             title: "未視聴のみ",
@@ -574,10 +728,33 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         let filterActions: [UIAction] = AppEdition.isHousehold
             ? [unwatchedAction, protectedAction]
             : [unwatchedAction]
-        return UIMenu(children: [
+        var groups: [UIMenuElement] = [
             UIMenu(options: .displayInline, children: filterActions),
             UIMenu(options: .displayInline, children: [newestAction, oldestAction]),
-        ])
+        ]
+        // 「今日のハイライト」は拡張版だけ (改造サーバー前提の機能)。
+        if AppEdition.isHousehold {
+            let highlightsAction = UIAction(
+                title: "今日のハイライト",
+                image: UIImage(systemName: "flame")
+            ) { [weak self] _ in
+                self?.showHighlights()
+            }
+            groups.append(UIMenu(options: .displayInline, children: [highlightsAction]))
+        }
+        return UIMenu(children: groups)
+    }
+
+    /// 「今日のハイライト」の画面を開く。再生が始まったら、
+    /// 最初の区間の録画の再生画面へ移る (続きの区間は再生画面側が
+    /// 順に進める)。
+    private func showHighlights() {
+        let highlights = HighlightsViewController()
+        highlights.onStartPlayback = { [weak self] program in
+            self?.navigationController?.pushViewController(
+                PlayerViewController(program: program), animated: true)
+        }
+        present(highlights, animated: true)
     }
 
     /// 「未視聴のみ」フィルタの切り替え。変えたら1ページ目に戻る。
@@ -643,17 +820,27 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     }
 
     private func saveViewState(page: Int) {
-        UserDefaults.standard.set([
+        var state: [String: Any] = [
             "page": page,
             "order": sortOrder,
             "unwatched_only": unwatchedOnly,
             "protected_only": protectedOnly,
-        ], forKey: Self.viewStateKey)
+        ]
+        // スクロール位置は、そのページで取れた目印があるときだけ
+        // 一緒に保存する (別のページの目印を持ち越さないため)。
+        if let markerID = scrollMarkerProgramID, scrollMarkerPage == page {
+            state["scroll_program_id"] = markerID
+            state["scroll_offset"] = Double(scrollMarkerOffset)
+            state["scroll_top"] = Double(scrollFallbackTop)
+        }
+        UserDefaults.standard.set(state, forKey: Self.viewStateKey)
     }
 
     /// 保存しておいた表示状態を読み戻す。最初の読み込みは、保存ページから始める。
-    /// スクロール位置は Web 版では目印つきで保存するが、アプリは再生画面から
-    /// 戻っても一覧を作り直さない作りで位置がそのまま保たれるため、保存しない。
+    /// スクロール位置 (目印の録画とずれ、ピクセルの控え) も読み戻し、
+    /// 最初の読み込みの後に条件が一致すれば戻す (Web 版と同じ)。
+    /// アプリは再生画面から戻っても一覧を作り直さないため、戻す場面は
+    /// 起動し直したときと読み直したときになる。
     private func restoreViewState() {
         guard let state = UserDefaults.standard.dictionary(forKey: Self.viewStateKey) else { return }
         if let order = state["order"] as? String, order == "desc" || order == "asc" {
@@ -665,6 +852,98 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         if let page = state["page"] as? Int, page > 1 {
             pendingRestorePage = page
         }
+        if let markerID = state["scroll_program_id"] as? Int {
+            pendingScrollRestore = (
+                programID: markerID,
+                offset: CGFloat((state["scroll_offset"] as? NSNumber)?.doubleValue ?? 0),
+                fallbackTop: CGFloat((state["scroll_top"] as? NSNumber)?.doubleValue ?? 0),
+                page: state["page"] as? Int ?? 1,
+                order: sortOrder,
+                unwatchedOnly: unwatchedOnly,
+                protectedOnly: protectedOnly)
+        }
+    }
+
+    // MARK: - スクロール位置の保存と復元
+
+    /// いまのスクロール位置を目印として取り込む (画面の上端付近に
+    /// 見えている先頭の録画と、その上端からのずれ)。
+    private func captureScrollMarker() {
+        guard let first = tableView.indexPathsForVisibleRows?.first,
+              programs.indices.contains(first.row) else { return }
+        let rowTop = tableView.rectForRow(at: first).origin.y
+        scrollMarkerProgramID = programs[first.row].id
+        scrollMarkerOffset = tableView.contentOffset.y - rowTop
+        scrollMarkerPage = currentPage
+        scrollFallbackTop = tableView.contentOffset.y
+    }
+
+    /// スクロールに合わせて目印を取り直して保存する (間引きつき)。
+    /// 読み込み中と復元の合わせ直し中は保存しない。
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard scrollView === tableView, scrollSaveEnabled, !isScrollRestoring else { return }
+        let now = Date().timeIntervalSince1970
+        guard now - lastScrollSaveAt >= 0.25 else { return }
+        lastScrollSaveAt = now
+        captureScrollMarker()
+        saveViewState()
+    }
+
+    /// 利用者がスクロールを始めたら、復元の合わせ直しは取り消す。
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        guard scrollView === tableView, isScrollRestoring else { return }
+        scrollRestoreTimer?.invalidate()
+        scrollRestoreTimer = nil
+        isScrollRestoring = false
+    }
+
+    /// 最初の読み込みの後、保存しておいたスクロール位置へ戻す。
+    /// ページ・並び順・絞り込みが保存時点と一致するときだけ戻し、
+    /// サムネイルの高さが落ち着くまで約1.5秒の間、少しずつ
+    /// 合わせ直す (Web 版と同じ)。目印の録画が見つからなければ
+    /// ピクセルの控えで戻す。
+    private func restoreScrollPositionIfNeeded() {
+        scrollSaveEnabled = true
+        guard let pending = pendingScrollRestore else { return }
+        pendingScrollRestore = nil
+        guard pending.page == currentPage, pending.order == sortOrder,
+              pending.unwatchedOnly == unwatchedOnly,
+              pending.protectedOnly == protectedOnly else { return }
+        isScrollRestoring = true
+        applyScrollRestore(pending)
+        scrollRestoreTicks = 0
+        scrollRestoreTimer?.invalidate()
+        scrollRestoreTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            self.scrollRestoreTicks += 1
+            self.applyScrollRestore(pending)
+            if self.scrollRestoreTicks >= 15 {
+                timer.invalidate()
+                self.scrollRestoreTimer = nil
+                self.isScrollRestoring = false
+            }
+        }
+    }
+
+    /// 復元先の位置へ実際に送る (目印の録画の上端 + ずれ、
+    /// 無ければピクセルの控え。どちらも収まる範囲に丸める)。
+    private func applyScrollRestore(
+        _ pending: (programID: Int, offset: CGFloat, fallbackTop: CGFloat,
+                    page: Int, order: String, unwatchedOnly: Bool, protectedOnly: Bool)
+    ) {
+        var target: CGFloat?
+        if let row = programs.firstIndex(where: { $0.id == pending.programID }) {
+            target = tableView.rectForRow(at: IndexPath(row: row, section: 0)).origin.y + pending.offset
+        } else if pending.fallbackTop > 0 {
+            target = pending.fallbackTop
+        }
+        guard let target else { return }
+        let maxY = max(tableView.contentSize.height - tableView.bounds.height, 0)
+        tableView.setContentOffset(
+            CGPoint(x: 0, y: min(max(target, 0), maxY)), animated: false)
     }
 
     /// フィルタの判定 (Web 版の物差し)。ON の条件はすべて満たすものだけ残す (AND)。
@@ -750,13 +1029,16 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     }
 
     /// 長押しメニュー。「視聴済みにする」と「保護する／外す」を出す
-    /// (保護の項目は拡張版だけ)。
+    /// (保護の項目は拡張版だけ)。「ゴミ箱に移動する」は Web 版のカードの
+    /// メニューと同じく、拡張版かつ管理者のときだけ出し、録画中と
+    /// 保護中は押せなくする。
     func tableView(
         _ tableView: UITableView,
         contextMenuConfigurationForRowAt indexPath: IndexPath,
         point: CGPoint
     ) -> UIContextMenuConfiguration? {
         let program = programs[indexPath.row]
+        let isAdmin = isAdminUser
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             var actions: [UIMenuElement] = []
             if !program.isRecording, (program.watched_ratio ?? 0) < 1 {
@@ -775,6 +1057,20 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                 ) { _ in
                     self?.toggleProtection(program: program)
                 })
+            }
+            if AppEdition.isHousehold, isAdmin {
+                let trashAction = UIAction(
+                    title: "ゴミ箱に移動する",
+                    image: UIImage(systemName: "archivebox")
+                ) { _ in
+                    self?.moveToTrash(program: program)
+                }
+                // 録画中と保護中は Web 版と同じく押せなくする
+                // (サーバー側でも録画中は 409 で拒否される)。
+                if program.isRecording || program.isProtected {
+                    trashAction.attributes.insert(.disabled)
+                }
+                actions.append(trashAction)
             }
             return UIMenu(children: actions)
         }
@@ -818,6 +1114,38 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                 self.showAlert(title: error.protectionFailureMessage, message: nil)
             } catch {
                 self.showAlert(title: "保護を切り替えられませんでした", message: nil)
+            }
+        }
+    }
+
+    /// 録画をゴミ箱へ移動する。Web 版と同じく、実行前に確認を出す。
+    /// ファイル自体は削除されず、保持期間内はゴミ箱から復元できる。
+    private func moveToTrash(program: RecordedProgram) {
+        let alert = UIAlertController(
+            title: "ゴミ箱に移動しますか？",
+            message: "\(program.title)\n\n"
+                + "一覧や検索から隠します。ファイル自体は削除されず、保持期間内はゴミ箱から復元できます。\n"
+                + "期間を過ぎると自動的に完全に削除されます。",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "キャンセル", style: .cancel))
+        alert.addAction(UIAlertAction(title: "ゴミ箱に移動", style: .default) { [weak self] _ in
+            self?.performMoveToTrash(program: program)
+        })
+        present(alert, animated: true)
+    }
+
+    private func performMoveToTrash(program: RecordedProgram) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await APIClient.shared.moveToTrash(videoID: program.id)
+                // ゴミ箱へ移した録画は一覧から消えるため、読み直す。
+                self.refresh()
+            } catch let error as APIError {
+                self.showAlert(title: error.moveToTrashFailureMessage, message: nil)
+            } catch {
+                self.showAlert(title: "ゴミ箱に移動できませんでした", message: nil)
             }
         }
     }
@@ -1005,6 +1333,22 @@ final class VideoCell: UITableViewCell {
     private let unwatchedBadge = BadgeLabel()
     private let progressView = WatchedProgressView()
     private var unwatchedBottomConstraint: NSLayoutConstraint?
+    /// ゴミ箱の画面だけで出す追加の行 (「あと○日で完全に削除されます」)。
+    /// 通常の一覧では隠したままで、見た目には影響しない。
+    private let noticeLabel = UILabel()
+    /// ゴミ箱の画面だけで出す操作の行 (復元する／完全に削除のボタン)。
+    /// 通常の一覧では隠したままで、見た目には影響しない。
+    private let actionRow = UIStackView()
+    private let restoreButton = RippleButton()
+    private let deleteButton = RippleButton()
+    /// ゴミ箱の操作ボタンを押したときの受け先。再利用時に外す。
+    private var onTrashRestore: (() -> Void)?
+    private var onTrashDelete: (() -> Void)?
+    /// ゴミ箱の複数選択のときにカードの左上に出す選択の印
+    /// (Web 版のチェックボックスに相当)。通常の一覧と、選択中でない
+    /// ゴミ箱では隠したまま。
+    private let selectionMarkView = UIView()
+    private let selectionCheckView = UIImageView()
     /// 押したときの波紋 (共通部品)。本家 Web 版のカードと同じく、
     /// カード全体を対象に、触れた位置から広げる。
     private let ripple = RippleSurface()
@@ -1085,19 +1429,77 @@ final class VideoCell: UITableViewCell {
         metaStack.spacing = 1
         metaStack.translatesAutoresizingMaskIntoConstraints = false
 
+        // ゴミ箱用の追加行 (通常の一覧では両方とも隠したまま)。
+        // 日数の行は Web 版のゴミ箱と同じく error 色の文字。
+        noticeLabel.font = .scaledSystemFont(ofSize: 11.5)
+        noticeLabel.textColor = AppPalette.error
+        noticeLabel.numberOfLines = 1
+        noticeLabel.lineBreakMode = .byTruncatingTail
+        noticeLabel.isHidden = true
+        // 操作の行は右寄せで、Web 版のゴミ箱のボタン (小さいボタン2つ) に
+        // 合わせる。復元は枠線だけ、完全削除は error 色で塗る。
+        restoreButton.setTitle("復元する", for: .normal)
+        restoreButton.setTitleColor(AppPalette.text, for: .normal)
+        restoreButton.titleLabel?.font = .scaledSystemFont(ofSize: 13, weight: .semibold)
+        restoreButton.contentEdgeInsets = UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
+        restoreButton.layer.cornerRadius = 4
+        restoreButton.layer.borderWidth = 1
+        restoreButton.layer.borderColor = AppPalette.fieldBorder.cgColor
+        restoreButton.addTarget(self, action: #selector(trashRestoreTapped), for: .touchUpInside)
+        deleteButton.setTitle("完全に削除", for: .normal)
+        deleteButton.setTitleColor(.white, for: .normal)
+        deleteButton.titleLabel?.font = .scaledSystemFont(ofSize: 13, weight: .semibold)
+        deleteButton.contentEdgeInsets = UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
+        deleteButton.layer.cornerRadius = 4
+        deleteButton.backgroundColor = AppPalette.error
+        deleteButton.addTarget(self, action: #selector(trashDeleteTapped), for: .touchUpInside)
+        let actionSpacer = UIView()
+        actionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        actionRow.addArrangedSubview(actionSpacer)
+        actionRow.addArrangedSubview(restoreButton)
+        actionRow.addArrangedSubview(deleteButton)
+        actionRow.axis = .horizontal
+        actionRow.alignment = .center
+        actionRow.spacing = 8
+        actionRow.isHidden = true
+
         // Web 版の並び: 題名 → 局名行 → 時刻 → 説明文。
         // 間隔は題名の下 4px (meta の margin-top)、説明の上 2.5px。
+        // ゴミ箱用の行は説明文の下に続ける (隠れているときは間隔も消える)。
         let textStack = textStackView
         textStack.addArrangedSubview(titleLabel)
         textStack.addArrangedSubview(metaStack)
         textStack.addArrangedSubview(descriptionLabel)
+        textStack.addArrangedSubview(noticeLabel)
+        textStack.addArrangedSubview(actionRow)
         textStack.axis = .vertical
         textStack.translatesAutoresizingMaskIntoConstraints = false
         textStack.setCustomSpacing(4, after: titleLabel)
         textStack.setCustomSpacing(2.5, after: metaStack)
+        textStack.setCustomSpacing(4, after: descriptionLabel)
+        textStack.setCustomSpacing(8, after: noticeLabel)
+
+        // 選択の印はカードの左上に重ねる丸 (26px)。選ばれているときは
+        // アクセント色で塗って白いチェックを出し、そうでないときは
+        // 黒の半透明に白い枠だけにする。
+        selectionMarkView.backgroundColor = UIColor.black.withAlphaComponent(0.45)
+        selectionMarkView.layer.cornerRadius = 13
+        selectionMarkView.layer.borderWidth = 1.5
+        selectionMarkView.layer.borderColor = UIColor.white.cgColor
+        selectionMarkView.isHidden = true
+        selectionMarkView.translatesAutoresizingMaskIntoConstraints = false
+        selectionCheckView.image = UIImage(
+            systemName: "checkmark",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .bold))?
+            .withTintColor(.white, renderingMode: .alwaysOriginal)
+        selectionCheckView.contentMode = .center
+        selectionCheckView.isHidden = true
+        selectionCheckView.translatesAutoresizingMaskIntoConstraints = false
+        selectionMarkView.addSubview(selectionCheckView)
 
         cardView.addSubview(thumbnailView)
         cardView.addSubview(textStack)
+        cardView.addSubview(selectionMarkView)
         cardView.addSubview(statusBadge)
         cardView.addSubview(durationBadge)
         cardView.addSubview(progressView)
@@ -1120,6 +1522,14 @@ final class VideoCell: UITableViewCell {
             thumbnailView.centerYAnchor.constraint(equalTo: cardView.centerYAnchor),
             thumbnailView.widthAnchor.constraint(equalToConstant: 120),
             thumbnailView.heightAnchor.constraint(equalToConstant: 80),
+            selectionMarkView.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 6),
+            selectionMarkView.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 6),
+            selectionMarkView.widthAnchor.constraint(equalToConstant: 26),
+            selectionMarkView.heightAnchor.constraint(equalToConstant: 26),
+            selectionCheckView.centerXAnchor.constraint(equalTo: selectionMarkView.centerXAnchor),
+            selectionCheckView.centerYAnchor.constraint(equalTo: selectionMarkView.centerYAnchor),
+            selectionCheckView.widthAnchor.constraint(equalToConstant: 16),
+            selectionCheckView.heightAnchor.constraint(equalToConstant: 16),
             logoView.widthAnchor.constraint(equalToConstant: 24),
             logoView.heightAnchor.constraint(equalToConstant: 14),
             textStack.leadingAnchor.constraint(equalTo: thumbnailView.trailingAnchor, constant: 12),
@@ -1261,6 +1671,48 @@ final class VideoCell: UITableViewCell {
         unwatchedBadge.isHidden = true
         progressView.isHidden = true
         descriptionLabel.text = nil
+        noticeLabel.text = nil
+        noticeLabel.isHidden = true
+        actionRow.isHidden = true
+        onTrashRestore = nil
+        onTrashDelete = nil
+        selectionMarkView.isHidden = true
+        selectionCheckView.isHidden = true
+    }
+
+    /// ゴミ箱の複数選択の印を設定する (通常の一覧では呼ばない)。
+    /// active が false のときは印自体を出さない。
+    func configureSelection(active: Bool, selected: Bool) {
+        selectionMarkView.isHidden = !active
+        selectionCheckView.isHidden = !(active && selected)
+        selectionMarkView.backgroundColor = selected
+            ? AppPalette.accent : UIColor.black.withAlphaComponent(0.45)
+        selectionMarkView.layer.borderColor = selected
+            ? AppPalette.accent.cgColor : UIColor.white.cgColor
+    }
+
+    /// ゴミ箱の画面用の追加表示を設定する (通常の一覧では呼ばない)。
+    /// notice は「あと○日で完全に削除されます」の文。showsActions が
+    /// true のときだけ操作ボタンの行を出す (Web 版と同じく管理者だけ)。
+    func configureTrash(
+        notice: String?,
+        showsActions: Bool,
+        onRestore: (() -> Void)?,
+        onDelete: (() -> Void)?
+    ) {
+        noticeLabel.text = notice
+        noticeLabel.isHidden = notice == nil
+        actionRow.isHidden = !showsActions
+        onTrashRestore = onRestore
+        onTrashDelete = onDelete
+    }
+
+    @objc private func trashRestoreTapped() {
+        onTrashRestore?()
+    }
+
+    @objc private func trashDeleteTapped() {
+        onTrashDelete?()
     }
 
     func configure(with program: RecordedProgram) {

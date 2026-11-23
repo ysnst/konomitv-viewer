@@ -24,6 +24,46 @@ enum APIError: Error {
             return "保護を切り替えられませんでした。"
         }
     }
+
+    /// ゴミ箱への移動に失敗した理由を、ユーザー向けの文にする。
+    var moveToTrashFailureMessage: String {
+        switch self {
+        case .badStatus(401):
+            return "ログインの有効期限が切れています。設定タブでログインし直してください。"
+        case .badStatus(404):
+            return "この録画は見つかりませんでした。一覧を更新してください。"
+        case .badStatus(409):
+            return "録画中の番組はゴミ箱に移動できません。"
+        default:
+            return "ゴミ箱に移動できませんでした。"
+        }
+    }
+
+    /// ゴミ箱からの復元に失敗した理由を、ユーザー向けの文にする。
+    var restoreFromTrashFailureMessage: String {
+        switch self {
+        case .badStatus(401):
+            return "ログインの有効期限が切れています。設定タブでログインし直してください。"
+        case .badStatus(404):
+            return "この録画はすでにゴミ箱にありません。一覧を更新してください。"
+        default:
+            return "ゴミ箱から復元できませんでした。"
+        }
+    }
+
+    /// 完全削除に失敗した理由を、ユーザー向けの文にする。
+    var deleteVideoFailureMessage: String {
+        switch self {
+        case .badStatus(401):
+            return "ログインの有効期限が切れています。設定タブでログインし直してください。"
+        case .badStatus(404):
+            return "この録画は見つかりませんでした。一覧を更新してください。"
+        case .badStatus(409):
+            return "録画中の番組は削除できません。録画が終わってから操作してください。"
+        default:
+            return "完全に削除できませんでした。"
+        }
+    }
 }
 
 /// KonomiTV サーバーへの通信をまとめたもの。
@@ -84,6 +124,52 @@ final class APIClient {
         return try JSONDecoder().decode(RecordedProgramsResponse.self, from: data)
     }
 
+    /// 録画番組1件を単体で取得する。改造サーバーはこの応答にだけ
+    /// 前の話・次の話の ID を付けるため、前後移動の確認に使う。
+    /// 失敗時は nil。
+    func fetchVideo(videoID: Int) async -> RecordedProgram? {
+        guard let request = try? request(forPath: "/api/videos/\(videoID)") else { return nil }
+        guard let (data, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode) else { return nil }
+        return try? JSONDecoder().decode(RecordedProgram.self, from: data)
+    }
+
+    /// しおりの一覧を取得する (改造サーバー用。ログインは不要で世帯共有)。
+    /// 失敗時は空の並びを返す (呼び出し側は「しおりなし」として扱う)。
+    func fetchBookmarks(videoID: Int) async -> [VideoBookmark] {
+        guard let request = try? request(forPath: "/api/videos/\(videoID)/bookmarks") else { return [] }
+        guard let (data, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode) else { return [] }
+        let bookmarks = (try? JSONDecoder().decode([VideoBookmark].self, from: data)) ?? []
+        return bookmarks.sorted { $0.position < $1.position }
+    }
+
+    /// しおりを追加する (改造サーバー用。ログインは不要)。
+    /// 成功時は作られたしおり、失敗時は nil を返す。
+    func createBookmark(videoID: Int, position: Double, label: String) async -> VideoBookmark? {
+        guard var request = try? request(forPath: "/api/videos/\(videoID)/bookmarks", method: "POST") else { return nil }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = ["position": position, "label": label]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        guard let (data, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode) else { return nil }
+        return try? JSONDecoder().decode(VideoBookmark.self, from: data)
+    }
+
+    /// しおりを削除する (改造サーバー用。ログインは不要)。
+    /// 成功したら true を返す。
+    func deleteBookmark(videoID: Int, bookmarkID: String) async -> Bool {
+        guard let request = try? request(
+            forPath: "/api/videos/\(videoID)/bookmarks/\(bookmarkID)", method: "DELETE")
+        else { return false }
+        guard let (_, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse else { return false }
+        return (200..<300).contains(http.statusCode)
+    }
+
     /// 録画ストレージの容量情報 (ローカル改造の口)。
     /// Web 版と同じく、取得に失敗した場合は表示自体を出さないため nil を返す。
     func fetchStorageStatus() async -> StorageStatus? {
@@ -137,6 +223,11 @@ final class APIClient {
         try check(response)
         let token = try JSONDecoder().decode(TokenResponse.self, from: data)
         SettingsStore.shared.saveLogin(username: username, password: password, token: token.access_token)
+        // 拡張版だけ: まだ同期したことのない端末では、サーバーに保存済みの
+        // 設定があればログインのついでに自動で取り込む (Web 版と同じ動き)。
+        if AppEdition.isHousehold {
+            Task { await SyncedSettingsStore.shared.adoptServerSettingsOnLogin() }
+        }
     }
 
     // MARK: - アカウント情報 (マイページ用)
@@ -197,6 +288,11 @@ final class APIClient {
         request.httpBody = try JSONSerialization.data(withJSONObject: settings)
         let (_, response) = try await session.data(for: request)
         try check(response)
+        // 送れた時点で、この端末はサーバーと同期したことになる
+        // (ログイン時の自動取り込みの判定に使う端末側の控え)。
+        if let syncedAt = (settings["last_synced_at"] as? NSNumber)?.doubleValue {
+            SettingsStore.shared.lastSyncedAt = syncedAt
+        }
     }
 
     private static func formEncode(_ value: String) -> String {
@@ -251,6 +347,71 @@ final class APIClient {
         try check(response)
         let result = try JSONDecoder().decode(ProtectionState.self, from: data)
         return result.is_protected ?? next
+    }
+
+    // MARK: - ゴミ箱 (ローカル改造の口、拡張版だけが使う)
+
+    /// ゴミ箱の中身を取る (ログイン必須)。
+    /// 並びはサーバー側で完全に削除される予定の早い順になっている。
+    func fetchTrashList() async throws -> TrashListResponse {
+        let request = try request(forPath: "/api/recorder/trash", authorized: true)
+        let (data, response) = try await session.data(for: request)
+        try check(response)
+        return try JSONDecoder().decode(TrashListResponse.self, from: data)
+    }
+
+    /// 録画をゴミ箱へ移動する (管理者ログイン必須、成功は 204)。
+    /// ファイルや録画情報は消えず、一覧や検索から隠れるだけ。
+    /// 録画中の番組と、すでにゴミ箱に入っている録画は 409 で拒否される。
+    func moveToTrash(videoID: Int) async throws {
+        let request = try request(forPath: "/api/recorder/trash/\(videoID)", method: "POST", authorized: true)
+        let (_, response) = try await session.data(for: request)
+        try check(response)
+    }
+
+    /// 録画をゴミ箱から復元する (管理者ログイン必須、成功は 204)。
+    /// ゴミ箱に入っていない録画は 404 で拒否される。
+    func restoreFromTrash(videoID: Int) async throws {
+        let request = try request(
+            forPath: "/api/recorder/trash/\(videoID)/restore", method: "POST", authorized: true)
+        let (_, response) = try await session.data(for: request)
+        try check(response)
+    }
+
+    /// 完全削除の事前確認を取る (管理者ログイン必須)。
+    /// 管理元と削除対象の確認で、応答の確認用の合言葉は削除のときに使う。
+    func fetchDeletePreview(videoID: Int) async throws -> RecordingDeletePreview {
+        let request = try request(forPath: "/api/videos/\(videoID)/delete-preview", authorized: true)
+        let (data, response) = try await session.data(for: request)
+        try check(response)
+        return try JSONDecoder().decode(RecordingDeletePreview.self, from: data)
+    }
+
+    /// 録画を完全に削除する (管理者ログイン必須、成功は 204)。
+    /// EPGStation が管理元の構成では、事前確認で受け取った合言葉を
+    /// ヘッダーに付けないとサーバーが受け付けない (Web 版と同じ手順)。
+    /// 戻り値は、Jellyfin の一覧更新が後回しになったかどうか
+    /// (応答ヘッダー X-Recording-Sync が "JellyfinPending" のとき true)。
+    func deleteVideo(videoID: Int, confirmationToken: String?) async throws -> Bool {
+        var request = try request(forPath: "/api/videos/\(videoID)", method: "DELETE", authorized: true)
+        if let confirmationToken {
+            request.setValue(confirmationToken, forHTTPHeaderField: "X-Recording-Confirmation")
+        }
+        let (_, response) = try await session.data(for: request)
+        try check(response)
+        guard let http = response as? HTTPURLResponse else { return false }
+        return http.value(forHTTPHeaderField: "X-Recording-Sync") == "JellyfinPending"
+    }
+
+    // MARK: - 録画結果 (ローカル改造の口、拡張版だけが使う)
+
+    /// 予約録画の結果の一覧を取る (新しい順)。
+    /// サーバー側で予約・録画と照合して記録されているものが返る。
+    func fetchRecordingResults() async throws -> [RecordingResult] {
+        let request = try request(forPath: "/api/videos/recording-results")
+        let (data, response) = try await session.data(for: request)
+        try check(response)
+        return try JSONDecoder().decode(RecordingResultsResponse.self, from: data).results
     }
 
     // MARK: - 生放送のチャンネル一覧
@@ -420,6 +581,105 @@ final class APIClient {
             throw APIError.message(Self.reservationFailureMessage(
                 data: data, operation: .delete))
         }
+    }
+
+    /// 番組を検索する (「次回を予約」の候補探しに使う)。
+    /// 失敗したら、サーバーの応答をもとにした文で失敗を返す。
+    func searchPrograms(condition: ProgramSearchCondition) async throws -> ProgramSearchResponse {
+        var request = try request(forPath: "/api/programs/search", method: "POST")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(condition)
+        let (data, response) = try await session.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw APIError.message(Self.programSearchFailureMessage(data: data))
+        }
+        return try JSONDecoder().decode(ProgramSearchResponse.self, from: data)
+    }
+
+    /// キーワード自動予約の条件の一覧を取る。
+    func fetchReservationConditions() async throws -> ReservationConditionsResponse {
+        let request = try request(forPath: "/api/recording/conditions")
+        let (data, response) = try await session.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw APIError.message(Self.reservationConditionFailureMessage(data: data, operation: .list))
+        }
+        return try JSONDecoder().decode(ReservationConditionsResponse.self, from: data)
+    }
+
+    /// キーワード自動予約の条件を追加する。
+    func addReservationCondition(
+        condition: ProgramSearchCondition, recordSettings: RecordSettings
+    ) async throws {
+        var request = try request(forPath: "/api/recording/conditions", method: "POST")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            ReservationConditionAddRequest(
+                program_search_condition: condition, record_settings: recordSettings))
+        let (data, response) = try await session.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw APIError.message(Self.reservationConditionFailureMessage(data: data, operation: .add))
+        }
+    }
+
+    /// キーワード自動予約の条件を削除する。
+    /// 条件を消しても、その条件で作られた予約は残る (サーバー側の仕様)。
+    func deleteReservationCondition(id: Int) async throws {
+        let request = try request(forPath: "/api/recording/conditions/\(id)", method: "DELETE")
+        let (data, response) = try await session.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw APIError.message(Self.reservationConditionFailureMessage(data: data, operation: .delete))
+        }
+    }
+
+    /// 番組検索の失敗応答を、Web 版と同じ日本語の文に直す。
+    private static func programSearchFailureMessage(data: Data) -> String {
+        if detailString(data: data) == "This API is only available when the backend is EDCB" {
+            return "番組検索機能は EDCB バックエンド選択時のみ利用できます。"
+        }
+        return "番組情報の検索に失敗しました。"
+    }
+
+    private enum ReservationConditionOperation {
+        case list, add, delete
+    }
+
+    /// キーワード自動予約の条件まわりの失敗応答を、Web 版と同じ
+    /// 日本語の文に直す。
+    private static func reservationConditionFailureMessage(
+        data: Data, operation: ReservationConditionOperation
+    ) -> String {
+        let detail = detailString(data: data)
+        if detail == "This API is only available when the backend is EDCB" {
+            return "キーワード自動予約機能は EDCB バックエンド選択時のみ利用できます。"
+        }
+        switch operation {
+        case .list:
+            if detail == "Failed to get the list of reserve conditions" {
+                return "キーワード自動予約条件一覧の取得に失敗しました。"
+            }
+            return "キーワード自動予約条件一覧を取得できませんでした。"
+        case .add:
+            if detail == "Failed to register the reserve condition" {
+                return "キーワード自動予約条件の登録に失敗しました。"
+            }
+            return "キーワード自動予約条件の追加に失敗しました。"
+        case .delete:
+            switch detail {
+            case "Specified reservation_condition_id was not found":
+                return "指定されたキーワード自動予約条件が見つかりませんでした。"
+            case "Failed to delete the specified reserve condition":
+                return "キーワード自動予約条件の削除に失敗しました。"
+            default:
+                return "キーワード自動予約条件の削除に失敗しました。"
+            }
+        }
+    }
+
+    /// 失敗応答の JSON から detail の文を取り出す (取れなければ nil)。
+    private static func detailString(data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data),
+              let dictionary = object as? [String: Any] else { return nil }
+        return dictionary["detail"] as? String
     }
 
     private enum ReservationOperation {

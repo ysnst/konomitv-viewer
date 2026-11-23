@@ -161,7 +161,30 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
     private var availableTypes: [String] = []
     private var channels: [TimeTableChannelEntry] = []
     private var dateRange: TimeTableDateRange?
+    /// チューナーの使用区間 (改造サーバーが番組表の応答に付けるもの)。
+    /// 時刻軸の使用帯の描画に使う (拡張版だけ)。
+    private var tunerBusyIntervals: [TimeTableTunerBusyInterval] = []
+    /// 使用帯を「満杯」の濃さにする台数 (Web 版の固定値と同じ 2)。
+    private static let maxTunerCount = 2
     private var isLoading = false
+
+    // MARK: 表示位置の保存と復元 (拡張版だけ)
+
+    /// 表示状態 (日付・表示位置・放送の種類) の保存先のキー。
+    /// Web 版の端末ローカル保存と同じキー名にしてある。
+    private static let viewStateKey = "KonomiTV-TimeTableViewState"
+    /// 保存した表示状態をまだ読み戻していないか。復元は開いた直後の
+    /// 最初の読み込みでだけ行う。
+    private var viewStateRestorePending = true
+    /// 復元する表示位置 (先頭の日時) と横スクロール量。日付の復元が
+    /// できなかったときは nil のまま (位置は戻さない)。
+    private var pendingRestoreTopTime: Date?
+    private var pendingRestoreScrollLeft: CGFloat = 0
+    /// 最初の読み込みが終わったか。終わるまでは保存しない
+    /// (読み込み中の現在時刻への移動で、保存済みの位置を潰さないため)。
+    private var hasCompletedInitialLoad = false
+    /// スクロール中の保存を間引くための保留分。
+    private var viewStateSaveWork: DispatchWorkItem?
     private var loadedBaseURLString: String?
     /// 組み立て済みの時刻軸の幅 (回転で変わったら組み直すため)。
     private var builtTimeScaleWidth: CGFloat = 0
@@ -430,6 +453,7 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
                 guard let self, type != self.selectedType else { return }
                 self.selectedType = type
                 self.updateControls()
+                self.saveViewState()
                 self.load(scrollToNowAfter: Self.isToday(self.selectedDayStart))
             }
         })
@@ -508,6 +532,11 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
         navigationController?.setNavigationBarHidden(false, animated: animated)
         nowTimer?.invalidate()
         nowTimer = nil
+        // 間引いて保留していた表示位置の保存があれば、離れる前に
+        // その場で保存する (Web 版の画面を離れるときの保存と同じ)。
+        viewStateSaveWork?.cancel()
+        viewStateSaveWork = nil
+        saveViewState()
     }
 
     override func viewDidLayoutSubviews() {
@@ -599,6 +628,11 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
                         types.insert(Self.pinnedType, at: 0)
                     }
                     self.availableTypes = types
+                    // 保存しておいた放送の種類があれば、最初の取得から
+                    // その種類で開く (表示位置の復元の一部。拡張版だけ)。
+                    if self.viewStateRestorePending {
+                        self.consumeSavedViewState(availableTypes: types)
+                    }
                     if !types.contains(self.selectedType) {
                         self.selectedType = types[0]
                     }
@@ -639,9 +673,18 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
                 self.loadedBaseURLString = SettingsStore.shared.baseURL?.absoluteString
                 self.channels = response.channels
                 self.dateRange = response.date_range
+                self.tunerBusyIntervals = AppEdition.isHousehold
+                    ? (response.tuner_busy_intervals ?? []) : []
                 self.statusLabel.text = self.channels.isEmpty ? "番組表がありません。" : nil
                 self.buildGrid()
-                if scrollToNowAfter {
+                self.hasCompletedInitialLoad = true
+                if self.pendingRestoreTopTime != nil {
+                    // 保存しておいた表示位置へ戻す (最初の読み込みだけ)。
+                    self.applyRestoredScrollPosition()
+                    self.pendingRestoreTopTime = nil
+                    self.pendingRestoreScrollLeft = 0
+                } else if scrollToNowAfter {
+                    self.pendingRestoreScrollLeft = 0
                     // 組み直した直後はレイアウトが済んでから現在時刻へ寄せる。
                     DispatchQueue.main.async { [weak self] in
                         self?.scrollToNow(animated: false)
@@ -734,6 +777,28 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
                 x: 0, y: CGFloat(hourIndex) * hourHeight,
                 width: timeScaleWidth, height: hourHeight))
             block.backgroundColor = Self.timeScaleColors[hour]
+            // チューナーの使用帯 (改造版 Web の時刻軸の帯。拡張版だけ)。
+            // 帯は台数によらず軸の全幅で出し、台数の違いは濃さだけで
+            // 表す (一部使用は不透明度 0.8、満杯は 1.0)。過去の区間も
+            // 同じ濃さ。帯は時刻・日付の文字より後ろに置くため、
+            // この時点 (文字を足す前) に入れる。
+            if AppEdition.isHousehold {
+                let hourEnd = hourDate.addingTimeInterval(3600)
+                for interval in tunerBusyIntervals {
+                    guard let start = interval.startDate, let end = interval.endDate else { continue }
+                    let segmentStart = max(start, hourDate)
+                    let segmentEnd = min(end, hourEnd)
+                    guard segmentEnd > segmentStart else { continue }
+                    let band = UIView(frame: CGRect(
+                        x: 0,
+                        y: CGFloat(segmentStart.timeIntervalSince(hourDate) / 3600) * hourHeight,
+                        width: timeScaleWidth,
+                        height: CGFloat(segmentEnd.timeIntervalSince(segmentStart) / 3600) * hourHeight))
+                    band.backgroundColor = AppPalette.secondary.withAlphaComponent(
+                        interval.tuner_count >= Self.maxTunerCount ? 1.0 : 0.8)
+                    block.addSubview(band)
+                }
+            }
             let border = UIView(frame: CGRect(
                 x: 0, y: hourHeight - 1, width: timeScaleWidth, height: 1))
             border.backgroundColor = UIColor.white.withAlphaComponent(0.2)
@@ -884,6 +949,75 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
         nowLineView = line
     }
 
+    // MARK: - 表示位置の保存と復元
+
+    /// 保存しておいた表示状態を読み戻す (最初の読み込みで1回だけ)。
+    /// 放送の種類は、保存時の表示名と一致するものが今も選べるときだけ
+    /// 戻す。日付は、保存した日が今日 (放送日基準) より前なら戻さず、
+    /// その場合は表示位置も戻さない (種類だけは戻す。Web 版と同じ)。
+    private func consumeSavedViewState(availableTypes: [String]) {
+        viewStateRestorePending = false
+        guard AppEdition.isHousehold,
+              let state = UserDefaults.standard.dictionary(forKey: Self.viewStateKey) else { return }
+        if let typeName = state["channel_type"] as? String,
+           let matched = availableTypes.first(where: { Self.prettyTypeName($0) == typeName }) {
+            selectedType = matched
+        }
+        let formatter = ISO8601DateFormatter()
+        guard let dateText = state["date"] as? String, let savedDate = formatter.date(from: dateText),
+              Self.broadcastDayStart(of: savedDate) >= Self.broadcastDayStart(of: Date()) else { return }
+        selectedDayStart = Self.broadcastDayStart(of: savedDate)
+        if let topText = state["display_top_time"] as? String, let topTime = formatter.date(from: topText) {
+            pendingRestoreTopTime = topTime
+        }
+        pendingRestoreScrollLeft = CGFloat((state["scroll_left"] as? NSNumber)?.doubleValue ?? 0)
+    }
+
+    /// 保存しておいた表示位置へ戻す。保存時の先頭日時が表示範囲の
+    /// 外れていたら、現在時刻への移動に切り替える (Web 版と同じ)。
+    private func applyRestoredScrollPosition() {
+        guard let topTime = pendingRestoreTopTime else { return }
+        let dayEnd = selectedDayStart.addingTimeInterval(Self.dayLength)
+        guard topTime >= selectedDayStart, topTime < dayEnd else {
+            scrollToNow(animated: false)
+            return
+        }
+        let maxX = max(gridScrollView.contentSize.width - gridScrollView.bounds.width, 0)
+        let maxY = max(gridScrollView.contentSize.height - gridScrollView.bounds.height, 0)
+        let y = CGFloat(topTime.timeIntervalSince(selectedDayStart) / 3600) * hourHeight
+        gridScrollView.contentOffset = CGPoint(
+            x: min(max(pendingRestoreScrollLeft, 0), maxX),
+            y: min(max(y, 0), maxY))
+        headerScrollView.contentOffset.x = gridScrollView.contentOffset.x
+        timeScaleScrollView.contentOffset.y = gridScrollView.contentOffset.y
+    }
+
+    /// 表示状態 (日付・表示位置・放送の種類) を端末ローカルに保存する。
+    /// 表示位置はピクセルではなく日時で持つ (表示幅や1時間の高さが
+    /// 変わっても意味が保たれるため。Web 版と同じ)。最初の読み込みが
+    /// 終わるまでは保存しない。
+    private func saveViewState() {
+        guard AppEdition.isHousehold, hasCompletedInitialLoad else { return }
+        let topTime = selectedDayStart.addingTimeInterval(
+            Double(gridScrollView.contentOffset.y / hourHeight) * 3600)
+        let formatter = ISO8601DateFormatter()
+        UserDefaults.standard.set([
+            "date": formatter.string(from: selectedDayStart),
+            "display_top_time": formatter.string(from: topTime),
+            "scroll_left": Double(gridScrollView.contentOffset.x),
+            "channel_type": Self.prettyTypeName(selectedType),
+        ], forKey: Self.viewStateKey)
+    }
+
+    /// スクロール中の保存を間引いて行う (Web 版の 300ms の間引きと同じ)。
+    private func scheduleViewStateSave() {
+        guard AppEdition.isHousehold else { return }
+        viewStateSaveWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.saveViewState() }
+        viewStateSaveWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+
     // MARK: - スクロール
 
     /// 格子のスクロールに、見出し行 (横) と時刻軸 (縦) を追随させる。
@@ -892,6 +1026,7 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
         headerScrollView.contentOffset.x = scrollView.contentOffset.x
         timeScaleScrollView.contentOffset.y = scrollView.contentOffset.y
         setTimeButtonTitle(timeSlotLabel(for: scrollView.contentOffset.y))
+        scheduleViewStateSave()
     }
 
     /// 指定した時刻 (4〜24時) が先頭に来るよう縦に送る。
@@ -920,6 +1055,7 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
         if todayStart != selectedDayStart {
             selectedDayStart = todayStart
             updateControls()
+            saveViewState()
             load(scrollToNowAfter: true)
         } else {
             scrollToNow(animated: true)
@@ -982,6 +1118,7 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
             if let dayStart = Calendar.current.date(from: components), dayStart != self.selectedDayStart {
                 self.selectedDayStart = dayStart
                 self.updateControls()
+                self.saveViewState()
                 self.load(scrollToNowAfter: Self.isToday(dayStart))
             }
             self.dismiss(animated: true)
@@ -1077,6 +1214,25 @@ private final class TimeTableProgramCellView: RippleSurfaceView {
         let genre = TimeTableGenre.colors(forMajor: program.genreMajor, settings: settings)
         var background = genre.background
         var highlight = genre.highlight
+        // 予約のある番組は、ジャンルの地の上にテーマ色を薄く重ねて塗る
+        // (改造版 Web の番組表の塗り。拡張版だけ)。割合は Web 版どおり:
+        // 予約済みは secondary 22%、録画中は secondary 38%、
+        // 一部のみは warning 30%、不可は error 32%。複数の状態に当たる
+        // ときの優先は Web 版の CSS の並び順 (後に書かれたものが勝つ)
+        // どおり、不可 → 一部のみ → 録画中 → 予約済み。無効化された
+        // 予約では塗らない。
+        if AppEdition.isHousehold, let reservation = program.reservation,
+           reservation.status != "Disabled" {
+            if reservation.recording_availability == "Unavailable" {
+                background = TimeTableGenre.blended(background, with: Self.errorColor, baseRatio: 0.68)
+            } else if reservation.recording_availability == "Partial" {
+                background = TimeTableGenre.blended(background, with: AppPalette.warning, baseRatio: 0.70)
+            } else if reservation.status == "Recording" {
+                background = TimeTableGenre.blended(background, with: AppPalette.secondary, baseRatio: 0.62)
+            } else {
+                background = TimeTableGenre.blended(background, with: AppPalette.secondary, baseRatio: 0.78)
+            }
+        }
         if dimmedShopping && isPast {
             let gray = UIColor(red: 0xB7 / 255, green: 0xB7 / 255, blue: 0xB7 / 255, alpha: 1)
             background = TimeTableGenre.blended(background, with: gray, baseRatio: 0.45)
@@ -1253,14 +1409,17 @@ private final class TimeTableProgramCellView: RippleSurfaceView {
         descriptionLabel.frame = CGRect(
             x: contentX, y: descriptionY, width: contentWidth,
             height: max(bounds.height - descriptionY - 2, 0))
-        // 予約の破線の枠 (ごく短い番組では枠自体が収まらないため付けない)。
+        // 予約の枠 (ごく短い番組では枠自体が収まらないため付けない)。
+        // 改造版 Web では、無効化された予約だけが破線で、それ以外
+        // (予約済み・録画中・一部のみ・不可) は実線になる (拡張版だけ)。
         if let reservation = program.reservation, bounds.width > 5, bounds.height > 5 {
             let layer = borderLayer ?? CAShapeLayer()
             layer.path = UIBezierPath(rect: bounds.insetBy(dx: 1.9, dy: 1.9)).cgPath
             layer.strokeColor = Self.reservationBorderColor(reservation).cgColor
             layer.fillColor = UIColor.clear.cgColor
             layer.lineWidth = 3.8
-            layer.lineDashPattern = [7, 5]
+            let isSolid = AppEdition.isHousehold && reservation.status != "Disabled"
+            layer.lineDashPattern = isSolid ? nil : [7, 5]
             if layer.superlayer == nil {
                 self.layer.addSublayer(layer)
             }

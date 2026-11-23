@@ -105,6 +105,9 @@ final class SettingsStore {
         // 設定をデバイス間で同期するか (Web 版の sync_settings に相当する
         // アプリ側の値そのもの。同期される中身ではないので端末に置く)。
         static let syncSettings = "viewer_sync_settings"
+        // この端末が最後に設定を同期した時刻 (ログイン時の自動取り込みの
+        // 判定に使う、端末だけの控え)。
+        static let lastSyncedAt = "viewer_last_synced_at"
         // 番組表の表示設定 (Web 版の利用者設定と同じ項目名に viewer_ を
         // 付けたもの)。端末内の控えで、サーバーとの同期が入っているときは
         // TimeTableSettingsStore がサーバー側の値をここへ写し、変更時は
@@ -493,6 +496,17 @@ final class SettingsStore {
     var syncSettings: Bool {
         get { defaults.bool(forKey: Key.syncSettings) }
         set { defaults.set(newValue, forKey: Key.syncSettings) }
+    }
+
+    /// この端末が最後にサーバーと設定を同期した時刻 (UNIX 秒)。
+    /// サーバーへ利用者設定を送れたときと、サーバーから取り込んだときに
+    /// 更新される。0 のままなら、この端末ではまだ一度も同期していない
+    /// という意味になる (Web 版の端末側の last_synced_at と同じ物差しで、
+    /// ログイン時の自動取り込みの判定に使う)。端末だけに置く値で、
+    /// サーバーへ送る利用者設定の中身ではない。
+    var lastSyncedAt: Double {
+        get { defaults.double(forKey: Key.lastSyncedAt) }
+        set { defaults.set(newValue, forKey: Key.lastSyncedAt) }
     }
 
     // MARK: - 番組表の表示設定 (端末内の控え)

@@ -30,6 +30,10 @@ final class FullscreenPlayerViewController: UIViewController {
         var pause: () -> Void
         /// 指定した位置 (秒) へ移動する。
         var seek: (Double) -> Void
+        /// いま音が消えているかどうか (長押しの高速シーク用)。
+        var isMuted: () -> Bool
+        /// 音を消す・戻す (長押しの高速シーク用)。
+        var setMuted: (Bool) -> Void
     }
 
     /// AVPlayer 経路のときの共有プレイヤー。VLCKit 経路では nil。
@@ -72,6 +76,9 @@ final class FullscreenPlayerViewController: UIViewController {
     private var wasPlayingBeforeScrub = false
     private var controlsVisible = true
     private var hideTimer: Timer?
+    /// 長押しの高速シーク (送り・戻し)。拡張版だけ取り付ける。
+    private let fastSeekBackController = FastSeekController(direction: -1)
+    private let fastSeekForwardController = FastSeekController(direction: 1)
 
     private let videoView = UIView()
     /// 上部・下部の帯のグラデーション (Web 版のヘッダー帯・操作帯と同じ、黒から透明へ)。
@@ -138,6 +145,10 @@ final class FullscreenPlayerViewController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = .black
         buildLayout()
+        // 長押しの高速シークは拡張版だけ (通常画面の再生画面と同じ扱い)。
+        if AppEdition.isHousehold {
+            setupFastSeek()
+        }
 
         // 字幕の重ね物を借りている場合は、映像の上・操作類の下に重ねる
         // (字幕の絵の更新は呼び出し元が続ける)。
@@ -201,6 +212,8 @@ final class FullscreenPlayerViewController: UIViewController {
         super.viewWillDisappear(animated)
         hideTimer?.invalidate()
         hideTimer = nil
+        fastSeekBackController.invalidate()
+        fastSeekForwardController.invalidate()
         progressTimer?.invalidate()
         progressTimer = nil
         // VLCKit 経路: 貸し出してもらった映像の枠を呼び出し元へ返す。
@@ -531,6 +544,44 @@ final class FullscreenPlayerViewController: UIViewController {
             UIImage(systemName: playing ? "pause.fill" : "play.fill", withConfiguration: config),
             for: .normal
         )
+    }
+
+    // MARK: - 長押しの高速シーク (拡張版)
+
+    /// 送り・戻しボタンへ長押しの高速シークを取り付ける。
+    /// 移動と音の操作は、再生の仕組みごとに既存の操作口へ委ねる
+    /// (VLCKit 経路は受け渡し口、AVPlayer 経路は共有プレイヤー)。
+    private func setupFastSeek() {
+        fastSeekBackController.attach(to: skipBackButton)
+        fastSeekForwardController.attach(to: skipForwardButton)
+        for controller in [fastSeekBackController, fastSeekForwardController] {
+            controller.positionProvider = { [weak self] in self?.currentSeconds ?? 0 }
+            controller.seekHandler = { [weak self] position in self?.seek(to: position) }
+            controller.isMutedProvider = { [weak self] in self?.isMutedNow ?? false }
+            controller.setMutedHandler = { [weak self] muted in self?.setMutedNow(muted) }
+            controller.onKeepControlsVisible = { [weak self] in
+                guard let self else { return }
+                self.hideTimer?.invalidate()
+                self.hideTimer = nil
+                self.setControlsVisible(true)
+            }
+            controller.onEnd = { [weak self] in self?.scheduleHideControls() }
+        }
+    }
+
+    /// いま音が消えているかどうか。
+    private var isMutedNow: Bool {
+        if let hooks { return hooks.isMuted() }
+        return player?.isMuted ?? false
+    }
+
+    /// 音を消す・戻す。
+    private func setMutedNow(_ muted: Bool) {
+        if let hooks {
+            hooks.setMuted(muted)
+            return
+        }
+        player?.isMuted = muted
     }
 
     // MARK: - 操作

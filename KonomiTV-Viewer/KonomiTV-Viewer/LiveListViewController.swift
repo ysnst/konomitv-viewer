@@ -1033,6 +1033,14 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         let channel = channels(forGroupAt: tableView.tag)[indexPath.row]
+        // チューナーに空きがなく受信中でもないチャンネルは視聴できないため、
+        // 再生画面へは移らず理由を知らせる (Web 版と同じ。拡張版だけ)。
+        // 録画中のチャンネルはチューナーを共有して視聴できるため、
+        // サーバー側の判定で視聴可になっている。
+        if AppEdition.isHousehold, !channel.isTunerViewable {
+            showNotice("チューナーに空きがないため、このチャンネルは視聴できません。録画中のチャンネルは視聴できます。")
+            return
+        }
         let player = LivePlayerViewController(channel: channel)
         navigationController?.pushViewController(player, animated: true)
     }
@@ -1070,6 +1078,12 @@ final class LiveChannelCell: UITableViewCell {
     private let forceLabel = UILabel()
     private let viewersIconView = UIImageView()
     private let viewersLabel = UILabel()
+    /// チューナー使用中で視聴できないときの案内 (Web 版カードの
+    /// 「チューナー使用中のため視聴できません」)。局の行の下に出す。
+    /// 上の余白 (Web 版は 10px) は、並びの間隔 8px との差分を
+    /// 入れ物側の上の余白 2px で足して合わせる。
+    private let tunerUnavailableWrap = UIView()
+    private let tunerUnavailableLabel = UILabel()
     private let presentTitleLabel = UILabel()
     private let presentTimeLabel = UILabel()
     private let presentDescriptionLabel = UILabel()
@@ -1175,6 +1189,22 @@ final class LiveChannelCell: UITableViewCell {
         broadcasterRow.alignment = .center
         broadcasterRow.spacing = 14
 
+        // チューナー使用中の案内は Web 版どおり 12px 太字・warning 色。
+        // 視聴できないときだけ出す (入れ物ごと隠す)。
+        tunerUnavailableLabel.text = "チューナー使用中のため視聴できません"
+        tunerUnavailableLabel.font = .scaledSystemFont(ofSize: 12, weight: .bold)
+        tunerUnavailableLabel.textColor = AppPalette.warning
+        tunerUnavailableLabel.numberOfLines = 1
+        tunerUnavailableLabel.translatesAutoresizingMaskIntoConstraints = false
+        tunerUnavailableWrap.addSubview(tunerUnavailableLabel)
+        tunerUnavailableWrap.isHidden = true
+        NSLayoutConstraint.activate([
+            tunerUnavailableLabel.topAnchor.constraint(equalTo: tunerUnavailableWrap.topAnchor, constant: 2),
+            tunerUnavailableLabel.bottomAnchor.constraint(equalTo: tunerUnavailableWrap.bottomAnchor),
+            tunerUnavailableLabel.leadingAnchor.constraint(equalTo: tunerUnavailableWrap.leadingAnchor),
+            tunerUnavailableLabel.trailingAnchor.constraint(equalTo: tunerUnavailableWrap.trailingAnchor),
+        ])
+
         // 放送中番組の題名は Web 版 (スマホ縦) どおり 14px 太字、1行で省略
         // (縦画面では Web 版も display:block + nowrap で1行に制限している)。
         presentTitleLabel.font = .scaledSystemFont(ofSize: 14, weight: .bold)
@@ -1233,12 +1263,13 @@ final class LiveChannelCell: UITableViewCell {
         // 間隔は、題名の上 8px (title-wrapper の margin-top)、時刻の上 1px、
         // 説明文の上 4px、次の番組の上 4px (いずれもスマホ縦の値)。
         let mainStack = UIStackView(arrangedSubviews: [
-            broadcasterRow, presentTitleLabel, presentTimeLabel,
+            broadcasterRow, tunerUnavailableWrap, presentTitleLabel, presentTimeLabel,
             presentDescriptionLabel, followingRow, followingTimeLabel,
         ])
         mainStack.axis = .vertical
         mainStack.translatesAutoresizingMaskIntoConstraints = false
         mainStack.setCustomSpacing(8, after: broadcasterRow)
+        mainStack.setCustomSpacing(8, after: tunerUnavailableWrap)
         mainStack.setCustomSpacing(1, after: presentTitleLabel)
         mainStack.setCustomSpacing(4, after: presentTimeLabel)
         mainStack.setCustomSpacing(4, after: presentDescriptionLabel)
@@ -1313,6 +1344,8 @@ final class LiveChannelCell: UITableViewCell {
         presentDescriptionLabel.text = nil
         progressView.ratio = 0
         onPinToggle = nil
+        tunerUnavailableWrap.isHidden = true
+        cardView.alpha = 1
     }
 
     @objc private func pinButtonTapped() {
@@ -1320,6 +1353,15 @@ final class LiveChannelCell: UITableViewCell {
     }
 
     func configure(with channel: LiveChannel, isPinned: Bool) {
+        // チューナーに空きがなく視聴できないチャンネルは、Web 版と同じく
+        // カード全体を薄くして (不透明度 0.55) 案内を出す (拡張版だけ。
+        // 通常のサーバーの応答には判定の項目自体が無く、その場合は
+        // 視聴できるものとして扱うため表示は変わらない)。
+        // Web 版は色味も落とす (grayscale) が、アプリでは部品の集まりに
+        // そのまま効かせる手段がないため、薄さだけで近似する。
+        let tunerUnavailable = AppEdition.isHousehold && !channel.isTunerViewable
+        tunerUnavailableWrap.isHidden = !tunerUnavailable
+        cardView.alpha = tunerUnavailable ? 0.55 : 1
         // ピンの色と読み上げ名は、ピン留めの状態で切り替える (Web 版の
         // ピンの色・ツールチップと同じ意味合い)。
         pinButton.tintColor = isPinned ? AppPalette.accent : AppPalette.metaText

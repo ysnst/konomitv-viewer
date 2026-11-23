@@ -50,6 +50,10 @@ struct ChannelInfo: Codable {
     let type: String?
     /// チャンネル番号 ("101" など)。Web 版カードの「Ch: 101 局名」表示に使う。
     let channel_number: String?
+    /// 伝送路の識別子。シリーズ予約 (キーワード自動予約) の条件を
+    /// 組み立てるときに、番組のチャンネル側の値として使う。
+    /// 応答に無いことがあるため任意。
+    let transport_stream_id: Int?
 }
 
 /// GET /api/videos の1件分。
@@ -77,6 +81,21 @@ struct RecordedProgram: Codable {
     /// 録画開始マージン (秒)。番組の開始前に余分に録画されている長さ。
     /// 再開位置の下限 (マージン + 2秒) の計算に使う。取れないときは null。
     let recording_start_margin: Double?
+    /// 番組の識別子 (ネットワーク・サービス・イベント)。
+    /// 「次回を予約」の検索条件と「シリーズ予約」の条件の組み立てに使う。
+    /// 取れないときは null。
+    let network_id: Int?
+    let service_id: Int?
+    let event_id: Int?
+    /// シリーズ名。次回検索とシリーズ予約のキーワードは、こちらが
+    /// あればこちらを元にする (Web 版と同じ)。
+    let series_title: String?
+    /// 前の話の録画 ID (改造サーバーが単体取得の応答にだけ付ける)。
+    /// 一覧の応答には無く、その場合は null。
+    let previous_episode_id: Int?
+    /// 次の話の録画 ID (改造サーバーが単体取得の応答にだけ付ける)。
+    /// 一覧の応答には無く、その場合は null。
+    let next_episode_id: Int?
 
     var recordingStartMargin: Double { recording_start_margin ?? 0 }
 
@@ -114,6 +133,16 @@ struct RecordedProgramsResponse: Codable {
     let recorded_programs: [RecordedProgram]
 }
 
+/// しおり1件 (改造サーバーの GET /api/videos/{id}/bookmarks の要素)。
+/// サーバー側 (世帯共有の保存先) が採番した ID と、再生位置 (秒)、
+/// 表示名 (空のこともある)、作られた時刻 (UNIX 秒) でできている。
+struct VideoBookmark: Decodable {
+    let id: String
+    let position: Double
+    let label: String
+    let created_at: Double
+}
+
 /// GET /api/videos/storage-status の応答 (ローカル改造の口)。
 /// 録画ファイルが置かれているストレージの容量情報。
 struct StorageStatus: Codable {
@@ -125,6 +154,86 @@ struct StorageStatus: Codable {
     let free_bytes: Int64
     /// 録画ファイル自体の合計サイズ (バイト)。
     let recordings_bytes: Int64
+}
+
+/// GET /api/recorder/trash の応答 (ローカル改造の口)。
+/// ゴミ箱に入っている録画の一覧と、保持期間 (日)。
+struct TrashListResponse: Codable {
+    let retention_days: Int
+    let items: [TrashItem]
+}
+
+/// ゴミ箱内の録画1件分 (ローカル改造の口)。
+/// program は通常の録画番組と同じ形で返る。
+struct TrashItem: Codable {
+    let program: RecordedProgram
+    /// ゴミ箱へ移動した日時 (ISO 8601、UTC)。
+    let trashed_at: String
+    /// 完全に削除される予定の日時 (ISO 8601、UTC)。
+    let purge_at: String
+
+    var purgeDate: Date? { DateParser.parse(purge_at) }
+
+    /// 完全に削除されるまでの残り日数 (Web 版の Trash.vue と同じ計算:
+    /// 残り時間を日単位で切り上げ、負にはしない)。
+    var remainingDays: Int {
+        guard let purgeDate else { return 0 }
+        let millis = purgeDate.timeIntervalSinceNow * 1000
+        return max(0, Int(ceil(millis / (24 * 60 * 60 * 1000))))
+    }
+}
+
+/// GET /api/videos/recording-results の応答 (ローカル改造の口)。
+/// 予約録画の結果 (録れた・一部のみ・失敗) の一覧。新しい順で返る。
+struct RecordingResultsResponse: Codable {
+    let results: [RecordingResult]
+}
+
+/// 録画結果1件分 (ローカル改造の口)。
+struct RecordingResult: Codable {
+    /// 予約の ID。
+    let reserve_id: Int
+    /// 録画できた録画の ID。失敗したときは null。
+    let recorded_id: Int?
+    /// 番組名。
+    let name: String
+    /// チャンネル名。
+    let channel_name: String
+    /// 放送開始時刻 (UNIX 秒)。
+    let start_at: Double
+    /// 放送終了時刻 (UNIX 秒)。
+    let end_at: Double
+    /// 結果 ("success" / "partial" / "failed")。
+    let status: String
+    /// 実際の録画の長さ (秒)。失敗したときは null。
+    let duration: Double?
+    /// 受信の乱れの件数。数えられていないときは null。
+    let error_count: Int?
+    let drop_count: Int?
+    let scrambling_count: Int?
+
+    var startDate: Date { Date(timeIntervalSince1970: start_at) }
+    var endDate: Date { Date(timeIntervalSince1970: end_at) }
+}
+
+/// GET /api/videos/{id}/delete-preview の応答 (ローカル改造の口)。
+/// 完全削除の確認画面を出す前に、管理元と削除対象を確認するためのもの。
+/// EPGStation が管理元の構成では、ここで受け取る確認用の合言葉
+/// (confirmation_token) を削除のリクエストに付けないとサーバーが受け付けない。
+struct RecordingDeletePreview: Codable {
+    /// 削除の事前確認の仕組み自体が有効か。
+    let enabled: Bool
+    /// 確認用の合言葉。確認画面の寿命だけ保持する。
+    let confirmation_token: String
+    /// 削除の計画。管理元が EPGStation でない場合などは null。
+    let plan: Plan?
+
+    struct Plan: Codable {
+        let video_id: Int
+        let epgstation_id: Int
+        let title: String
+        let expires_at: Double
+    }
 }
 
 /// GET / PUT /api/videos/{id}/protection の応答。
@@ -183,6 +292,19 @@ struct LiveChannel: Codable {
     let viewer_count: Int?
     let is_display: Bool?
     let is_watchable: Bool?
+    /// チューナーに空きがあって (または受信中で共有できて) 視聴できるか
+    /// (ローカル改造のサーバーが付ける項目)。空きが無く受信中でもない
+    /// チャンネルでは false になる。項目自体が無い応答 (通常のサーバー)
+    /// では視聴できるものとして扱う。
+    let is_tuner_viewable: Bool?
+
+    /// チューナーの空き具合から見て視聴できるか。項目が無い場合は true。
+    var isTunerViewable: Bool { is_tuner_viewable ?? true }
+    /// チャンネルの識別子。自動予約の条件の画面で、条件のチャンネルを
+    /// 名前に直すときの照合に使う。応答に無いことがあるため任意。
+    let network_id: Int?
+    let service_id: Int?
+    let transport_stream_id: Int?
     let program_present: LiveProgram?
     /// 次の番組。API が返さない場合は nil (その場合は表示しない)。
     let program_following: LiveProgram?
@@ -241,6 +363,12 @@ struct TimeTableProgram: Codable {
     let secondary_audio_language: String?
     let secondary_audio_sampling_rate: String?
     let is_free: Bool?
+    /// 番組の識別子 (ネットワーク・サービス・イベント)。
+    /// 予約詳細から「シリーズ予約」の条件を組み立てるときに使う。
+    /// 応答に無いことがあるため任意。
+    let network_id: Int?
+    let service_id: Int?
+    let event_id: Int?
 
     var startDate: Date? { DateParser.parse(start_time) }
     var endDate: Date? { DateParser.parse(end_time) }
@@ -276,10 +404,27 @@ struct TimeTableDateRange: Codable {
     var latestDate: Date? { DateParser.parse(latest) }
 }
 
+/// 番組表の表示範囲でチューナーが使われる区間1つ分
+/// (ローカル改造のサーバーが付ける項目)。
+/// 同じ物理チャンネルの重なる予約は1台分として数えられている。
+struct TimeTableTunerBusyInterval: Codable {
+    let start_time: String
+    let end_time: String
+    /// 同時に使われるチューナーの台数。
+    let tuner_count: Int
+
+    var startDate: Date? { DateParser.parse(start_time) }
+    var endDate: Date? { DateParser.parse(end_time) }
+}
+
 /// GET /api/programs/timetable の応答。
 struct TimeTableResponse: Codable {
     let channels: [TimeTableChannelEntry]
     let date_range: TimeTableDateRange
+    /// チューナーの使用区間 (ローカル改造のサーバーだけが付ける)。
+    /// 予約の取得に失敗したときなどは空で返る。通常のサーバーの応答には
+    /// 項目自体が無いため任意にしている。
+    let tuner_busy_intervals: [TimeTableTunerBusyInterval]?
 }
 
 enum DateParser {
@@ -630,6 +775,16 @@ struct Reservation: Decodable {
     let scheduled_recording_file_name: String
     let estimated_recording_file_size: Int
     var record_settings: RecordSettings
+
+    /// キーワード自動予約で作られた予約かどうか (Web 版と同じ判定:
+    /// コメントに「EPG自動予約」が含まれる)。
+    /// 手動予約には録画側に「無効」の状態が無いため、無効化できるのは
+    /// キーワード自動予約で作られた予約だけ。
+    var isKeywordAutoReservation: Bool { comment.contains("EPG自動予約") }
+
+    /// 手動予約かどうか (キーワード自動予約でない予約)。
+    /// 手動予約では有効/無効の切り替え自体を出さない。
+    var isManualReservation: Bool { !isKeywordAutoReservation }
 }
 
 /// 予約一覧の応答。
@@ -674,6 +829,93 @@ struct ReservationAddRequest: Encodable {
 
 /// 予約更新の送信内容。
 struct ReservationUpdateRequest: Encodable {
+    let record_settings: RecordSettings
+}
+
+/// 番組検索条件 (Web 版の IProgramSearchCondition と同じ形)。
+/// 「次回を予約」の番組表検索と、キーワード自動予約の条件の両方で使う。
+struct ProgramSearchCondition: Codable {
+    var is_enabled: Bool
+    var keyword: String
+    var exclude_keyword: String
+    var note: String
+    var is_title_only: Bool
+    var is_case_sensitive: Bool
+    var is_fuzzy_search_enabled: Bool
+    var is_regex_search_enabled: Bool
+    var service_ranges: [ProgramSearchServiceRange]?
+    var genre_ranges: [ProgramSearchGenreRange]?
+    var is_exclude_genre_ranges: Bool
+    var date_ranges: [ProgramSearchDateRange]?
+    var is_exclude_date_ranges: Bool
+    var duration_range_min: Int?
+    var duration_range_max: Int?
+    /// "All" / "FreeOnly" / "PaidOnly"。
+    var broadcast_type: String
+    /// "None" / "SameChannelOnly" / "AllChannels"。
+    var duplicate_title_check_scope: String
+    var duplicate_title_check_period_days: Int
+}
+
+/// 番組検索条件のチャンネル指定。
+struct ProgramSearchServiceRange: Codable {
+    let network_id: Int
+    let transport_stream_id: Int
+    let service_id: Int
+}
+
+/// 番組検索条件のジャンル指定。
+struct ProgramSearchGenreRange: Codable {
+    let major: String
+    let middle: String
+}
+
+/// 番組検索条件の曜日・時刻指定。
+struct ProgramSearchDateRange: Codable {
+    let start_day_of_week: Int
+    let start_hour: Int
+    let start_minute: Int
+    let end_day_of_week: Int
+    let end_hour: Int
+    let end_minute: Int
+}
+
+/// 番組検索 (POST /api/programs/search) の結果1件分。
+/// 次回の放送の候補として使うため、番組 ID・題名・時刻・イベント ID だけ受ける。
+struct SearchedProgram: Decodable {
+    let id: String
+    let title: String
+    let start_time: String
+    let end_time: String
+    let event_id: Int?
+
+    var startDate: Date? { DateParser.parse(start_time) }
+}
+
+/// 番組検索の応答。
+struct ProgramSearchResponse: Decodable {
+    let total: Int
+    let programs: [SearchedProgram]
+}
+
+/// キーワード自動予約の条件1件 (GET /api/recording/conditions の要素)。
+struct ReservationCondition: Decodable {
+    let id: Int
+    /// この条件でこれまでに追加された予約の件数。
+    let reservation_count: Int
+    let program_search_condition: ProgramSearchCondition
+    let record_settings: RecordSettings
+}
+
+/// キーワード自動予約の条件一覧の応答。
+struct ReservationConditionsResponse: Decodable {
+    let total: Int
+    let reservation_conditions: [ReservationCondition]
+}
+
+/// キーワード自動予約の条件の追加の送信内容。
+struct ReservationConditionAddRequest: Encodable {
+    let program_search_condition: ProgramSearchCondition
     let record_settings: RecordSettings
 }
 
