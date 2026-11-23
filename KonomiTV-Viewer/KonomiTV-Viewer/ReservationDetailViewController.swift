@@ -559,22 +559,27 @@ final class ReservationDetailViewController: UIViewController {
     }
 
     /// 操作ボタンの共通の作り (Web 版のボタンの標準の形)。
-    /// 高さ 36、角丸 4、文字は 14 の中太、左右の余白 12、
+    /// 高さ 36、角丸 4、文字は 13 の中太、左右の余白 9、
     /// 絵と文字の間は 4。地つきは secondary の地に白、
     /// 地なしは透明の地に通常の文字色。
+    /// 3つ並ぶと幅が足りず文字が途中で切れたため (実機の報告)、
+    /// 文字と余白を少し詰め、それでも足りないときは文字を
+    /// 小さくして収める (切れるより読める形を優先する)。
     private func makeActionButton(
         title: String, systemImage: String, filled: Bool, action: Selector
     ) -> RippleButton {
         let button = RippleButton()
         button.setTitle(title, for: .normal)
-        button.titleLabel?.font = .scaledSystemFont(ofSize: 14, weight: .medium)
+        button.titleLabel?.font = .scaledSystemFont(ofSize: 13, weight: .medium)
+        button.titleLabel?.adjustsFontSizeToFitWidth = true
+        button.titleLabel?.minimumScaleFactor = 0.75
         let icon = UIImage(
             systemName: systemImage,
             withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .regular))
         button.setImage(icon, for: .normal)
         button.imageEdgeInsets = UIEdgeInsets(top: 0, left: 0, bottom: 0, right: 2)
         button.titleEdgeInsets = UIEdgeInsets(top: 0, left: 2, bottom: 0, right: 0)
-        button.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
+        button.contentEdgeInsets = UIEdgeInsets(top: 0, left: 9, bottom: 0, right: 9)
         if filled {
             button.setTitleColor(.white, for: .normal)
             button.tintColor = .white

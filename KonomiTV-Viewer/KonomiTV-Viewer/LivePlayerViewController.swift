@@ -234,6 +234,18 @@ final class LivePlayerViewController: UIViewController {
         commentOverlay.setDisplayEnabled(SettingsStore.shared.showComments && !audioOnly)
         commentOverlay.start()
         startStream()
+        // 実況コメントの接続は、画面が開ききってから始める
+        // (startCommentSession は viewDidAppear 側。開く処理の最中に
+        // 接続や一覧の更新が重なると、落ちる原因になりうるため)。
+    }
+
+    /// 実況コメントの接続を始めたかどうか (1回だけ始める)。
+    private var commentSessionStarted = false
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard !commentSessionStarted else { return }
+        commentSessionStarted = true
         startCommentSession()
     }
 
@@ -1319,26 +1331,20 @@ final class LivePlayerViewController: UIViewController {
     /// 届いたコメントを、一覧と流れる表示へ回す。
     /// 初回のまとめは一覧にだけ出す (Web 版と同じ)。
     private func receiveLiveComments(_ comments: [LiveJikkyoComment], isInitial: Bool) {
-        let oldCount = liveComments.count
         liveComments.append(contentsOf: comments)
         // 一覧が際限なく伸びないよう、古い分から少しずつ落とす。
-        var trimmed = false
         if liveComments.count > 1200 {
             liveComments.removeFirst(liveComments.count - 1000)
-            trimmed = true
         }
         if !isInitial {
             commentOverlay.appendComments(comments.map { $0.asJikkyoComment })
             commentOverlay.pruneSpawnedComments(before: liveCommentNow() - 30)
         }
-        if trimmed || oldCount == 0 {
-            commentTableView.reloadData()
-        } else {
-            let indexPaths = (oldCount..<liveComments.count).map {
-                IndexPath(row: $0, section: 0)
-            }
-            commentTableView.insertRows(at: indexPaths, with: .none)
-        }
+        // 一覧の更新は、行を1つずつ足す形ではなく、まとめて読み直す形に
+        // 統一する。行数の帳尻が合わないとアプリが落ちる事故が起きるため、
+        // その余地自体を無くす (実機で生放送の再生画面へ入ると落ちる
+        // 症状への守り)。
+        commentTableView.reloadData()
         updateCommentEmptyState()
         if commentFollow {
             scrollCommentListToBottom(animated: false)
@@ -2787,6 +2793,11 @@ extension LivePlayerViewController: UITableViewDataSource, UITableViewDelegate {
         if tableView === channelTableView {
             let cell = tableView.dequeueReusableCell(
                 withIdentifier: LiveChannelCell.reuseID, for: indexPath) as! LiveChannelCell
+            // 並びが組み直された直後など、行の対応が合わないときは
+            // 無理に読まず、空の行を返す (落ちないための守り)。
+            guard channelGroups.indices.contains(selectedChannelGroupIndex),
+                  channelGroups[selectedChannelGroupIndex].channels.indices.contains(indexPath.row)
+            else { return cell }
             let target = channelGroups[selectedChannelGroupIndex].channels[indexPath.row]
             let isPinned = SyncedSettingsStore.shared.current.pinnedChannelIDs.contains(target.id)
             cell.configure(with: target, isPinned: isPinned)
@@ -2795,6 +2806,7 @@ extension LivePlayerViewController: UITableViewDataSource, UITableViewDelegate {
         }
         let cell = tableView.dequeueReusableCell(
             withIdentifier: LiveCommentListCell.reuseID, for: indexPath) as! LiveCommentListCell
+        guard liveComments.indices.contains(indexPath.row) else { return cell }
         let comment = liveComments[indexPath.row]
         cell.configure(with: comment)
         cell.onMenu = { [weak self] in self?.showCommentMenu(for: comment) }
@@ -2805,8 +2817,15 @@ extension LivePlayerViewController: UITableViewDataSource, UITableViewDelegate {
         tableView.deselectRow(at: indexPath, animated: false)
         guard tableView === channelTableView,
               channelGroups.indices.contains(selectedChannelGroupIndex) else { return }
-        let target = channelGroups[selectedChannelGroupIndex].channels[indexPath.row]
-        switchChannel(to: target)
+        let channels = channelGroups[selectedChannelGroupIndex].channels
+        guard channels.indices.contains(indexPath.row) else { return }
+        let target = channels[indexPath.row]
+        // 選局は次の回しへ回す。触れた処理の最中に今の画面を入れ替えると、
+        // 一覧側の残りの処理が、壊れた後の画面や一覧に触れてしまい、
+        // アプリが落ちる (実機で発生したため、この形に変えた)。
+        DispatchQueue.main.async { [weak self] in
+            self?.switchChannel(to: target)
+        }
     }
 
     /// コメント一覧を手で動かしているときは、一番下にいるかどうかで
