@@ -1036,11 +1036,11 @@ final class LivePlayerViewController: UIViewController {
     /// 通常画面では、縦向きなら映像の下に、横向きなら右端に出す。
     @objc private func showRemotePanel() {
         let landscape = view.bounds.width > view.bounds.height
-        showRemotePanel(in: view, mode: landscape ? .rightEdge : .belowVideo)
+        presentRemotePanel(in: view, mode: landscape ? .rightEdge : .belowVideo)
     }
 
     /// 指定の置き場所でリモコンのパネルを出す (全画面側からも使う)。
-    private func showRemotePanel(in host: UIView, mode: RemotePanelMode) {
+    private func presentRemotePanel(in host: UIView, mode: RemotePanelMode) {
         guard let backdrop = remoteBackdrop, let panel = remotePanel else { return }
         applyRemotePanelPlacement(host: host, mode: mode)
         updateRemotePanelState()
@@ -1288,7 +1288,7 @@ final class LivePlayerViewController: UIViewController {
         fullscreen.remoteButtonVisible = SettingsStore.shared.dataBroadcastingEnabled
         fullscreen.onShowRemotePanel = { [weak self, weak fullscreen] in
             guard let self, let fullscreen else { return }
-            self.showRemotePanel(in: fullscreen.view, mode: .rightEdge)
+            self.presentRemotePanel(in: fullscreen.view, mode: .rightEdge)
         }
         fullscreen.onTogglePlayPause = { [weak self] in
             self?.togglePlayPause()
