@@ -41,11 +41,13 @@ final class CaptionOverlayView: UIView {
 /// 再生位置に合わせて文字化の部品 (libaribcaption) へ流し込み、
 /// その時刻の字幕を1枚の絵にして返す。
 ///
-/// 包みの入り口は2つあるが、蓄えた後の扱いは共通:
+/// 包みの入り口は3つあるが、蓄えた後の扱いは共通:
 /// - 通常画質: AVPlayer から届く時刻つきデータ (位置はそのまま使える)。
 /// - H.265 / HEVC: アプリ内の中継が区切りファイルから取り出した包み。
 ///   位置は「プレイリストの区切りの長さの累計 + 区切り内の差分」で決める
 ///   (ingestRelayPlaylist / ingestRelaySegment)。
+/// - 生放送: アプリ内の中継が流れから取り出した包み。位置は「流れの
+///   最初の映像の時刻印との差」で決める (ingestLivePackets)。
 ///
 /// 字幕 (0x80) と文字スーパー (0x81) は別の読み解き・描画の組で扱い、
 /// 最後に重ねて1枚にする。描画の設定 (フォント・縁取り・背景・
@@ -113,6 +115,12 @@ final class CaptionDisplayEngine {
     /// 文字スーパーを出すかどうか (設定の「ビデオの文字スーパー」)。
     /// 部品の用意のときに読み、再生の途中では変えない。
     private var showSuperimpose = false
+    /// 文字スーパーの設定を、テレビ側 (tv_show_superimpose) から取るか
+    /// どうか。生放送では true にする (Web 版の生放送では、字幕の設定の
+    /// 「テレビをみるときに文字スーパーを表示する」が効くため)。
+    /// 録画では false のまま (video_show_superimpose が効く)。
+    /// 部品の用意より前に決めること。
+    var useTVSuperimposeSetting = false
 
     /// いま出すべき字幕の絵 (字幕の画面の寸法のまま)。無いときは nil。
     private(set) var currentImage: UIImage?
@@ -153,7 +161,9 @@ final class CaptionDisplayEngine {
         // 描画の設定は、設定の「字幕」画面の値 (利用者設定と共通) から取る。
         // DRCS (外字) は対応する文字への置き換えを有効にする (固定)。
         let captionSettings = SyncedSettingsStore.shared.current
-        showSuperimpose = captionSettings.videoShowSuperimpose
+        showSuperimpose = useTVSuperimposeSetting
+            ? captionSettings.tvShowSuperimpose
+            : captionSettings.videoShowSuperimpose
         for renderer in [captionRenderer, superimposeRenderer] {
             aribcc_renderer_set_force_stroke_text(
                 renderer, captionSettings.alwaysBorderCaptionText)
@@ -276,6 +286,39 @@ final class CaptionDisplayEngine {
         for packet in packets {
             let offset = Self.ptsDifferenceSeconds(packet.pts90, reference)
             ingest(position: base + offset, payload: packet.payload)
+        }
+    }
+
+    /// 生放送側の包みの受け取り: 流れの最初の映像の時刻印を基準に、
+    /// 字幕の包みの時刻印との差を再生位置に読み替えて蓄える
+    /// (生放送にはプレイリストの物差しが無いため、使える物差しは
+    /// この差だけになる)。
+    func ingestLivePackets(_ packets: [TSID3Extractor.Packet], firstVideoPTS: Int64) {
+        for packet in packets {
+            let position = Self.ptsDifferenceSeconds(packet.pts90, firstVideoPTS)
+            ingest(position: position, payload: packet.payload)
+        }
+        pruneOldPackets()
+    }
+
+    /// 生放送では包みが際限なく増え続けるため、既に流し込み済みで
+    /// 再生位置より十分に前の包みを捨て、蓄えが膨らまないようにする。
+    /// 捨てる分は重複よけの控えからも落とす。
+    private func pruneOldPackets() {
+        guard packets.count > 4000, feedIndex > 0 else { return }
+        let cutoff = packets[feedIndex - 1].position - 120
+        var dropCount = 0
+        while dropCount < feedIndex, packets[dropCount].position < cutoff {
+            dropCount += 1
+        }
+        guard dropCount > 0 else { return }
+        packets.removeFirst(dropCount)
+        feedIndex -= dropCount
+        let cutoffMs = Int((cutoff * 1000).rounded())
+        seenKeys = seenKeys.filter { key in
+            guard let msText = key.split(separator: "/").first,
+                  let ms = Int(msText) else { return false }
+            return ms >= cutoffMs
         }
     }
 

@@ -48,6 +48,21 @@ final class StreamRelayServer {
 
     private var captionTap: CaptionTap?
 
+    /// 字幕の抜き取り口 (生放送用。生放送の再生画面だけが登録する)。
+    /// 生放送の流れは終わりが無いため、区切りファイルの形ではなく、
+    /// 届いた字幕の包みを少しずつ渡す。あわせて、流れの最初の映像の
+    /// 時刻印 (位置合わせの基準) と最新の映像の時刻印 (先端の位置) も渡す。
+    struct LiveCaptionTap {
+        /// 対象の生放送の経路の目印 ("/api/streams/live/{チャンネル}/")。
+        let pathMarker: String
+        /// 字幕の包みが取り出せたとき (包み・最初の映像の時刻印・
+        /// 最新の映像の時刻印)。包みが空でも、先端の位置が進んだときは
+        /// 呼ばれる (先端を知らせるため)。
+        let onPackets: ([TSID3Extractor.Packet], Int64?, Int64?) -> Void
+    }
+
+    private var liveCaptionTap: LiveCaptionTap?
+
     private init() {}
 
     /// 字幕の抜き取り口を登録する (nil で解除)。
@@ -58,6 +73,15 @@ final class StreamRelayServer {
 
     /// 現在の抜き取り口。中継のキューの上で呼ぶこと。
     fileprivate func currentCaptionTap() -> CaptionTap? { captionTap }
+
+    /// 生放送用の字幕の抜き取り口を登録する (nil で解除)。
+    /// 中継のキューの外から呼ぶこと。
+    func setLiveCaptionTap(_ tap: LiveCaptionTap?) {
+        queue.async { [weak self] in self?.liveCaptionTap = tap }
+    }
+
+    /// 現在の生放送用の抜き取り口。中継のキューの上で呼ぶこと。
+    fileprivate func currentLiveCaptionTap() -> LiveCaptionTap? { liveCaptionTap }
 
     /// 中継を立ち上げる (まだなら)。何度呼ばれてもよい。
     func startIfNeeded() {
@@ -155,6 +179,12 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
     private var captionTap: StreamRelayServer.CaptionTap?
     private var captionSegmentSequence: Int?
     private var captionExtractor: TSID3Extractor?
+    /// 字幕の抜き取り (生放送用。この接続が生放送の流れで、対象の
+    /// チャンネルのときだけ値が入る)。
+    private var liveCaptionTap: StreamRelayServer.LiveCaptionTap?
+    private var liveCaptionExtractor: TSID3Extractor?
+    /// 生放送の字幕で、最後に知らせた先端の映像の時刻印。
+    private var liveCaptionLastEdge: Int64?
     private var playlistBody = Data()
     private var headSent = false
     private var finished = false
@@ -284,6 +314,15 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
             }
         }
 
+        // 字幕の抜き取り (生放送用。登録があり、この接続が対象の
+        // チャンネルの生放送の流れのときだけ)。流れのついでに読み取る
+        // だけで、応答そのものは変えない。
+        if isLiveStream, let liveTap = server.currentLiveCaptionTap(),
+           target.contains(liveTap.pathMarker) {
+            liveCaptionTap = liveTap
+            liveCaptionExtractor = TSID3Extractor()
+        }
+
         var request = URLRequest(url: origin)
         // POST の場合は、本体と中身の形式をそのまま元のサーバーへ渡す
         // (データ放送の双方向の送信)。
@@ -348,6 +387,12 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
         }
         // 字幕の抜き取り: 区切りファイルの中身は、流すついでに読み取る。
         captionExtractor?.feed(data)
+        // 字幕の抜き取り (生放送用): 流れのついでに読み取り、取り出せた
+        // 包みを少しずつ渡す。
+        if let liveCaptionExtractor {
+            liveCaptionExtractor.feed(data)
+            reportLiveCaptionPackets(final: false)
+        }
         sendChunk(data)
         // 送りが追いついていないときは、受け取りを一時止めて溜め込みすぎない。
         if pendingBytes > 1_000_000, !taskSuspended {
@@ -367,6 +412,11 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
             captionTap.onSegment(captionSegmentSequence,
                                  captionExtractor.captionPackets,
                                  captionExtractor.videoFirstPTS)
+        }
+        // 字幕の抜き取り (生放送用): 読みかけを確定させ、残りの包みを渡す。
+        if liveCaptionExtractor != nil {
+            liveCaptionExtractor?.finish()
+            reportLiveCaptionPackets(final: true)
         }
         if isPlaylist {
             if error == nil, let http {
@@ -393,6 +443,28 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
         } else {
             finish()
         }
+    }
+
+    /// 生放送の字幕の抜き取り: 取り出せた包みと、流れの先端の位置を渡す。
+    /// 包みが無いときは、先端が 0.5 秒以上進んだときだけ知らせる
+    /// (映像の包みごとに知らせると、渡し先が追いつかなくなるため)。
+    private func reportLiveCaptionPackets(final: Bool) {
+        guard let liveCaptionTap, let liveCaptionExtractor else { return }
+        let drained = liveCaptionExtractor.drainCaptionPackets()
+        let edge = liveCaptionExtractor.videoLatestPTS
+        var edgeAdvanced = false
+        if let edge {
+            if let last = liveCaptionLastEdge {
+                edgeAdvanced = edge - last >= 45000 || edge < last
+            } else {
+                edgeAdvanced = true
+            }
+        }
+        guard !drained.isEmpty || final || edgeAdvanced else { return }
+        liveCaptionLastEdge = edge
+        liveCaptionTap.onPackets(drained,
+                                 liveCaptionExtractor.videoFirstPTS,
+                                 edge)
     }
 
     // MARK: - 応答の送り出し (VLCKit へ)

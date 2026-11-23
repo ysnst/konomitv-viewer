@@ -66,6 +66,33 @@ final class LivePlayerViewController: UIViewController {
     private var startWatchdog: Timer?
     private var didStartPlaying = false
 
+    // MARK: - 字幕 (生放送)
+    /// 字幕の本体 (録画と同じ部品)。生放送では、流れの中の時刻印の差を
+    /// 再生位置に読み替えて蓄える (AribCaption.swift の ingestLivePackets)。
+    private let captionEngine = CaptionDisplayEngine()
+    /// 字幕の重ね物。映像の枠 (videoArea) の中に入れ、全画面では映像の
+    /// 枠と一緒に貸し出す (データ放送の重ね合わせと同じ扱い)。
+    private let captionOverlayView = CaptionOverlayView()
+    private var captionHomeConstraints: [NSLayoutConstraint] = []
+    private var captionBorrowConstraints: [NSLayoutConstraint] = []
+    /// 字幕表示のオン/オフ (操作帯の中。録画と同じ置き場所・同じ設定)。
+    private let captionButton = RippleButton()
+    /// 字幕の更新タイマー (0.25秒ごと)。再生部品の時計に合わせて字幕の
+    /// 絵を進め、確かめるための数字も更新する。
+    private var captionTimer: Timer?
+    /// 字幕の位置合わせの基準 (この接続での最初の映像の時刻印)。
+    /// 接続が替わって基準が変わったら、蓄えを作り直す。
+    private var liveCaptionBasePTS: Int64?
+    /// 字幕の時刻合わせの補正 (秒)。再生部品の時計と流れの時刻印の差が
+    /// 実機の確認で分かったら、この値を動かして合わせる。
+    private static let liveCaptionTimeOffset = 0.0
+    /// 確かめるための数字 (情報欄の小さい行に出す): 届いた包みの数、
+    /// 最新の包みの位置、先端の位置。
+    private var captionProbePacketCount = 0
+    private var captionProbeLatestPosition: Double?
+    private var captionProbeEdge: Double?
+    private let captionProbeLabel = UILabel()
+
     // MARK: - データ放送 (重ね合わせ)
     /// リモコンの浮きボタン (情報欄の右下に浮かせ、押すとリモコンの
     /// パネルが出る。Web 版の浮きボタンと同じ置き場所)。
@@ -121,7 +148,11 @@ final class LivePlayerViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = AppPalette.background
+        // 生放送の文字スーパーは、字幕の設定のテレビ側の項目に従う
+        // (Web 版の生放送の扱いと同じ)。
+        captionEngine.useTVSuperimposeSetting = true
         buildLayout()
+        applyCaptionDisplayState()
         startStream()
     }
 
@@ -204,12 +235,14 @@ final class LivePlayerViewController: UIViewController {
         playPauseButton.addTarget(self, action: #selector(togglePlayPause), for: .touchUpInside)
         playPauseButton.translatesAutoresizingMaskIntoConstraints = false
 
-        // 操作帯には、放送中の番組の時刻だけを置く
-        // (Web 版の操作帯の左側の並びに相当)。
+        // 操作帯には、放送中の番組の時刻 (左) と字幕の切り替え (右) を置く
+        // (Web 版の操作帯の並びに相当。字幕ボタンは録画と同じ顔ぶれ)。
         liveTimeLabel.text = channel.program_present.map { programTimeText($0) } ?? ""
         liveTimeLabel.textColor = AppPalette.text
         liveTimeLabel.font = .scaledSystemFont(ofSize: 13, weight: .medium)
-        let controlsRow = UIStackView(arrangedSubviews: [liveTimeLabel, UIView()])
+        captionButton.addTarget(self, action: #selector(toggleCaptions), for: .touchUpInside)
+        updateCaptionButton()
+        let controlsRow = UIStackView(arrangedSubviews: [liveTimeLabel, UIView(), captionButton])
         controlsRow.axis = .horizontal
         controlsRow.spacing = 10
         controlsRow.alignment = .center
@@ -223,6 +256,19 @@ final class LivePlayerViewController: UIViewController {
         // 真ん中の再生・一時停止は操作帯より上に置く (映像が低いときでも
         // 帯に触れて押せなくならないように)。
         videoArea.addSubview(playPauseButton)
+
+        // 字幕の重ね物 (映像の上に重ねる。操作は受けない)。
+        // 置き場所の決まりは貸し出し・返却で付け替えるため控えに持つ
+        // (データ放送の重ね合わせと同じ作り)。
+        captionOverlayView.translatesAutoresizingMaskIntoConstraints = false
+        videoArea.addSubview(captionOverlayView)
+        captionHomeConstraints = [
+            captionOverlayView.topAnchor.constraint(equalTo: videoArea.topAnchor),
+            captionOverlayView.bottomAnchor.constraint(equalTo: videoArea.bottomAnchor),
+            captionOverlayView.leadingAnchor.constraint(equalTo: videoArea.leadingAnchor),
+            captionOverlayView.trailingAnchor.constraint(equalTo: videoArea.trailingAnchor),
+        ]
+        NSLayoutConstraint.activate(captionHomeConstraints)
 
         // MARK: 映像の下の情報欄 (Web 版パネル)
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -291,6 +337,14 @@ final class LivePlayerViewController: UIViewController {
         statusLabel.font = .scaledSystemFont(ofSize: 12.5)
         statusLabel.numberOfLines = 0
 
+        // 字幕の時刻合わせを確かめるための数字 (届いた包みの数・最新の
+        // 包みの位置・再生部品の時計・流れの先端との差)。実機で字幕の
+        // ずれを見るときの物差しとして出す。
+        captionProbeLabel.text = "字幕の確認: まだ包みが届いていません"
+        captionProbeLabel.textColor = AppPalette.metaText
+        captionProbeLabel.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        captionProbeLabel.numberOfLines = 0
+
         // 次の番組 (NEXT): 見出し + 題名 + 時刻。
         nextHeaderLabel.text = "NEXT"
         nextHeaderLabel.textColor = AppPalette.text
@@ -357,7 +411,8 @@ final class LivePlayerViewController: UIViewController {
 
         let infoStack = UIStackView(arrangedSubviews: [
             messageLabel, broadcasterRow, infoTitleLabel, infoTimeLabel, descriptionLabel,
-            statusLabel, nextHeaderLabel, nextTitleLabel, nextTimeLabel, chipsRow, chipsRow2,
+            statusLabel, captionProbeLabel, nextHeaderLabel, nextTitleLabel, nextTimeLabel,
+            chipsRow, chipsRow2,
         ])
         infoStack.axis = .vertical
         infoStack.spacing = 12
@@ -367,7 +422,8 @@ final class LivePlayerViewController: UIViewController {
         // Web 版パネルの余白: 番組名は局の並びから 16pt、時刻は 8pt、説明は 12pt。
         infoStack.setCustomSpacing(16, after: broadcasterRow)
         infoStack.setCustomSpacing(8, after: infoTitleLabel)
-        infoStack.setCustomSpacing(16, after: statusLabel)
+        infoStack.setCustomSpacing(4, after: statusLabel)
+        infoStack.setCustomSpacing(16, after: captionProbeLabel)
         infoStack.setCustomSpacing(4, after: nextHeaderLabel)
         infoStack.setCustomSpacing(2, after: nextTitleLabel)
         infoStack.setCustomSpacing(16, after: nextTimeLabel)
@@ -540,6 +596,7 @@ final class LivePlayerViewController: UIViewController {
         }
         player.play()
         beginNowPlaying()
+        startLiveCaptions()
 #else
         messageLabel.text = "このビルドには生放送の再生部品 (VLCKit) が組み込まれていません。"
 #endif
@@ -548,6 +605,11 @@ final class LivePlayerViewController: UIViewController {
     private func stopStream() {
         startWatchdog?.invalidate()
         startWatchdog = nil
+        // 字幕の抜き取り口と更新タイマーも止める (中継は他の再生と共用の
+        // ため、残しておくと関係ない経路でも読み取りが続いてしまう)。
+        StreamRelayServer.shared.setLiveCaptionTap(nil)
+        captionTimer?.invalidate()
+        captionTimer = nil
 #if canImport(MobileVLCKit)
         vlcPlayer?.stop()
         vlcPlayer = nil
@@ -555,6 +617,129 @@ final class LivePlayerViewController: UIViewController {
         if nowPlayingBegun {
             NowPlayingManager.shared.end(owner: self)
             nowPlayingBegun = false
+        }
+    }
+
+    // MARK: - 字幕 (生放送)
+
+    /// 字幕の用意: 蓄えを空にし直し、アプリ内の中継へ生放送用の
+    /// 抜き取り口を登録して、更新タイマーを回し始める
+    /// (録画の H.265 経路と同じ作り)。
+    private func startLiveCaptions() {
+        captionEngine.resetForNewPlayback()
+        liveCaptionBasePTS = nil
+        captionProbePacketCount = 0
+        captionProbeLatestPosition = nil
+        captionProbeEdge = nil
+        let marker = "/api/streams/live/\(channel.display_channel_id)/"
+        StreamRelayServer.shared.setLiveCaptionTap(StreamRelayServer.LiveCaptionTap(
+            pathMarker: marker,
+            onPackets: { [weak self] packets, firstVideoPTS, latestVideoPTS in
+                DispatchQueue.main.async {
+                    self?.ingestLiveCaptionPackets(
+                        packets, firstVideoPTS: firstVideoPTS, latestVideoPTS: latestVideoPTS)
+                }
+            }))
+        captionTimer?.invalidate()
+        captionTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            self?.refreshLiveCaptions()
+        }
+        applyCaptionDisplayState()
+    }
+
+    /// 中継から届いた字幕の包みを蓄える。接続が替わって基準の時刻印が
+    /// 変わっていたら、蓄えを作り直してから受ける。
+    private func ingestLiveCaptionPackets(
+        _ packets: [TSID3Extractor.Packet], firstVideoPTS: Int64?, latestVideoPTS: Int64?
+    ) {
+        guard let firstVideoPTS else { return }
+        if liveCaptionBasePTS != firstVideoPTS {
+            captionEngine.resetForNewPlayback()
+            liveCaptionBasePTS = firstVideoPTS
+            captionProbePacketCount = 0
+            captionProbeLatestPosition = nil
+            captionProbeEdge = nil
+        }
+        if let latestVideoPTS {
+            captionProbeEdge = Self.ptsDifferenceSeconds(latestVideoPTS, firstVideoPTS)
+        }
+        guard !packets.isEmpty else { return }
+        captionEngine.ingestLivePackets(packets, firstVideoPTS: firstVideoPTS)
+        captionProbePacketCount += packets.count
+        if let latest = packets.map({ Self.ptsDifferenceSeconds($0.pts90, firstVideoPTS) }).max() {
+            captionProbeLatestPosition = max(captionProbeLatestPosition ?? -Double.infinity, latest)
+        }
+    }
+
+    /// 再生部品の時計に合わせて字幕の絵を進め、確かめるための数字を
+    /// 更新する (0.25秒ごとのタイマーから呼ばれる)。
+    private func refreshLiveCaptions() {
+        let vlcSeconds = currentVLCTimeSeconds()
+        if !captionOverlayView.isHidden {
+            if captionEngine.update(position: vlcSeconds + Self.liveCaptionTimeOffset) {
+                captionOverlayView.setImage(captionEngine.currentImage)
+            }
+            // 映像の描画側が字幕より上に重なることがあるため、通常画面
+            // では字幕を映像の枠の中で一番上に保つ (録画と同じ扱い)。
+            if captionOverlayView.superview === videoArea {
+                videoArea.bringSubviewToFront(captionOverlayView)
+            }
+        }
+        let latestText = captionProbeLatestPosition.map { String(format: "%.1f", $0) } ?? "--"
+        let edgeText = captionProbeEdge.map { String(format: "%.1f", $0) } ?? "--"
+        let gapText = captionProbeEdge.map { String(format: "%.1f", $0 - vlcSeconds) } ?? "--"
+        captionProbeLabel.text = "字幕の確認: 包み \(captionProbePacketCount) 件 / 最新の包み \(latestText) 秒"
+            + " / 再生の時計 \(String(format: "%.1f", vlcSeconds)) 秒 / 先端との差 \(gapText) 秒"
+    }
+
+    /// 再生部品 (VLCKit) の時計 (秒)。取れないときは 0。
+    private func currentVLCTimeSeconds() -> Double {
+#if canImport(MobileVLCKit)
+        guard let vlcPlayer else { return 0 }
+        let ms = vlcPlayer.time.intValue
+        return ms > 0 ? Double(ms) / 1000 : 0
+#else
+        return 0
+#endif
+    }
+
+    /// 90kHz の時刻印同士の差 (秒)。時刻印は 33 ビットで一回りするため、
+    /// 差が半周を超えたら一回り分を戻して解釈する (字幕の本体と同じ計算)。
+    private static func ptsDifferenceSeconds(_ a: Int64, _ b: Int64) -> Double {
+        let modulus: Int64 = 1 << 33
+        var diff = (a - b) & (modulus - 1)
+        if diff >= modulus / 2 {
+            diff -= modulus
+        }
+        return Double(diff) / 90000.0
+    }
+
+    /// 字幕表示の切り替え (録画と同じ。設定は端末に保存する)。
+    @objc private func toggleCaptions() {
+        SettingsStore.shared.showCaptions.toggle()
+        updateCaptionButton()
+        applyCaptionDisplayState()
+        scheduleHideControls()
+    }
+
+    /// 字幕切り替えボタンの見た目を、現在の設定に合わせる (録画と同じ)。
+    private func updateCaptionButton() {
+        let on = SettingsStore.shared.showCaptions
+        let config = UIImage.SymbolConfiguration(pointSize: 20, weight: .regular)
+        captionButton.setImage(
+            UIImage(systemName: on ? "captions.bubble.fill" : "captions.bubble", withConfiguration: config),
+            for: .normal)
+        captionButton.tintColor = .white
+        captionButton.alpha = on ? 1 : 0.4
+        captionButton.accessibilityLabel = on ? "字幕表示オン" : "字幕表示オフ"
+    }
+
+    /// 字幕を出すかどうかを、重ね物へ反映する。
+    /// 音声のみの間は映像が出ていないので、字幕も出さない (録画と同じ)。
+    private func applyCaptionDisplayState() {
+        captionOverlayView.isHidden = !(SettingsStore.shared.showCaptions && !audioOnly)
+        if !captionOverlayView.isHidden {
+            refreshLiveCaptions()
         }
     }
 
@@ -722,6 +907,7 @@ final class LivePlayerViewController: UIViewController {
         audioOnly.toggle()
         audioOnlyButton.setTitle(audioOnly ? "音声のみ: ON" : "音声のみ: OFF", for: .normal)
         videoView.isHidden = audioOnly
+        applyCaptionDisplayState()
         startStream()
         playPauseButton.setImage(
             UIImage(systemName: "pause.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 36)),
@@ -1333,6 +1519,19 @@ final class LivePlayerViewController: UIViewController {
             ]
             NSLayoutConstraint.activate(bmlBorrowConstraints)
         }
+        // 字幕の重ね物も、映像の枠と一緒に貸し出す (一番上に置く)。
+        if captionOverlayView.superview === videoArea {
+            NSLayoutConstraint.deactivate(captionHomeConstraints)
+            captionOverlayView.removeFromSuperview()
+            container.addSubview(captionOverlayView)
+            captionBorrowConstraints = [
+                captionOverlayView.topAnchor.constraint(equalTo: container.topAnchor),
+                captionOverlayView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+                captionOverlayView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                captionOverlayView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            ]
+            NSLayoutConstraint.activate(captionBorrowConstraints)
+        }
     }
 
     /// 貸し出した映像の枠を通常画面へ戻す。
@@ -1353,6 +1552,14 @@ final class LivePlayerViewController: UIViewController {
             webView.removeFromSuperview()
             videoArea.insertSubview(webView, aboveSubview: videoView)
             NSLayoutConstraint.activate(bmlHomeConstraints)
+        }
+        // 字幕の重ね物も通常画面へ戻す。
+        if captionOverlayView.superview !== videoArea {
+            NSLayoutConstraint.deactivate(captionBorrowConstraints)
+            captionBorrowConstraints = []
+            captionOverlayView.removeFromSuperview()
+            videoArea.addSubview(captionOverlayView)
+            NSLayoutConstraint.activate(captionHomeConstraints)
         }
     }
 

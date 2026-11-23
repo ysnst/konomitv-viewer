@@ -34,6 +34,9 @@ final class TSID3Extractor {
     private(set) var captionPackets: [Packet] = []
     /// 区切りの先頭の映像の時刻印 (90kHz)。取れなければ nil。
     private(set) var videoFirstPTS: Int64?
+    /// 最新の映像の時刻印 (90kHz)。生放送では終わりが無いため、
+    /// PES の頭が届くたびに更新し、「流れの先端」の位置を知るために使う。
+    private(set) var videoLatestPTS: Int64?
 
     /// TS の包み (188バイト) に満たない端数の控え。
     private var leftover = Data()
@@ -78,6 +81,15 @@ final class TSID3Extractor {
     /// 区切りファイルの終わり。読みかけの字幕 PES を確定させる。
     func finish() {
         flushCaptionPES()
+    }
+
+    /// 取り出した字幕の包みを、その場で受け取って蓄えを空にする (生放送用)。
+    /// 読みかけの PES は、次の PES が始まった時点で確定するため、
+    /// 最後の1つは次の包みが来るまで残る (遅れは包み1つ分ほど)。
+    func drainCaptionPackets() -> [Packet] {
+        let drained = captionPackets
+        captionPackets = []
+        return drained
     }
 
     // MARK: - TS の包みの振り分け
@@ -127,7 +139,11 @@ final class TSID3Extractor {
             } else if captionPESStarted {
                 captionPES.append(payload)
             }
-        } else if let videoPID, pid == videoPID, videoFirstPTS == nil {
+        } else if let videoPID, pid == videoPID {
+            // 映像の PES の頭を読み、時刻印を拾う。最初の時刻印
+            // (videoFirstPTS) は区切りの位置合わせに、最新の時刻印
+            // (videoLatestPTS) は生放送で流れの先端を知るために使う。
+            // 頭が読めたら、その PES ではもう読まない。
             if pusi {
                 videoHead = payload
                 videoHeadStarted = true
@@ -135,7 +151,12 @@ final class TSID3Extractor {
                 videoHead.append(payload)
             }
             if videoHeadStarted, videoHead.count >= 14 {
-                videoFirstPTS = parsePESHeader(videoHead)?.pts
+                if let pts = parsePESHeader(videoHead)?.pts {
+                    if videoFirstPTS == nil {
+                        videoFirstPTS = pts
+                    }
+                    videoLatestPTS = pts
+                }
                 videoHeadStarted = false
                 videoHead = Data()
             }
