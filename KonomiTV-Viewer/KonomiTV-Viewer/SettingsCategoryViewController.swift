@@ -5,10 +5,10 @@ import UIKit
 /// たつやさんの指示で、設定を Web 版と同じ階層にした: この画面が分類の
 /// 一覧 (大きな入口ボタン) で、分類ごとに別の画面を開く。
 /// 分類は Web 版の設定の並びに合わせた「全般」「画質」「字幕」
-/// 「アカウント」「ニコニコ実況」と、アプリ専用の「このアプリの設定」。
-/// Web 版にある「データ放送」「キャプチャ」「Twitter / Bluesky 連携」
-/// 「サーバー設定」は、アプリに土台が無い (サーバー設定は出さない
-/// 決まり) ため置いていない。
+/// 「データ放送」「アカウント」「ニコニコ実況」と、アプリ専用の
+/// 「このアプリの設定」。
+/// Web 版にある「キャプチャ」「Twitter / Bluesky 連携」「サーバー設定」
+/// は、アプリに土台が無い (サーバー設定は出さない決まり) ため置いていない。
 /// 見た目は他の設定画面と同じ: 上部に高さ 60px・地が
 /// background-lighten-1 の見出し帯、入口ボタンはマイページと同じ
 /// EntryButtonView (高さ 54px、地は background-lighten-1)。
@@ -77,8 +77,8 @@ final class SettingsCategoryViewController: UIViewController {
         view.addSubview(headingBar)
 
         // 入口の並びは Web 版の設定一覧と同じ順 (全般 → 画質 → 字幕 →
-        // アカウント → ニコニコ実況)。アプリ専用の「このアプリの設定」
-        // は最後に置く。
+        // データ放送 → アカウント → ニコニコ実況)。アプリ専用の
+        // 「このアプリの設定」は最後に置く。
         let generalButton = makeEntryButton(
             iconName: "", fallbackSystemName: "slider.horizontal.3",
             title: "全般")
@@ -91,6 +91,11 @@ final class SettingsCategoryViewController: UIViewController {
             iconName: "", fallbackSystemName: "captions.bubble",
             title: "字幕")
         captionButton.addTarget(self, action: #selector(openCaptionSettings), for: .touchUpInside)
+        // データ放送の入口の印は、Web 版の設定一覧と同じ「d」のロゴ。
+        let dataBroadcastingButton = makeEntryButton(
+            iconName: "data_broadcast_d_logo", fallbackSystemName: "antenna.radiowaves.left.and.right",
+            title: "データ放送")
+        dataBroadcastingButton.addTarget(self, action: #selector(openDataBroadcastingSettings), for: .touchUpInside)
         let accountButton = makeEntryButton(
             iconName: "ic_fluent_person_20_regular", fallbackSystemName: "person",
             title: "アカウント")
@@ -108,6 +113,7 @@ final class SettingsCategoryViewController: UIViewController {
             generalButton,
             playbackButton,
             captionButton,
+            dataBroadcastingButton,
             accountButton,
             jikkyoButton,
             appSettingsButton,
@@ -167,6 +173,11 @@ final class SettingsCategoryViewController: UIViewController {
     @objc private func openCaptionSettings() {
         navigationController?.pushViewController(
             CaptionSettingsViewController(), animated: true)
+    }
+
+    @objc private func openDataBroadcastingSettings() {
+        navigationController?.pushViewController(
+            DataBroadcastingSettingsViewController(), animated: true)
     }
 
     @objc private func openAccountSettings() {

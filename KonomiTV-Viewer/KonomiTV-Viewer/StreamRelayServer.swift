@@ -133,12 +133,19 @@ final class StreamRelayServer {
 /// 取りに行き、応答をそのまま (プレイリストだけは中身を書き換えて) 返す。
 /// 応答の区切りは、プレイリストは長さを明示し、それ以外はチャンク形式で
 /// 流す。接続は1回ごとに閉じる (VLCKit は必要に応じて張り直す)。
+/// GET のほかに POST も受ける (データ放送の双方向の送信が、サーバー側の
+/// 代理の口へ POST で送るため)。POST は本体ごと元のサーバーへ渡す。
 private final class RelayConnection: NSObject, URLSessionDataDelegate {
     private let connection: NWConnection
     private let server: StreamRelayServer
     private let queue: DispatchQueue
 
     private var requestBuffer = Data()
+    /// 要求の頭 (空行まで読み切った時点で確定する) と、本体の集まり具合。
+    /// POST の本体は頭の後に続くため、長さがそろうまで受け続ける。
+    private var requestHead: String?
+    private var requestBody = Data()
+    private var expectedBodyLength = 0
     private var session: URLSession?
     private var task: URLSessionDataTask?
     private var originURL: URL?
@@ -173,24 +180,47 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
             }
         }
         connection.start(queue: queue)
-        receiveRequestHead()
+        receiveRequest()
     }
 
     // MARK: - 要求の受け取り
 
-    /// 要求の頭 (空行まで) を読み切ってから処理する。要求本体は来ない前提
-    /// (VLCKit の取りに行きは GET のみ)。
-    private func receiveRequestHead() {
+    /// 要求の頭 (空行まで) を読み切り、POST の場合は本体 (頭に書かれた
+    /// 長さの分) も読み切ってから処理する。
+    private func receiveRequest() {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             if let data, !data.isEmpty {
-                self.requestBuffer.append(data)
-                let text = String(decoding: self.requestBuffer, as: UTF8.self)
-                if let end = text.range(of: "\r\n\r\n") {
-                    self.handleRequest(head: String(text[..<end.lowerBound]))
+                if self.requestHead == nil {
+                    self.requestBuffer.append(data)
+                    guard let headEnd = self.requestBuffer.range(of: Data("\r\n\r\n".utf8)) else {
+                        if self.requestBuffer.count > 65536 {
+                            self.finish()
+                            return
+                        }
+                        if error != nil || isComplete {
+                            self.finish()
+                            return
+                        }
+                        self.receiveRequest()
+                        return
+                    }
+                    let headData = self.requestBuffer.subdata(in: 0 ..< headEnd.lowerBound)
+                    self.requestHead = String(decoding: headData, as: UTF8.self)
+                    // 頭の後に同じ便で届いていた分は、本体の先頭として引き継ぐ。
+                    self.requestBody = self.requestBuffer.subdata(in: headEnd.upperBound ..< self.requestBuffer.count)
+                    self.requestBuffer = Data()
+                    self.expectedBodyLength = Self.contentLength(from: self.requestHead ?? "")
+                } else {
+                    self.requestBody.append(data)
+                }
+                if self.requestBody.count >= self.expectedBodyLength, let head = self.requestHead {
+                    let body = Data(self.requestBody.prefix(self.expectedBodyLength))
+                    self.handleRequest(head: head, body: body)
                     return
                 }
-                if self.requestBuffer.count > 65536 {
+                // 本体が際限なく届くような要求は受け付けない (上限は概ね 1MB)。
+                if self.requestBody.count > 1_000_000 {
                     self.finish()
                     return
                 }
@@ -199,15 +229,31 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
                 self.finish()
                 return
             }
-            self.receiveRequestHead()
+            self.receiveRequest()
         }
     }
 
-    private func handleRequest(head: String) {
+    /// 要求の頭から、本体の長さ (Content-Length) を取り出す。無ければ 0。
+    private static func contentLength(from head: String) -> Int {
+        for line in head.components(separatedBy: "\r\n") {
+            let lower = line.lowercased()
+            if lower.hasPrefix("content-length:") {
+                return Int(lower.dropFirst("content-length:".count)
+                    .trimmingCharacters(in: .whitespaces)) ?? 0
+            }
+        }
+        return 0
+    }
+
+    private func handleRequest(head: String, body: Data) {
         let lines = head.components(separatedBy: "\r\n")
         guard let firstLine = lines.first else { finish(); return }
         let parts = firstLine.split(separator: " ")
-        guard parts.count >= 2, parts[0] == "GET" else {
+        guard parts.count >= 2 else { finish(); return }
+        // GET は再生と材料の取りに行き、POST はデータ放送の双方向の
+        // 送信 (サーバー側の代理の口宛て) で使う。それ以外は受けない。
+        let method = String(parts[0])
+        guard method == "GET" || method == "POST" else {
             respondSimple(status: 405)
             return
         }
@@ -239,6 +285,17 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
         }
 
         var request = URLRequest(url: origin)
+        // POST の場合は、本体と中身の形式をそのまま元のサーバーへ渡す
+        // (データ放送の双方向の送信)。
+        if method == "POST" {
+            request.httpMethod = "POST"
+            request.httpBody = body
+            if let typeLine = lines.first(where: { $0.lowercased().hasPrefix("content-type:") }) {
+                let value = String(typeLine.dropFirst("content-type:".count))
+                    .trimmingCharacters(in: .whitespaces)
+                request.setValue(value, forHTTPHeaderField: "Content-Type")
+            }
+        }
         // Cloudflare Access の合言葉はここで付ける (中継の肝)。
         for (key, value) in SettingsStore.shared.cfAccessHeaders {
             request.setValue(value, forHTTPHeaderField: key)

@@ -1,19 +1,29 @@
-// データ放送の重ね合わせ検証用のつなぎ。
+// データ放送の重ね合わせのつなぎ。
 //
 // Web 版 (KonomiTV クライアント) の作りをそのまま移したもの:
 // - BML ブラウザの初期化は LiveDataBroadcastingManager.ts と同じ決め事。
 //   ただし映像の要素は空の要素を渡し、中に何も入れない (映像の場所が
-//   透明な穴として残り、下のネイティブ映像が見えるかを確かめるため)。
+//   切り抜かれて透明な穴になり、下のネイティブ映像が見える。
+//   重ね合わせの検証で実機確認済み)。
 // - 材料 (PSI/SI アーカイブデータ) の解き方は、裏方
 //   LivePSIArchivedDataDecoder.ts から番組情報を作る部分を除いて
 //   書き写したもの。材料の口はアプリ内の中継経由の URL を Swift 側から
 //   渡してもらう。
-// - 双方向 (ネット接続) は無効の申告 (接続していない) にしてある。
-// - 状態 (読み込み中・データ放送の有無・失敗) は Swift 側へ知らせ、
-//   表示はアプリ側の知らせ表示に任せる。
+// - 双方向 (ネット接続) は Web 版と同じ形で実装し、実際の通信は
+//   アプリ内の中継を通してサーバー側の代理の口へつなぐ。許可が
+//   オフのときは、Web 版と同じく「接続していない」の申告にし、
+//   一切つながない。
+// - 保存データ (NVRAM) は、画面側の保存領域がアプリの再起動を
+//   またいで残る保証が無いため、読み書きを Swift 側へ写して控える
+//   (橋渡し)。地域情報 (郵便番号・都道府県) は、設定の値を開始時に
+//   保存データへ流し込む。
+// - 状態 (読み込み中・データ放送の有無・失敗・通信中) は Swift 側へ
+//   知らせ、表示はアプリ側の知らせ表示に任せる。
 //
 // Swift 側からの入口は window.BMLSpike の3つ:
-//   start({ psiUrl, serviceId }) / stop() / sendKey(aribKeyCode)
+//   start({ psiUrl, serviceId, internetEnabled, proxyBase,
+//           zipCode, prefecture, nvram, hasNvram })
+//   stop() / sendKey(aribKeyCode)
 
 (function () {
     'use strict';
@@ -26,6 +36,10 @@
     var bmlHeight = 540;
     // データ放送がそのチャンネルに含まれているか (null: まだ分からない)。
     var availability = null;
+    // 双方向の決め事 (開始のたびに Swift 側から渡される)。
+    // proxyBase はアプリ内の中継の向き先 (「http://127.0.0.1:ポート」まで)。
+    // 中継が使えないときは null で、その場合は通信は失敗の形になる。
+    var ipConfig = { internetEnabled: false, proxyBase: null };
 
     function postStatus(status) {
         if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.bmlStatus) {
@@ -237,7 +251,7 @@
     // onMessage には Web 版の decoded_callback と同じ形で、
     // decodeTS の結果と PCR の合図が届く。
     // onError は、材料の口への接続自体が失敗したときだけ呼ばれる
-    // (Web 版は無言だが、検証では失敗が見えた方が確かめやすいため)。
+    // (Web 版は無言だが、アプリでは失敗が見えた方が確かめやすいため)。
     function createDecoder(serviceId, onMessage, onError) {
         var tsStream = decodeTS({
             sendCallback: function (message) { onMessage(message); },
@@ -297,7 +311,7 @@
                     }
                 }).catch(function (error) {
                     // 中断 (終了操作) のときは何もしない (Web 版と同じ)。
-                    // それ以外の接続の失敗は、検証で見えるよう知らせる。
+                    // それ以外の接続の失敗は、アプリで見えるよう知らせる。
                     if (destroyed === false && (error === undefined || error === null || error.name !== 'AbortError')) {
                         onError();
                     }
@@ -432,6 +446,142 @@
         setTimeout(function () { reapplyVideoPlaneClip(null); }, 300);
     }
 
+    // MARK: - 保存データ (NVRAM) の橋渡し
+
+    // 保存データの保存領域のキーの接頭辞 (BML ブラウザの決め事:
+    // storagePrefix + nvramPrefix)。
+    var NVRAM_KEY_PREFIX = 'KonomiTV-BMLBrowser_nvram_';
+    // 地域情報の保存先のキーの土台 (Web 版の設定画面が書く形と同じ)。
+    var RECEIVER_INFO_KEY_BASE = 'KonomiTV-BMLBrowser_nvram_prefix=receiverinfo%2F';
+    var nvramBridgeInstalled = false;
+
+    // 保存領域にある保存データのキーを、キー → 値の辞書で全部読む。
+    function readAllNvram() {
+        var result = {};
+        try {
+            for (var i = 0; i < window.localStorage.length; i++) {
+                var key = window.localStorage.key(i);
+                if (key !== null && key.indexOf(NVRAM_KEY_PREFIX) === 0) {
+                    result[key] = window.localStorage.getItem(key);
+                }
+            }
+        } catch (e) {
+            // 保存領域に触れない環境では空で受ける
+        }
+        return result;
+    }
+
+    // 保存データの今の写しを Swift 側へ送る (アプリ側の控えになる)。
+    function postNvram() {
+        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.bmlNvram) {
+            window.webkit.messageHandlers.bmlNvram.postMessage(readAllNvram());
+        }
+    }
+
+    // 保存領域への書き込みを横取りし、保存データのキーが変わるたびに
+    // Swift 側へ写しを送る。これで、データ放送の中で溜まった保存データが
+    // アプリ側の控えに残る。
+    function installNvramBridge() {
+        if (nvramBridgeInstalled) {
+            return;
+        }
+        nvramBridgeInstalled = true;
+        try {
+            var proto = window.Storage.prototype;
+            var originalSetItem = proto.setItem;
+            var originalRemoveItem = proto.removeItem;
+            var originalClear = proto.clear;
+            proto.setItem = function (key, value) {
+                originalSetItem.call(this, key, value);
+                if (this === window.localStorage && String(key).indexOf(NVRAM_KEY_PREFIX) === 0) {
+                    postNvram();
+                }
+            };
+            proto.removeItem = function (key) {
+                originalRemoveItem.call(this, key);
+                if (this === window.localStorage && String(key).indexOf(NVRAM_KEY_PREFIX) === 0) {
+                    postNvram();
+                }
+            };
+            proto.clear = function () {
+                originalClear.call(this);
+                if (this === window.localStorage) {
+                    postNvram();
+                }
+            };
+        } catch (e) {
+            // 横取りできなくても、開始時の吸い上げと流し込みは行う
+        }
+    }
+
+    // 開始時の保存データの用意。アプリ側に控えがあれば画面側の保存領域を
+    // 控えと一致させ (リセットの反映もここで効く)、控えがまだ無ければ
+    // 画面側に残っている分を吸い上げて控えにする (検証版までで溜まった
+    // 保存データを引き継ぐため)。そのあと、地域情報 (郵便番号・都道府県)
+    // を保存データへ流し込む。
+    function prepareNvram(config) {
+        installNvramBridge();
+        try {
+            if (config.hasNvram) {
+                var snapshot = config.nvram || {};
+                var existing = readAllNvram();
+                Object.keys(existing).forEach(function (key) {
+                    if (!(key in snapshot)) {
+                        window.localStorage.removeItem(key);
+                    }
+                });
+                Object.keys(snapshot).forEach(function (key) {
+                    if (existing[key] !== snapshot[key]) {
+                        window.localStorage.setItem(key, snapshot[key]);
+                    }
+                });
+            }
+            applyReceiverInfo(config.zipCode || '', config.prefecture || '');
+            // 流し込みまで終えた状態を、アプリ側の控えとして送る
+            // (初回の吸い上げも兼ねる)。
+            postNvram();
+        } catch (e) {
+            // 保存データの用意ができなくても、データ放送自体は続ける
+        }
+    }
+
+    // 地域情報を保存データへ流し込む。符号化は Web 版の設定画面
+    // (DataBroadcasting.vue) が保存データへ書く形とまったく同じ。
+    function applyReceiverInfo(zipCode, prefectureValue) {
+        if (zipCode) {
+            // ハイフンを除いて Base64 符号化する
+            window.localStorage.setItem(
+                RECEIVER_INFO_KEY_BASE + 'zipcode', window.btoa(zipCode.replace('-', '')));
+        } else {
+            window.localStorage.removeItem(RECEIVER_INFO_KEY_BASE + 'zipcode');
+        }
+        var applied = false;
+        if (prefectureValue && prefectureValue !== '255-0b0') {
+            var parts = prefectureValue.split('-0b');
+            var prefectureNumber = parseInt(parts[0], 10);
+            var regionCodeNumber = parseInt(parts[1], 2);
+            if (!isNaN(prefectureNumber) && !isNaN(regionCodeNumber)) {
+                window.localStorage.setItem(
+                    RECEIVER_INFO_KEY_BASE + 'prefecture',
+                    window.btoa(String.fromCharCode(prefectureNumber)));
+                window.localStorage.setItem(
+                    RECEIVER_INFO_KEY_BASE + 'regioncode',
+                    window.btoa(String.fromCharCode(regionCodeNumber >> 8, regionCodeNumber & 0xff)));
+                applied = true;
+            }
+        }
+        if (!applied) {
+            window.localStorage.removeItem(RECEIVER_INFO_KEY_BASE + 'prefecture');
+            window.localStorage.removeItem(RECEIVER_INFO_KEY_BASE + 'regioncode');
+        }
+    }
+
+    // 双方向の通信先 (サーバー側の代理の口) を、アプリ内の中継経由の
+    // URL にする。中継が使えないときは null。
+    function proxyURL(path) {
+        return ipConfig.proxyBase !== null ? ipConfig.proxyBase + path : null;
+    }
+
     // MARK: - BML ブラウザまわり
 
     // データ放送画面の拡大/縮小率を再計算し、CSS カスタムプロパティに設定する
@@ -481,6 +631,14 @@
         container.style.setProperty('--bml-browser-height', bmlHeight + 'px');
         calculateScaleFactor();
 
+        // 双方向の決め事と保存データの用意は、BML ブラウザを作る前に済ませる
+        // (保存データは文書の読み込み時点で読まれるため)。
+        ipConfig = {
+            internetEnabled: !!config.internetEnabled,
+            proxyBase: config.proxyBase || null,
+        };
+        prepareNvram(config);
+
         browser = new BMLBrowser({
             // 映像の要素は空の要素を渡し、中に何も入れない。
             // 映像の場所は切り抜かれて透明な穴になり、下の映像が見えるはず。
@@ -495,9 +653,12 @@
                 squareGothic: { source: 'url("Kosugi-Regular.woff2"), local("sans-serif")' },
             },
             indicator: {
-                setUrl: function () {},
-                setNetworkingGetStatus: function () {},
-                setNetworkingPostStatus: function () {},
+                // 通信の始まりと終わりを Swift 側へ知らせる
+                // (リモコンの読み込み中の表示に使う。Web 版も同じ
+                // 知らせでリモコンの読み込み状態を切り替えている)。
+                setUrl: function (name, loading) { postStatus(loading ? 'netbusy' : 'netidle'); },
+                setNetworkingGetStatus: function (connecting) { postStatus(connecting ? 'netbusy' : 'netidle'); },
+                setNetworkingPostStatus: function (connecting) { postStatus(connecting ? 'netbusy' : 'netidle'); },
                 setReceivingStatus: function () {},
                 setEventName: function () {},
             },
@@ -506,15 +667,89 @@
             epg: {
                 tune: function () { return false; },
             },
-            // 双方向 (ネット接続) は無効の申告 (接続していない)。
+            // 双方向 (ネット接続)。Web 版の LiveDataBroadcastingManager と
+            // 同じ形で、許可がオフのときは一切つながず、オンのときは
+            // サーバー側の代理の口へ、アプリ内の中継を通してつなぐ。
             ip: {
+                // Ethernet (DHCP)
                 getConnectionType: function () { return 403; },
-                isIPConnected: function () { return 0; },
-                get: async function () { return {}; },
-                transmitTextDataOverIP: async function () {
-                    return { resultCode: NaN, statusCode: '', response: new Uint8Array() };
+                isIPConnected: function () { return ipConfig.internetEnabled ? 1 : 0; },
+                // 代理の口経由で HTTP GET し、応答をそのまま返す。
+                // 失敗したときは Web 版と同じく何も返さない (空の応答)。
+                get: async function (uri) {
+                    if (!ipConfig.internetEnabled) {
+                        return {};
+                    }
+                    var getURL = proxyURL('/api/data-broadcasting/request/' + uri);
+                    if (getURL === null) {
+                        return {};
+                    }
+                    try {
+                        var getResponse = await fetch(getURL);
+                        var getBody = await getResponse.arrayBuffer();
+                        return {
+                            statusCode: getResponse.status,
+                            headers: getResponse.headers,
+                            response: new Uint8Array(getBody),
+                        };
+                    } catch (e) {
+                        return {};
+                    }
                 },
-                confirmIPNetwork: async function () { return null; },
+                // 代理の口経由で HTTP POST (フォーム形式の本文をそのまま) し、
+                // 応答をそのまま返す。失敗したときは Web 版と同じ失敗の形。
+                transmitTextDataOverIP: async function (uri, body) {
+                    var failure = { resultCode: NaN, statusCode: '', response: new Uint8Array() };
+                    if (!ipConfig.internetEnabled) {
+                        return failure;
+                    }
+                    var postURL = proxyURL('/api/data-broadcasting/request/' + uri);
+                    if (postURL === null) {
+                        return failure;
+                    }
+                    try {
+                        var postResponse = await fetch(postURL, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: body,
+                        });
+                        var postBody = await postResponse.arrayBuffer();
+                        return {
+                            resultCode: 1,
+                            statusCode: String(postResponse.status),
+                            response: new Uint8Array(postBody),
+                        };
+                    } catch (e) {
+                        return failure;
+                    }
+                },
+                // 代理の口経由で、接続できるかどうかをサーバー側で確かめる。
+                confirmIPNetwork: async function (destination, isICMP, timeoutMillis) {
+                    if (!ipConfig.internetEnabled) {
+                        return null;
+                    }
+                    var query = 'destination=' + encodeURIComponent(destination)
+                        + '&is_icmp=' + (isICMP ? 'true' : 'false')
+                        + '&timeout_milliseconds=' + String(timeoutMillis);
+                    var statusURL = proxyURL('/api/data-broadcasting/internet-status?' + query);
+                    if (statusURL === null) {
+                        return null;
+                    }
+                    try {
+                        var statusResponse = await fetch(statusURL);
+                        if (!statusResponse.ok) {
+                            return null;
+                        }
+                        var data = await statusResponse.json();
+                        return {
+                            success: data.success,
+                            ipAddress: data.ip_address,
+                            responseTimeMillis: data.response_time_milliseconds,
+                        };
+                    } catch (e) {
+                        return null;
+                    }
+                },
             },
             showErrorMessage: function () { postStatus('error'); },
         });

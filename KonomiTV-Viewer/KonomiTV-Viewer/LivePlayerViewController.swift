@@ -67,8 +67,10 @@ final class LivePlayerViewController: UIViewController {
     private var didStartPlaying = false
 
     // MARK: - データ放送 (重ね合わせ)
-    /// 情報欄の「リモコン」ボタン (浮き出るパネルを出す)。
-    private let remoteButton = RippleButton()
+    /// リモコンの浮きボタン (情報欄の右下に浮かせ、押すとリモコンの
+    /// パネルが出る。Web 版の浮きボタンと同じ置き場所)。
+    /// 設定でデータ放送機能がオフのときは出さない。
+    private let remoteFloatingButton = RippleButton()
     private var dataBroadcastOverlay: DataBroadcastOverlay?
     private var isDataBroadcastActive = false
     /// 知らせ欄にデータ放送の状態を出しているかどうか。
@@ -81,10 +83,16 @@ final class LivePlayerViewController: UIViewController {
     /// 開始が失敗したままかどうか。失敗のままなら、次の「データ」で
     /// 作り直して開始し直す。
     private var dataBroadcastStartFailed = false
-    /// リモコンのパネル (Web 版と同じ浮き出る形) と、その後ろの幕。
+    /// リモコンのパネル (Web 版と同じ顔ぶれ) と、その後ろの幕。
+    /// 置き場所は出すたびに決める (通常画面では映像の下、全画面では
+    /// 右端) ため、置き場所の決まりは控えに分けて付け替える。
     private var remoteBackdrop: UIView?
     private var remotePanel: UIView?
+    private var remotePlacementConstraints: [NSLayoutConstraint] = []
     private var remoteSpinner: UIActivityIndicatorView?
+    /// 双方向の通信中かどうか (つなぎからの知らせで切り替わる)。
+    /// リモコンの読み込み中のぐるぐるの判定に使う。
+    private var dataBroadcastNetworkBusy = false
     /// 「データ」以外のデータ放送キー (十字・戻る・色・数字) の置き場。
     /// 始まっていない間と読み込み中は薄くして押せなくする
     /// (Web 版の使えない間の見せ方と同じ)。
@@ -127,6 +135,9 @@ final class LivePlayerViewController: UIViewController {
             .font: UIFont.scaledSystemFont(ofSize: 14, weight: .bold),
             .foregroundColor: AppPalette.text,
         ]
+        // 設定でデータ放送機能のオン/オフが変わっていたら、入り口の
+        // 出し分けと実行中の重ね合わせに反映する。
+        refreshDataBroadcastAvailability()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -144,8 +155,7 @@ final class LivePlayerViewController: UIViewController {
             return
         }
 #endif
-        remoteBackdrop?.isHidden = true
-        remotePanel?.isHidden = true
+        hideRemotePanelImmediately()
         stopDataBroadcast()
         stopStream()
     }
@@ -319,19 +329,31 @@ final class LivePlayerViewController: UIViewController {
         chipsRow2.axis = .horizontal
         chipsRow2.spacing = 8
 
-        // データ放送の重ね合わせ。入り口は情報欄の
-        // 「リモコン」ボタンで、押すと Web 版と同じ浮き出るパネル型の
-        // リモコンが出る。データ放送の開始はパネルの「データ」ボタン
-        // から行う (テレビで dボタンを押して開くのと同じ入り口)。
-        // パネル本体は buildRemotePanel() で画面全体の上に作る。
+        // データ放送の重ね合わせ。入り口は情報欄の右下に浮かせた丸ボタン
+        // (Web 版の浮きボタンと同じ: 48x48 の円、地は panel、余白 16)。
+        // 押すとリモコンのパネルが出る。データ放送の開始はパネルの
+        // 「データ」ボタンから行う (テレビで dボタンを押して開くのと
+        // 同じ入り口)。パネル本体は buildRemotePanel() で作る。
         // データ放送は素のサーバーの機能なので、改造版サーバーの
-        // 機能のトグルの対象にはしない (常に出す)。
-        remoteButton.setTitle("リモコン", for: .normal)
-        remoteButton.addTarget(self, action: #selector(showRemotePanel), for: .touchUpInside)
-        stylePlayerChip(remoteButton)
-        let chipsRow3 = UIStackView(arrangedSubviews: [remoteButton, UIView()])
-        chipsRow3.axis = .horizontal
-        chipsRow3.spacing = 8
+        // 機能のトグルの対象にはしない。ただし設定 (設定 → データ放送)
+        // でデータ放送機能がオフのときは、入り口自体を出さない。
+        remoteFloatingButton.setImage(
+            UIImage(systemName: "appletvremote.gen4.fill",
+                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 25))
+                ?? UIImage(systemName: "tv", withConfiguration: UIImage.SymbolConfiguration(pointSize: 25)),
+            for: .normal
+        )
+        remoteFloatingButton.tintColor = AppPalette.text
+        remoteFloatingButton.backgroundColor = AppPalette.panel
+        remoteFloatingButton.layer.cornerRadius = 24
+        remoteFloatingButton.layer.shadowColor = UIColor.black.cgColor
+        remoteFloatingButton.layer.shadowOpacity = 0.3
+        remoteFloatingButton.layer.shadowRadius = 6
+        remoteFloatingButton.layer.shadowOffset = CGSize(width: 0, height: 3)
+        remoteFloatingButton.accessibilityLabel = "リモコン"
+        remoteFloatingButton.addTarget(self, action: #selector(showRemotePanel), for: .touchUpInside)
+        remoteFloatingButton.translatesAutoresizingMaskIntoConstraints = false
+        remoteFloatingButton.isHidden = !SettingsStore.shared.dataBroadcastingEnabled
 
         let infoStack = UIStackView(arrangedSubviews: [
             messageLabel, broadcasterRow, infoTitleLabel, infoTimeLabel, descriptionLabel,
@@ -349,7 +371,6 @@ final class LivePlayerViewController: UIViewController {
         infoStack.setCustomSpacing(4, after: nextHeaderLabel)
         infoStack.setCustomSpacing(2, after: nextTitleLabel)
         infoStack.setCustomSpacing(16, after: nextTimeLabel)
-        infoStack.addArrangedSubview(chipsRow3)
         scrollView.addSubview(infoStack)
 
         // 映像の高さは viewDidLayoutSubviews で決める (16:9 と画面に収まる高さの小さい方)。
@@ -396,7 +417,16 @@ final class LivePlayerViewController: UIViewController {
             infoStack.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor),
         ])
 
-        // リモコンのパネルは画面全体の上に浮かせるため、最後に足す。
+        // リモコンの浮きボタンは情報欄の右下に浮かせる (映像には重ねない)。
+        view.addSubview(remoteFloatingButton)
+        NSLayoutConstraint.activate([
+            remoteFloatingButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            remoteFloatingButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+            remoteFloatingButton.widthAnchor.constraint(equalToConstant: 48),
+            remoteFloatingButton.heightAnchor.constraint(equalToConstant: 48),
+        ])
+
+        // リモコンのパネルと幕は、開いたときに一番上へ来るよう最後に足す。
         buildRemotePanel()
     }
 
@@ -702,8 +732,10 @@ final class LivePlayerViewController: UIViewController {
     // MARK: - データ放送 (重ね合わせ)
 
     /// リモコンのパネルを作る (Web 版の Remocon.vue と同じ顔ぶれ)。
-    /// 画面全体にかぶさる幕+中央のパネルで、十字キーは円形、操作キーと
-    /// 数字キーの送る合図 (ARIB のキーコード) は Web 版と同一。
+    /// 十字キーは円形、操作キーと数字キーの送る合図 (ARIB のキーコード)
+    /// は Web 版と同一。パネルと幕の置き場所は、作る時点では仮置きし、
+    /// 出すたびに applyRemotePanelPlacement で決め直す (通常画面では
+    /// 映像の下、全画面では右端)。
     /// 「データ」ボタンがデータ放送の入り口で、それ以外のキーは
     /// dataBroadcastRemoteKey がそのまま合図を送る。
     private func buildRemotePanel() {
@@ -918,21 +950,14 @@ final class LivePlayerViewController: UIViewController {
 
         view.addSubview(backdrop)
         view.addSubview(panel)
-        // パネルの高さは Web 版と同じ 514pt を目安にし、画面が低い
-        // ときは画面に収まる高さまで縮める (中身は滑らせて見せる)。
+        // パネルの高さは Web 版と同じ 514pt を目安にし、置き場所側の
+        // 上限 (画面に収まる高さ) で縮む場合は中身を滑らせて見せる。
+        // 幅は置き場所によらず 234pt で固定する。
         let panelHeight = panel.heightAnchor.constraint(equalToConstant: 514)
         panelHeight.priority = .defaultHigh
         panelHeight.isActive = true
+        panel.widthAnchor.constraint(equalToConstant: 234).isActive = true
         NSLayoutConstraint.activate([
-            backdrop.topAnchor.constraint(equalTo: view.topAnchor),
-            backdrop.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            backdrop.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            backdrop.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            panel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            panel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            panel.widthAnchor.constraint(equalToConstant: 234),
-            panel.topAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
-            panel.bottomAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
             panelScroll.topAnchor.constraint(equalTo: panel.topAnchor),
             panelScroll.bottomAnchor.constraint(equalTo: panel.bottomAnchor),
             panelScroll.leadingAnchor.constraint(equalTo: panel.leadingAnchor),
@@ -949,13 +974,75 @@ final class LivePlayerViewController: UIViewController {
         ])
         remoteBackdrop = backdrop
         remotePanel = panel
+        // 仮置き (通常画面の置き場所)。出すたびに決め直す。
+        applyRemotePanelPlacement(host: view, mode: .belowVideo)
         updateRemotePanelState()
+    }
+
+    /// リモコンのパネルの置き場所の種類。
+    /// - belowVideo: 縦向きの通常画面。幕は映像の下の領域だけに敷き、
+    ///   パネルは画面の下端に寄せる (映像には被せない)。
+    /// - rightEdge: 全画面と、横向きの通常画面。幕は曇らせない (透明) で、
+    ///   パネルは画面の右端に寄せる。
+    private enum RemotePanelMode {
+        case belowVideo
+        case rightEdge
+    }
+
+    /// リモコンのパネルと幕の置き場所を決める。今までの置き場所の
+    /// 決まりは外し、置き先のビューへ移してから新しい決まりを付ける。
+    private func applyRemotePanelPlacement(host: UIView, mode: RemotePanelMode) {
+        guard let backdrop = remoteBackdrop, let panel = remotePanel else { return }
+        NSLayoutConstraint.deactivate(remotePlacementConstraints)
+        remotePlacementConstraints = []
+        if backdrop.superview !== host {
+            backdrop.removeFromSuperview()
+            host.addSubview(backdrop)
+        }
+        if panel.superview !== host {
+            panel.removeFromSuperview()
+            host.addSubview(panel)
+        }
+        switch mode {
+        case .belowVideo:
+            backdrop.backgroundColor = UIColor(red: 0x1E / 255, green: 0x13 / 255, blue: 0x10 / 255, alpha: 0.5)
+            remotePlacementConstraints = [
+                backdrop.topAnchor.constraint(equalTo: videoArea.bottomAnchor),
+                backdrop.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+                backdrop.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+                backdrop.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+                panel.centerXAnchor.constraint(equalTo: host.centerXAnchor),
+                panel.bottomAnchor.constraint(equalTo: host.safeAreaLayoutGuide.bottomAnchor, constant: -12),
+                panel.topAnchor.constraint(greaterThanOrEqualTo: videoArea.bottomAnchor, constant: 12),
+            ]
+        case .rightEdge:
+            backdrop.backgroundColor = .clear
+            remotePlacementConstraints = [
+                backdrop.topAnchor.constraint(equalTo: host.topAnchor),
+                backdrop.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+                backdrop.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+                backdrop.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+                panel.trailingAnchor.constraint(equalTo: host.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+                panel.centerYAnchor.constraint(equalTo: host.centerYAnchor),
+                panel.topAnchor.constraint(greaterThanOrEqualTo: host.safeAreaLayoutGuide.topAnchor, constant: 12),
+                panel.bottomAnchor.constraint(lessThanOrEqualTo: host.safeAreaLayoutGuide.bottomAnchor, constant: -12),
+            ]
+        }
+        NSLayoutConstraint.activate(remotePlacementConstraints)
     }
 
     /// リモコンのパネルを出す。データ放送が始まっていなくても出せる
     /// (開始はパネルの「データ」ボタンから行うため)。
+    /// 通常画面では、縦向きなら映像の下に、横向きなら右端に出す。
     @objc private func showRemotePanel() {
+        let landscape = view.bounds.width > view.bounds.height
+        showRemotePanel(in: view, mode: landscape ? .rightEdge : .belowVideo)
+    }
+
+    /// 指定の置き場所でリモコンのパネルを出す (全画面側からも使う)。
+    private func showRemotePanel(in host: UIView, mode: RemotePanelMode) {
         guard let backdrop = remoteBackdrop, let panel = remotePanel else { return }
+        applyRemotePanelPlacement(host: host, mode: mode)
         updateRemotePanelState()
         backdrop.isHidden = false
         panel.isHidden = false
@@ -964,6 +1051,33 @@ final class LivePlayerViewController: UIViewController {
         UIView.animate(withDuration: 0.2) {
             backdrop.alpha = 1
             panel.alpha = 1
+        }
+    }
+
+    /// リモコンのパネルを、動きなしで隠す。全画面側に置いていた場合は
+    /// 通常画面側へ戻しておく (全画面が閉じたあとも残らないように)。
+    private func hideRemotePanelImmediately() {
+        guard let backdrop = remoteBackdrop, let panel = remotePanel else { return }
+        backdrop.layer.removeAllAnimations()
+        panel.layer.removeAllAnimations()
+        backdrop.isHidden = true
+        panel.isHidden = true
+        if backdrop.superview !== view || panel.superview !== view {
+            applyRemotePanelPlacement(host: view, mode: .belowVideo)
+        }
+    }
+
+    /// 設定 (設定 → データ放送) の「データ放送機能を利用する」に
+    /// 合わせて、入り口の出し分けと実行中の重ね合わせを切り替える。
+    /// 画面に戻ってくるたびに確かめる。
+    private func refreshDataBroadcastAvailability() {
+        let enabled = SettingsStore.shared.dataBroadcastingEnabled
+        remoteFloatingButton.isHidden = !enabled
+        if !enabled {
+            hideRemotePanelImmediately()
+            if isDataBroadcastActive {
+                stopDataBroadcast()
+            }
         }
     }
 
@@ -989,7 +1103,9 @@ final class LivePlayerViewController: UIViewController {
             target.alpha = running ? 1 : 0.4
             target.isUserInteractionEnabled = running
         }
-        if loading {
+        // 読み込み中と、双方向の通信中はぐるぐるを出す (Web 版は
+        // 通信中もリモコンの読み込み表示にしている)。
+        if loading || dataBroadcastNetworkBusy {
             remoteSpinner?.startAnimating()
         } else {
             remoteSpinner?.stopAnimating()
@@ -1046,10 +1162,27 @@ final class LivePlayerViewController: UIViewController {
         // 材料の口は映像と同じくアプリ内の中継を通す (外回線の合言葉が付く)。
         // 中継が使えないときは元の URL に落ちる (映像と同じ扱い)。
         let psiURL = StreamRelayServer.shared.relayURL(for: originURL) ?? originURL
+        // 双方向の通信先は、中継の向き先 (サーバー本体ではなく中継) を
+        // 渡す。中継が使えず元の URL に落ちた場合は向き先を渡さない
+        // (その場合は通信は失敗の形になる)。
+        var proxyBase: String? = nil
+        if psiURL != originURL,
+           let components = URLComponents(url: psiURL, resolvingAgainstBaseURL: false),
+           let host = components.host, let port = components.port {
+            proxyBase = "\(components.scheme ?? "http")://\(host):\(port)"
+        }
+        let store = SettingsStore.shared
+        let config = DataBroadcastOverlay.StartConfig(
+            internetEnabled: store.dataBroadcastingInternetEnabled,
+            zipCode: store.dataBroadcastingZipCode,
+            prefecture: store.dataBroadcastingPrefecture,
+            proxyBase: proxyBase,
+            nvram: store.dataBroadcastingNvram
+        )
         isDataBroadcastActive = true
         dataBroadcastLoaded = false
         dataBroadcastStartFailed = false
-        overlay.start(psiURL: psiURL, serviceID: channel.service_id)
+        overlay.start(psiURL: psiURL, serviceID: channel.service_id, config: config)
         updateRemotePanelState()
     }
 
@@ -1064,6 +1197,7 @@ final class LivePlayerViewController: UIViewController {
         pendingDataKey = false
         dataBroadcastLoaded = false
         dataBroadcastStartFailed = false
+        dataBroadcastNetworkBusy = false
         if clearStatusMessage, showingDataBroadcastStatus {
             messageLabel.text = nil
             showingDataBroadcastStatus = false
@@ -1114,6 +1248,11 @@ final class LivePlayerViewController: UIViewController {
             // データ放送が無い局と分かったら、重ね合わせは止める
             // (知らせの文面は残す)。
             stopDataBroadcast(clearStatusMessage: false)
+        case "netbusy":
+            // 双方向の通信が始まった (ぐるぐるの表示だけに効く)。
+            dataBroadcastNetworkBusy = true
+        case "netidle":
+            dataBroadcastNetworkBusy = false
         case "error":
             messageLabel.text = "データ放送を開始できませんでした。"
             showingDataBroadcastStatus = true
@@ -1138,8 +1277,18 @@ final class LivePlayerViewController: UIViewController {
         }
         fullscreen.onWillDisappear = { [weak self] in
             guard let self else { return }
+            // 全画面側に出していたリモコンのパネルは隠して戻す。
+            self.hideRemotePanelImmediately()
             self.returnVideoView()
             self.refreshPlayPauseIcon()
+        }
+        // 全画面にもリモコンの浮きボタンを出す (設定でデータ放送機能が
+        // オフのときは出さない)。押されたら、全画面側の画面にパネルを
+        // 右端寄せで出す。
+        fullscreen.remoteButtonVisible = SettingsStore.shared.dataBroadcastingEnabled
+        fullscreen.onShowRemotePanel = { [weak self, weak fullscreen] in
+            guard let self, let fullscreen else { return }
+            self.showRemotePanel(in: fullscreen.view, mode: .rightEdge)
         }
         fullscreen.onTogglePlayPause = { [weak self] in
             self?.togglePlayPause()
@@ -1274,6 +1423,12 @@ final class LiveFullscreenViewController: UIViewController {
     var onTogglePlayPause: (() -> Void)?
     /// 現在再生中かどうかを呼び出し元へ聞く。
     var isPlayingProvider: (() -> Bool)?
+    /// リモコンの浮きボタンが押されたときに呼ばれる (パネル自体は
+    /// 呼び出し元がこの画面の上に出す)。
+    var onShowRemotePanel: (() -> Void)?
+    /// リモコンの浮きボタンを出すかどうか (設定でデータ放送機能が
+    /// オフのときは出さない)。表示前に呼び出し元が決める。
+    var remoteButtonVisible = true
 
     private let videoView = UIView()
     /// 上部の帯のグラデーション (Web 版ヘッダーと同じ、黒から透明へ)。
@@ -1282,6 +1437,9 @@ final class LiveFullscreenViewController: UIViewController {
     private let nameLabel = UILabel()
     private let exitButton = RippleButton()
     private let playPauseButton = RippleButton()
+    /// リモコンの浮きボタン (通常画面と同じ顔ぶれ: 48x48 の円)。
+    /// 操作類と一緒に現れて、一緒に消える。
+    private let remoteButton = RippleButton()
     private var controlsVisible = true
     private var hideTimer: Timer?
 
@@ -1376,6 +1534,27 @@ final class LiveFullscreenViewController: UIViewController {
         playPauseButton.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(playPauseButton)
 
+        // リモコンの浮きボタンは画面の右下 (余白 16)。地は通常画面と
+        // 同じ panel 色で、操作類と一緒に現れて消える。
+        remoteButton.setImage(
+            UIImage(systemName: "appletvremote.gen4.fill",
+                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 25))
+                ?? UIImage(systemName: "tv", withConfiguration: UIImage.SymbolConfiguration(pointSize: 25)),
+            for: .normal
+        )
+        remoteButton.tintColor = AppPalette.text
+        remoteButton.backgroundColor = AppPalette.panel
+        remoteButton.layer.cornerRadius = 24
+        remoteButton.layer.shadowColor = UIColor.black.cgColor
+        remoteButton.layer.shadowOpacity = 0.3
+        remoteButton.layer.shadowRadius = 6
+        remoteButton.layer.shadowOffset = CGSize(width: 0, height: 3)
+        remoteButton.accessibilityLabel = "リモコン"
+        remoteButton.addTarget(self, action: #selector(showRemotePanelFromFullscreen), for: .touchUpInside)
+        remoteButton.translatesAutoresizingMaskIntoConstraints = false
+        remoteButton.isHidden = !remoteButtonVisible
+        view.addSubview(remoteButton)
+
         NSLayoutConstraint.activate([
             videoView.topAnchor.constraint(equalTo: view.topAnchor),
             videoView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -1394,7 +1573,15 @@ final class LiveFullscreenViewController: UIViewController {
             playPauseButton.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             playPauseButton.widthAnchor.constraint(equalToConstant: 60),
             playPauseButton.heightAnchor.constraint(equalToConstant: 60),
+            remoteButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
+            remoteButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+            remoteButton.widthAnchor.constraint(equalToConstant: 48),
+            remoteButton.heightAnchor.constraint(equalToConstant: 48),
         ])
+    }
+
+    @objc private func showRemotePanelFromFullscreen() {
+        onShowRemotePanel?()
     }
 
     @objc private func toggleControls() {
@@ -1410,9 +1597,11 @@ final class LiveFullscreenViewController: UIViewController {
             self.topBar.alpha = visible ? 1 : 0
             self.topGradient.alpha = visible ? 1 : 0
             self.playPauseButton.alpha = visible ? 1 : 0
+            self.remoteButton.alpha = visible ? 1 : 0
         }
         topBar.isUserInteractionEnabled = visible
         playPauseButton.isUserInteractionEnabled = visible
+        remoteButton.isUserInteractionEnabled = visible
         setNeedsStatusBarAppearanceUpdate()
         if !visible {
             hideTimer?.invalidate()

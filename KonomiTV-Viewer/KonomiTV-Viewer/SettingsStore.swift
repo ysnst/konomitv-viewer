@@ -151,6 +151,19 @@ final class SettingsStore {
         // どちらも端末ごとに持つ設定で、デバイス間同期の対象にはしない。
         static let customizedFeaturesEnabled = "viewer_customized_features_enabled"
         static let customizedFeaturesUnlocked = "viewer_customized_features_unlocked"
+        // データ放送の設定 (Web 版の設定 → データ放送の項目)。Web 版でも
+        // どれもデバイス間同期の対象外 (端末ごとに持つ) のため、
+        // こちらも端末にだけ置く。
+        static let dataBroadcastingEnabled = "viewer_data_broadcasting_enabled"
+        static let dataBroadcastingInternetEnabled = "viewer_data_broadcasting_internet_enabled"
+        static let dataBroadcastingZipCode = "viewer_data_broadcasting_zip_code"
+        static let dataBroadcastingPrefecture = "viewer_data_broadcasting_prefecture"
+        // データ放送の保存データ (NVRAM) のアプリ側の控え。データ放送の
+        // 画面 (WebView) の中の保存領域がアプリの再起動をまたいで残る
+        // 保証が無いため、つなぎ (bml-main.js) が読み書きを写してきて、
+        // ここに控える。キーが無い = まだ控えが無い (初回は画面側の
+        // 保存領域から吸い上げる)。
+        static let dataBroadcastingNvram = "viewer_data_broadcasting_nvram"
     }
 
     private enum KeychainKey {
@@ -735,6 +748,61 @@ final class SettingsStore {
     var customizedServerFeaturesUnlocked: Bool {
         get { defaults.bool(forKey: Key.customizedFeaturesUnlocked) }
         set { defaults.set(newValue, forKey: Key.customizedFeaturesUnlocked) }
+    }
+
+    // MARK: - データ放送 (端末ごとの設定)
+
+    /// テレビをみるときにデータ放送機能を利用するか
+    /// (Web 版の tv_show_data_broadcasting)。Web 版と同じく既定はオン
+    /// (キーが無いときはオンで受ける)。オフのときは、生放送の再生画面に
+    /// リモコンの入り口自体を出さない。
+    var dataBroadcastingEnabled: Bool {
+        get {
+            guard defaults.object(forKey: Key.dataBroadcastingEnabled) != nil else { return true }
+            return defaults.bool(forKey: Key.dataBroadcastingEnabled)
+        }
+        set { defaults.set(newValue, forKey: Key.dataBroadcastingEnabled) }
+    }
+
+    /// データ放送からのインターネットアクセス (双方向) を有効にするか
+    /// (Web 版の enable_internet_access_from_data_broadcasting)。
+    /// 既定は Web 版と同じオフ。オフのときは、データ放送の画面から
+    /// ネット接続の受け口へ一切つながない。
+    var dataBroadcastingInternetEnabled: Bool {
+        get { defaults.bool(forKey: Key.dataBroadcastingInternetEnabled) }
+        set { defaults.set(newValue, forKey: Key.dataBroadcastingInternetEnabled) }
+    }
+
+    /// お住まいの郵便番号 (「000-0000」の形で持つ。未設定は空)。
+    /// Web 版はデータ放送の保存データへ直接書いているが、アプリでは
+    /// 設定画面を開いた時点でデータ放送の画面が存在しないため、
+    /// ここに値を持ち、データ放送を始めるときに保存データへ流し込む。
+    var dataBroadcastingZipCode: String {
+        get { defaults.string(forKey: Key.dataBroadcastingZipCode) ?? "" }
+        set { defaults.set(newValue, forKey: Key.dataBroadcastingZipCode) }
+    }
+
+    /// お住まいの都道府県 (Web 版の選択肢の値の形「番号-0b地域コード」で
+    /// 持つ。未設定は空)。郵便番号と同じく、データ放送を始めるときに
+    /// 保存データへ流し込む。
+    var dataBroadcastingPrefecture: String {
+        get { defaults.string(forKey: Key.dataBroadcastingPrefecture) ?? "" }
+        set { defaults.set(newValue, forKey: Key.dataBroadcastingPrefecture) }
+    }
+
+    /// データ放送の保存データ (NVRAM) のアプリ側の控え。
+    /// 保存領域のキー → 値の辞書そのまま。nil は「まだ控えが無い」
+    /// (初回の開始時に画面側から吸い上げる)。空の辞書は
+    /// 「リセット済みで中身が無い」という意味になる。
+    var dataBroadcastingNvram: [String: String]? {
+        get { defaults.dictionary(forKey: Key.dataBroadcastingNvram) as? [String: String] }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.dataBroadcastingNvram)
+            } else {
+                defaults.removeObject(forKey: Key.dataBroadcastingNvram)
+            }
+        }
     }
 
     /// 前後の空白を取り除き、方式 (https:// 等) が無ければ https:// を補う。

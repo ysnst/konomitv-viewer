@@ -6,9 +6,16 @@ import WebKit
 /// 同梱した土台のページ (DataBroadcast/index.html) を透明な WebView で開き、
 /// その中で Web 版と同じデータ放送ブラウザ (web-bml) を動かす。映像の要素は
 /// 空にしておくため、映像の場所は切り抜かれて透明な穴になり、下に置いた
-/// ネイティブの映像が見えるはず、という仮説を実機で確かめるための作り。
+/// ネイティブの映像が見える (重ね合わせの検証で実機確認済み)。
 /// 材料 (PSI/SI アーカイブデータ) の受け取りと解き方はページ側のつなぎ
 /// (bml-main.js) が行い、材料の口はアプリ内の中継経由の URL を渡す。
+/// 双方向 (ネット接続) も、つなぎがアプリ内の中継経由でサーバー側の
+/// 代理の口へつなぐ。
+///
+/// データ放送の保存データ (NVRAM) は、画面側の保存領域がアプリの
+/// 再起動をまたいで残る保証が無いため、つなぎが読み書きを写してきて、
+/// アプリ側 (SettingsStore) に控える。開始時には控えを渡して画面側へ
+/// 流し込む。
 ///
 /// 呼び出し側 (生放送の再生画面) は、prepareWebView() で得た WebView を
 /// 映像の真上に組み込み、開始・終了とリモコンのキー送信をここへ頼む。
@@ -16,12 +23,29 @@ import WebKit
 /// 届くので、表示は呼び出し側の知らせ表示に任せる。
 final class DataBroadcastOverlay: NSObject {
     /// 状態の知らせ。届く値は "loading" / "loaded" / "available" /
-    /// "unavailable" / "error" のいずれか。
+    /// "unavailable" / "error" / "netbusy" / "netidle" のいずれか。
     var onStatus: ((String) -> Void)?
+
+    /// 開始時にページ側のつなぎへ渡す決め事。
+    struct StartConfig {
+        /// 双方向 (ネット接続) の許可。オフのときは一切つながない。
+        var internetEnabled: Bool
+        /// お住まいの郵便番号 (「000-0000」。未設定は空)。
+        var zipCode: String
+        /// お住まいの都道府県 (Web 版の選択肢の値。未設定は空)。
+        var prefecture: String
+        /// 双方向の通信に使うアプリ内の中継の向き先
+        /// (「http://127.0.0.1:ポート」まで)。中継が使えないときは nil で、
+        /// その場合は双方向の通信は失敗の形になる。
+        var proxyBase: String?
+        /// 保存データのアプリ側の控え。nil は「まだ控えが無い」
+        /// (初回は画面側の保存領域から吸い上げる)。
+        var nvram: [String: String]?
+    }
 
     private(set) var webView: WKWebView?
     private var pageLoaded = false
-    private var pendingStart: (psiURL: URL, serviceID: Int?)?
+    private var pendingStart: (psiURL: URL, serviceID: Int?, config: StartConfig)?
 
     /// WebView を用意する (まだなら作って土台のページを読み込む)。
     /// 透明化し、タッチは受けない (操作はリモコンのパネルから行うため、
@@ -32,6 +56,7 @@ final class DataBroadcastOverlay: NSObject {
         }
         let configuration = WKWebViewConfiguration()
         configuration.userContentController.add(self, name: "bmlStatus")
+        configuration.userContentController.add(self, name: "bmlNvram")
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
         webView.isOpaque = false
@@ -52,9 +77,9 @@ final class DataBroadcastOverlay: NSObject {
 
     /// データ放送を始める。土台のページの読み込みが終わっていなければ、
     /// 終わり次第始める。
-    func start(psiURL: URL, serviceID: Int?) {
+    func start(psiURL: URL, serviceID: Int?, config: StartConfig) {
         _ = prepareWebView()
-        pendingStart = (psiURL, serviceID)
+        pendingStart = (psiURL, serviceID, config)
         runPendingStartIfReady()
     }
 
@@ -70,6 +95,7 @@ final class DataBroadcastOverlay: NSObject {
         if let webView {
             webView.navigationDelegate = nil
             webView.configuration.userContentController.removeScriptMessageHandler(forName: "bmlStatus")
+            webView.configuration.userContentController.removeScriptMessageHandler(forName: "bmlNvram")
             webView.removeFromSuperview()
         }
         webView = nil
@@ -84,9 +110,24 @@ final class DataBroadcastOverlay: NSObject {
     private func runPendingStartIfReady() {
         guard pageLoaded, let pendingStart, let webView else { return }
         self.pendingStart = nil
-        var config: [String: Any] = ["psiUrl": pendingStart.psiURL.absoluteString]
+        let start = pendingStart.config
+        var config: [String: Any] = [
+            "psiUrl": pendingStart.psiURL.absoluteString,
+            "internetEnabled": start.internetEnabled,
+            "zipCode": start.zipCode,
+            "prefecture": start.prefecture,
+        ]
         if let serviceID = pendingStart.serviceID {
             config["serviceId"] = serviceID
+        }
+        if let proxyBase = start.proxyBase {
+            config["proxyBase"] = proxyBase
+        }
+        if let nvram = start.nvram {
+            config["nvram"] = nvram
+            config["hasNvram"] = true
+        } else {
+            config["hasNvram"] = false
         }
         guard let data = try? JSONSerialization.data(withJSONObject: config),
               let json = String(data: data, encoding: .utf8) else { return }
@@ -111,7 +152,14 @@ extension DataBroadcastOverlay: WKNavigationDelegate {
 
 extension DataBroadcastOverlay: WKScriptMessageHandler {
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.name == "bmlStatus", let status = message.body as? String else { return }
-        onStatus?(status)
+        if message.name == "bmlStatus", let status = message.body as? String {
+            onStatus?(status)
+            return
+        }
+        // 保存データの写し (キー → 値の辞書が丸ごと届く)。アプリ側の
+        // 控えとして保存する。
+        if message.name == "bmlNvram", let nvram = message.body as? [String: String] {
+            SettingsStore.shared.dataBroadcastingNvram = nvram
+        }
     }
 }
