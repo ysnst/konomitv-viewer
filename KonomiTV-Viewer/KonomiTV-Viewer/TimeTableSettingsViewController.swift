@@ -10,9 +10,16 @@ import UIKit
 /// 値の保存は TimeTableSettingsStore が担う (端末内が基本で、同期が
 /// 入っていればサーバーへも送られる)。値が変わるたびに呼び出し側へ
 /// 知らせ、番組表の格子へその場で反映してもらう。
+/// 「予約のある番組の塗りとチューナーの使用帯」だけはアプリ側の
+/// 項目で、端末だけに保存し、同期には乗せない。
 final class TimeTableSettingsViewController: UIViewController {
     /// 値が変わったときに、新しい値一式で呼ばれる。
     var onSettingsChanged: ((TimeTableDisplaySettings) -> Void)?
+    /// 「予約のある番組の塗りとチューナーの使用帯」のスイッチが
+    /// 変わったときに呼ばれる。これは端末保存の項目で、値一式には
+    /// 含まれないため、知らせは別に分けてある (受け手は番組表の
+    /// 読み直しなどに使う)。
+    var onReservationHighlightChanged: (() -> Void)?
 
     /// 編集中の値一式。開いた時点の現在の値から始める。
     private var settings = TimeTableSettingsStore.shared.current
@@ -20,6 +27,10 @@ final class TimeTableSettingsViewController: UIViewController {
     private let channelWidthControl = WebSegmentedControl(items: ["広め", "標準", "狭め"])
     private let hourHeightControl = WebSegmentedControl(items: ["広め", "標準", "狭め"])
     private let dimShoppingSwitch = WebToggle()
+    /// 予約セルの塗りとチューナー使用帯のスイッチ。これは Web 版の
+    /// 表示設定には無いアプリ側の項目で、端末だけに保存する
+    /// (TimeTableSettingsStore の同期には乗せない)。
+    private let reservationHighlightSwitch = WebToggle()
     /// ジャンルごとの色ボタン (ジャンル名 → ボタン)。
     private var genreButtons: [String: UIButton] = [:]
 
@@ -164,6 +175,16 @@ final class TimeTableSettingsViewController: UIViewController {
         dimShoppingSwitch.addTarget(
             self, action: #selector(dimShoppingChanged), for: .valueChanged)
 
+        // 予約のある番組の塗りと、チューナーの使用帯 (アプリ側の項目)。
+        stack.addArrangedSubview(makeSpacer(24))
+        stack.addArrangedSubview(makeItemHeading("予約のある番組の塗りとチューナーの使用帯"))
+        stack.addArrangedSubview(makeSpacer(8))
+        stack.addArrangedSubview(makeSwitchRow(
+            text: "予約のある番組のセルをテーマ色で薄く塗り、時刻軸にチューナーの使用帯を表示します。",
+            toggle: reservationHighlightSwitch))
+        reservationHighlightSwitch.addTarget(
+            self, action: #selector(reservationHighlightChanged), for: .valueChanged)
+
         // ジャンル別のハイライト色。
         stack.addArrangedSubview(makeSpacer(24))
         stack.addArrangedSubview(makeItemHeading("ジャンル別のハイライト色"))
@@ -276,6 +297,8 @@ final class TimeTableSettingsViewController: UIViewController {
         hourHeightControl.selectedIndex =
             Self.sizeOptionValues.firstIndex(of: settings.hourHeight) ?? 1
         dimShoppingSwitch.isOn = settings.dimShoppingPrograms
+        reservationHighlightSwitch.isOn =
+            SettingsStore.shared.timeTableReservationHighlightEnabled
         for genre in TimeTableDisplaySettings.genreList {
             updateGenreButton(genre)
         }
@@ -342,6 +365,14 @@ final class TimeTableSettingsViewController: UIViewController {
     @objc private func dimShoppingChanged() {
         settings.dimShoppingPrograms = dimShoppingSwitch.isOn
         commit()
+    }
+
+    @objc private func reservationHighlightChanged() {
+        // 端末だけに保存する項目なので、同期の手順 (commit) には
+        // 乗せず、その場で保存して専用の知らせだけ出す。
+        SettingsStore.shared.timeTableReservationHighlightEnabled =
+            reservationHighlightSwitch.isOn
+        onReservationHighlightChanged?()
     }
 
     private func setGenreColor(_ colorName: String, for genre: String) {

@@ -67,36 +67,37 @@ final class ReservationListViewController: UIViewController, UITableViewDataSour
         sortButton.translatesAutoresizingMaskIntoConstraints = false
         listHeaderView.addSubview(sortButton)
 
-        // 「自動予約の条件」への入口 (拡張版だけ)。Web 版の録画予約一覧では
+        // 「自動予約の条件」への入口。Web 版の録画予約一覧では
         // 見出しの上にこの入口の行がある。アプリでは見出し行の下に置く。
-        let headerHeight: CGFloat = AppEdition.isHousehold ? 86 : 46
-        if AppEdition.isHousehold {
-            conditionsButton.setTitle("自動予約の条件", for: .normal)
-            conditionsButton.titleLabel?.font = .scaledSystemFont(ofSize: 14)
-            conditionsButton.setTitleColor(AppPalette.text, for: .normal)
-            conditionsButton.setImage(
-                UIImage(systemName: "calendar.badge.plus")?
-                    .withConfiguration(UIImage.SymbolConfiguration(pointSize: 14, weight: .regular)),
-                for: .normal)
-            conditionsButton.tintColor = AppPalette.text
-            conditionsButton.imageEdgeInsets = UIEdgeInsets(top: 0, left: -2, bottom: 0, right: 2)
-            conditionsButton.titleEdgeInsets = UIEdgeInsets(top: 0, left: 2, bottom: 0, right: -2)
-            conditionsButton.contentHorizontalAlignment = .leading
-            conditionsButton.addTarget(
-                self, action: #selector(conditionsTapped), for: .touchUpInside)
-            conditionsButton.translatesAutoresizingMaskIntoConstraints = false
-            listHeaderView.addSubview(conditionsButton)
-            NSLayoutConstraint.activate([
-                conditionsButton.leadingAnchor.constraint(
-                    equalTo: listHeaderView.leadingAnchor, constant: 16),
-                conditionsButton.topAnchor.constraint(
-                    equalTo: listHeaderView.topAnchor, constant: 46),
-                conditionsButton.heightAnchor.constraint(equalToConstant: 40),
-                conditionsButton.trailingAnchor.constraint(
-                    lessThanOrEqualTo: listHeaderView.trailingAnchor, constant: -16),
-            ])
-        }
-
+        // 改造版サーバーの機能のトグルからは外し、予約機能と同じ条件
+        // (後ろ側が EDCB のとき) に寄せた。この画面自体が、土台が
+        // EDCB でないときは利用できない案内を出す作りなので、入口は
+        // 常時出す。
+        let headerHeight: CGFloat = 86
+        conditionsButton.setTitle("自動予約の条件", for: .normal)
+        conditionsButton.titleLabel?.font = .scaledSystemFont(ofSize: 14)
+        conditionsButton.setTitleColor(AppPalette.text, for: .normal)
+        conditionsButton.setImage(
+            UIImage(systemName: "calendar.badge.plus")?
+                .withConfiguration(UIImage.SymbolConfiguration(pointSize: 14, weight: .regular)),
+            for: .normal)
+        conditionsButton.tintColor = AppPalette.text
+        conditionsButton.imageEdgeInsets = UIEdgeInsets(top: 0, left: -2, bottom: 0, right: 2)
+        conditionsButton.titleEdgeInsets = UIEdgeInsets(top: 0, left: 2, bottom: 0, right: -2)
+        conditionsButton.contentHorizontalAlignment = .leading
+        conditionsButton.addTarget(
+            self, action: #selector(conditionsTapped), for: .touchUpInside)
+        conditionsButton.translatesAutoresizingMaskIntoConstraints = false
+        listHeaderView.addSubview(conditionsButton)
+        NSLayoutConstraint.activate([
+            conditionsButton.leadingAnchor.constraint(
+                equalTo: listHeaderView.leadingAnchor, constant: 16),
+            conditionsButton.topAnchor.constraint(
+                equalTo: listHeaderView.topAnchor, constant: 46),
+            conditionsButton.heightAnchor.constraint(equalToConstant: 40),
+            conditionsButton.trailingAnchor.constraint(
+                lessThanOrEqualTo: listHeaderView.trailingAnchor, constant: -16),
+        ])
         NSLayoutConstraint.activate([
             titleLabel.leadingAnchor.constraint(equalTo: listHeaderView.leadingAnchor, constant: 16),
             titleLabel.topAnchor.constraint(equalTo: listHeaderView.topAnchor, constant: 13),

@@ -89,13 +89,11 @@ final class MainTabBarController: UIViewController {
         // 録画の H.265 再生で使うアプリ内の中継を、先に立ち上げておく
         // (最初に再生するときに間に合わず、元の URL に落ちるのを避ける)。
         StreamRelayServer.shared.startIfNeeded()
-        // 拡張版だけ: ログイン済みでまだ同期したことのない端末では、
-        // サーバーに保存済みの設定の自動取り込みを試す (ログイン直後の
-        // 取り込みと同じもの。Web 版はログイン中ずっと見張っているため、
-        // 起動時にも試して近づける)。
-        if AppEdition.isHousehold {
-            Task { await SyncedSettingsStore.shared.adoptServerSettingsOnLogin() }
-        }
+        // ログイン済みでまだ同期したことのない端末では、サーバーに
+        // 保存済みの設定の自動取り込みを試す (ログイン直後の取り込みと
+        // 同じもの。Web 版はログイン中ずっと見張っているため、起動時にも
+        // 試して近づける)。アプリだけで完結するため常時有効。
+        Task { await SyncedSettingsStore.shared.adoptServerSettingsOnLogin() }
         // 各タブのナビゲーションの出入り (再生画面への push など) で、
         // バーの表示・非表示を追随させるためにデリゲートを受ける。
         for tab in tabs {

@@ -520,6 +520,16 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
         settingsController.onSettingsChanged = { [weak self] settings in
             self?.applyDisplaySettings(settings)
         }
+        // 塗りと使用帯のスイッチは、材料 (使用帯) の取り直しが要るため、
+        // 番組表を読み直して反映する。読み直しのあとも見ていた場所が
+        // 保たれるよう、今の表示位置を復元用の控えへ移してから読み直す。
+        settingsController.onReservationHighlightChanged = { [weak self] in
+            guard let self else { return }
+            self.pendingRestoreTopTime = self.selectedDayStart.addingTimeInterval(
+                Double(self.gridScrollView.contentOffset.y / self.hourHeight) * 3600)
+            self.pendingRestoreScrollLeft = self.gridScrollView.contentOffset.x
+            self.load(scrollToNowAfter: false)
+        }
         if let sheet = settingsController.sheetPresentationController {
             sheet.detents = [.large()]
             sheet.prefersGrabberVisible = true
@@ -673,7 +683,9 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
                 self.loadedBaseURLString = SettingsStore.shared.baseURL?.absoluteString
                 self.channels = response.channels
                 self.dateRange = response.date_range
-                self.tunerBusyIntervals = AppEdition.isHousehold
+                // チューナーの使用帯は、番組表の表示設定の専用スイッチが
+                // オンのときだけ受け取る (トグルの対象からは外した)。
+                self.tunerBusyIntervals = SettingsStore.shared.timeTableReservationHighlightEnabled
                     ? (response.tuner_busy_intervals ?? []) : []
                 self.statusLabel.text = self.channels.isEmpty ? "番組表がありません。" : nil
                 self.buildGrid()
@@ -777,12 +789,13 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
                 x: 0, y: CGFloat(hourIndex) * hourHeight,
                 width: timeScaleWidth, height: hourHeight))
             block.backgroundColor = Self.timeScaleColors[hour]
-            // チューナーの使用帯 (改造版 Web の時刻軸の帯。拡張版だけ)。
+            // チューナーの使用帯 (改造版 Web の時刻軸の帯)。出すかどうかは
+            // 番組表の表示設定の専用スイッチで決める。
             // 帯は台数によらず軸の全幅で出し、台数の違いは濃さだけで
             // 表す (一部使用は不透明度 0.8、満杯は 1.0)。過去の区間も
             // 同じ濃さ。帯は時刻・日付の文字より後ろに置くため、
             // この時点 (文字を足す前) に入れる。
-            if AppEdition.isHousehold {
+            if SettingsStore.shared.timeTableReservationHighlightEnabled {
                 let hourEnd = hourDate.addingTimeInterval(3600)
                 for interval in tunerBusyIntervals {
                     guard let start = interval.startDate, let end = interval.endDate else { continue }
@@ -957,8 +970,7 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
     /// その場合は表示位置も戻さない (種類だけは戻す。Web 版と同じ)。
     private func consumeSavedViewState(availableTypes: [String]) {
         viewStateRestorePending = false
-        guard AppEdition.isHousehold,
-              let state = UserDefaults.standard.dictionary(forKey: Self.viewStateKey) else { return }
+        guard let state = UserDefaults.standard.dictionary(forKey: Self.viewStateKey) else { return }
         if let typeName = state["channel_type"] as? String,
            let matched = availableTypes.first(where: { Self.prettyTypeName($0) == typeName }) {
             selectedType = matched
@@ -997,7 +1009,7 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
     /// 変わっても意味が保たれるため。Web 版と同じ)。最初の読み込みが
     /// 終わるまでは保存しない。
     private func saveViewState() {
-        guard AppEdition.isHousehold, hasCompletedInitialLoad else { return }
+        guard hasCompletedInitialLoad else { return }
         let topTime = selectedDayStart.addingTimeInterval(
             Double(gridScrollView.contentOffset.y / hourHeight) * 3600)
         let formatter = ISO8601DateFormatter()
@@ -1011,7 +1023,6 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
 
     /// スクロール中の保存を間引いて行う (Web 版の 300ms の間引きと同じ)。
     private func scheduleViewStateSave() {
-        guard AppEdition.isHousehold else { return }
         viewStateSaveWork?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.saveViewState() }
         viewStateSaveWork = work
@@ -1215,13 +1226,15 @@ private final class TimeTableProgramCellView: RippleSurfaceView {
         var background = genre.background
         var highlight = genre.highlight
         // 予約のある番組は、ジャンルの地の上にテーマ色を薄く重ねて塗る
-        // (改造版 Web の番組表の塗り。拡張版だけ)。割合は Web 版どおり:
+        // (改造版 Web の番組表の塗り)。出すかどうかは番組表の表示設定の
+        // 専用スイッチで決める。割合は Web 版どおり:
         // 予約済みは secondary 22%、録画中は secondary 38%、
         // 一部のみは warning 30%、不可は error 32%。複数の状態に当たる
         // ときの優先は Web 版の CSS の並び順 (後に書かれたものが勝つ)
         // どおり、不可 → 一部のみ → 録画中 → 予約済み。無効化された
         // 予約では塗らない。
-        if AppEdition.isHousehold, let reservation = program.reservation,
+        if SettingsStore.shared.timeTableReservationHighlightEnabled,
+           let reservation = program.reservation,
            reservation.status != "Disabled" {
             if reservation.recording_availability == "Unavailable" {
                 background = TimeTableGenre.blended(background, with: Self.errorColor, baseRatio: 0.68)
@@ -1411,14 +1424,16 @@ private final class TimeTableProgramCellView: RippleSurfaceView {
             height: max(bounds.height - descriptionY - 2, 0))
         // 予約の枠 (ごく短い番組では枠自体が収まらないため付けない)。
         // 改造版 Web では、無効化された予約だけが破線で、それ以外
-        // (予約済み・録画中・一部のみ・不可) は実線になる (拡張版だけ)。
+        // (予約済み・録画中・一部のみ・不可) は実線になる。実線にする
+        // かどうかは、セルの塗りと同じ専用スイッチで決める。
         if let reservation = program.reservation, bounds.width > 5, bounds.height > 5 {
             let layer = borderLayer ?? CAShapeLayer()
             layer.path = UIBezierPath(rect: bounds.insetBy(dx: 1.9, dy: 1.9)).cgPath
             layer.strokeColor = Self.reservationBorderColor(reservation).cgColor
             layer.fillColor = UIColor.clear.cgColor
             layer.lineWidth = 3.8
-            let isSolid = AppEdition.isHousehold && reservation.status != "Disabled"
+            let isSolid = SettingsStore.shared.timeTableReservationHighlightEnabled
+                && reservation.status != "Disabled"
             layer.lineDashPattern = isSolid ? nil : [7, 5]
             if layer.superlayer == nil {
                 self.layer.addSublayer(layer)

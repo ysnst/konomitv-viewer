@@ -454,6 +454,9 @@ final class PlayerViewController: UIViewController {
     /// シークバーの上に重ねる盛り上がりの波形の帯。
     /// 材料が揃った時点で操作帯の並びへ差し込む。
     private let excitementStrip = ExcitementStripView()
+    /// 表示中の全画面 (録画再生)。盛り上がりの材料が全画面を開いた
+    /// あとに用意できたとき、渡し直すために控える。
+    private weak var activeFullscreenPlayer: FullscreenPlayerViewController?
     /// ダイジェスト再生 (見どころ区間だけを続けて再生) が入っているか。
     private var digestPlaybackEnabled = false
     /// ダイジェスト再生の見張りの間引き用 (Web 版と同じ 300ミリ秒間隔)。
@@ -538,14 +541,17 @@ final class PlayerViewController: UIViewController {
         applyCommentDisplayState()
         applyCaptionDisplayState()
         loadJikkyoComments()
-        // 拡張版の再生画面まわりの用意 (一般版では何もしない)。
+        // 再生画面まわりの用意。前の話・次の話 (と自動再生) は改造版
+        // サーバーが要るためトグルの対象のまま。それ以外 (長押しの
+        // 高速シーク、ハイライト横断再生の用意、追いかけ再生の先端
+        // 追従) はアプリだけで完結するため常時有効。
         if AppEdition.isHousehold {
             loadEpisodeNeighbors()
-            setupFastSeek()
-            setupHighlightReel()
-            // 録画中の番組は追いかけ再生として、先端追従を効かせる。
-            chaseFollowActive = program.isRecording
         }
+        setupFastSeek()
+        setupHighlightReel()
+        // 録画中の番組は追いかけ再生として、先端追従を効かせる。
+        chaseFollowActive = program.isRecording
         beginNowPlaying()
         resolveInitialStartPosition { [weak self] position in
             guard let self, !self.didLeaveScreen else { return }
@@ -1199,13 +1205,22 @@ final class PlayerViewController: UIViewController {
         // 収まらなければ次の行へ。横の間隔 10pt、行の間隔 16pt。
         buttonsFlowView.horizontalSpacing = 10
         buttonsFlowView.verticalSpacing = 16
-        // 保護ボタンと再生画面まわりのボタンは拡張版だけ並べる
-        // (一般版では、それらの機能自体を出さない)。
+        // ボタンの出し分け (2026-11-24 の分類の見直し後):
+        // 前の話・次の話、場面一覧、しおり、保護は改造版サーバーが
+        // 要るためトグルの対象のまま。ダイジェスト再生とコメント検索は
+        // アプリだけで完結するため常時出す。次回を予約とシリーズ予約は
+        // 予約機能と同じ条件 (後ろ側が EDCB のとき) に寄せ、常時出す
+        // (EDCB でないときは、実行時に予約機能と同じ知らせ文が出る)。
+        // 並び順は見直し前と変えない。
         var infoButtons: [UIButton] = [qualityButton, audioOnlyButton, fullscreenButton, rateButton]
         if AppEdition.isHousehold {
             infoButtons += [prevEpisodeButton, nextEpisodeButton, sceneListButton,
-                            addBookmarkButton, digestButton, commentSearchButton,
-                            nextReserveButton, seriesReserveButton, protectButton]
+                            addBookmarkButton]
+        }
+        infoButtons += [digestButton, commentSearchButton,
+                        nextReserveButton, seriesReserveButton]
+        if AppEdition.isHousehold {
+            infoButtons += [protectButton]
         }
         infoButtons += [mylistButton, watchedButton, profileButton, sleepTimerButton]
         for button in infoButtons {
@@ -1568,10 +1583,9 @@ final class PlayerViewController: UIViewController {
                 return
             }
             // 盛り上がりの計算は、ミュートで取り除く前のコメント全体から
-            // 行う (Web 版も同じ材料で計算する)。拡張版だけ。
-            if AppEdition.isHousehold {
-                self.buildExcitement(from: result.comments)
-            }
+            // 行う (Web 版も同じ材料で計算する)。アプリだけで完結する
+            // ため常時有効。
+            self.buildExcitement(from: result.comments)
             // 一覧と流れる表示で共用する。時刻の昇順に並べ直しておく。
             // 設定のミュート (キーワード・ユーザー ID・機械的な判定) に
             // かかるコメントは、ここで取り除いてから両方へ渡す。
@@ -2733,6 +2747,10 @@ final class PlayerViewController: UIViewController {
         excitementStrip.densities = density.densities
         excitementStrip.segments = segments
         excitementStrip.duration = density.duration
+        // 全画面を開いている間に材料が用意できたら、全画面側の帯にも
+        // 同じ材料を渡す。
+        activeFullscreenPlayer?.setExcitement(
+            densities: density.densities, segments: segments, duration: density.duration)
         // 帯は操作帯の並びの中で、シークバーの真上に差し込む。
         // 操作帯はその分だけ高くする。
         if excitementStrip.superview == nil {
@@ -2862,12 +2880,14 @@ final class PlayerViewController: UIViewController {
         return program.duration
     }
 
-    /// 再生が終わったときの扱い (拡張版だけ)。
+    /// 再生が終わったときの扱い。
     /// 追いかけ再生の先端到達なら先端への復帰を、おやすみタイマーの
     /// 「番組の終わりで停止」が入っていれば停止の知らせを、
     /// それ以外で次の話があれば自動再生の数え下げを始める。
+    /// 先端追従とおやすみタイマーは常時有効で、次の話の自動再生だけが
+    /// 改造版サーバーの機能のトグルの対象 (前の話・次の話と同じ)。
     private func handlePlaybackEnded() {
-        guard AppEdition.isHousehold, !didLeaveScreen, hasActiveEngine else { return }
+        guard !didLeaveScreen, hasActiveEngine else { return }
         if chaseFollowActive {
             recoverChasePlayback()
             return
@@ -2876,7 +2896,7 @@ final class PlayerViewController: UIViewController {
             showPlayerNotice("おやすみタイマーのため、ここで停止します")
             return
         }
-        guard let nextID = nextEpisodeID else { return }
+        guard AppEdition.isHousehold, let nextID = nextEpisodeID else { return }
         Task { [weak self] in
             guard let self else { return }
             guard let next = await APIClient.shared.fetchVideo(videoID: nextID) else { return }
@@ -3340,6 +3360,7 @@ final class PlayerViewController: UIViewController {
             fullscreen.onProfileSelected = { [weak self] isCellular in
                 self?.switchProfile(to: isCellular ? .cellular : .wifi) ?? ""
             }
+            passExcitementToFullscreen(fullscreen)
             present(fullscreen, animated: true)
             return
         }
@@ -3371,7 +3392,21 @@ final class PlayerViewController: UIViewController {
         fullscreen.onProfileSelected = { [weak self] isCellular in
             self?.switchProfile(to: isCellular ? .cellular : .wifi) ?? ""
         }
+        passExcitementToFullscreen(fullscreen)
         present(fullscreen, animated: true)
+    }
+
+    /// 全画面へ、盛り上がりの波形の材料 (用意できている分) を渡す。
+    /// 全画面の控えも持っておき、材料があとから用意できたときは
+    /// buildExcitement から渡し直す。
+    private func passExcitementToFullscreen(_ fullscreen: FullscreenPlayerViewController) {
+        activeFullscreenPlayer = fullscreen
+        if let density = excitementDensity {
+            fullscreen.setExcitement(
+                densities: density.densities,
+                segments: highlightSegments,
+                duration: density.duration)
+        }
     }
 
 #if canImport(MobileVLCKit)

@@ -732,16 +732,15 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             UIMenu(options: .displayInline, children: filterActions),
             UIMenu(options: .displayInline, children: [newestAction, oldestAction]),
         ]
-        // 「今日のハイライト」は拡張版だけ (改造サーバー前提の機能)。
-        if AppEdition.isHousehold {
-            let highlightsAction = UIAction(
-                title: "今日のハイライト",
-                image: UIImage(systemName: "flame")
-            ) { [weak self] _ in
-                self?.showHighlights()
-            }
-            groups.append(UIMenu(options: .displayInline, children: [highlightsAction]))
+        // 「今日のハイライト」はアプリだけで完結するため常時出す
+        // (改造版サーバーの機能のトグルからは外した)。
+        let highlightsAction = UIAction(
+            title: "今日のハイライト",
+            image: UIImage(systemName: "flame")
+        ) { [weak self] _ in
+            self?.showHighlights()
         }
+        groups.append(UIMenu(options: .displayInline, children: [highlightsAction]))
         return UIMenu(children: groups)
     }
 

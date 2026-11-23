@@ -76,7 +76,7 @@ final class FullscreenPlayerViewController: UIViewController {
     private var wasPlayingBeforeScrub = false
     private var controlsVisible = true
     private var hideTimer: Timer?
-    /// 長押しの高速シーク (送り・戻し)。拡張版だけ取り付ける。
+    /// 長押しの高速シーク (送り・戻し)。
     private let fastSeekBackController = FastSeekController(direction: -1)
     private let fastSeekForwardController = FastSeekController(direction: 1)
 
@@ -99,6 +99,13 @@ final class FullscreenPlayerViewController: UIViewController {
     private let nextChapterButton = RippleButton()
     private let seekSlider = UISlider()
     private let bandView = CMSectionBandView()
+    /// 盛り上がりの波形の帯 (通常画面と同じ部品)。シークバーの上に
+    /// 置き、材料 (密度と区間) が呼び出し元から渡されたときだけ出す。
+    /// 出すかどうかは設定「全画面でも盛り上がり波形を表示する」
+    /// (端末保存、既定オン) でも切り替えられる。
+    private let excitementStrip = ExcitementStripView()
+    /// 波形の材料が渡っているかどうか。
+    private var hasExcitementData = false
     private let currentTimeLabel = UILabel()
     private let durationLabel = UILabel()
     private let qualityButton = RippleButton()
@@ -145,10 +152,9 @@ final class FullscreenPlayerViewController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = .black
         buildLayout()
-        // 長押しの高速シークは拡張版だけ (通常画面の再生画面と同じ扱い)。
-        if AppEdition.isHousehold {
-            setupFastSeek()
-        }
+        // 長押しの高速シークはアプリだけで完結するため常時有効
+        // (通常画面の再生画面と同じ扱い)。
+        setupFastSeek()
 
         // 字幕の重ね物を借りている場合は、映像の上・操作類の下に重ねる
         // (字幕の絵の更新は呼び出し元が続ける)。
@@ -350,6 +356,20 @@ final class FullscreenPlayerViewController: UIViewController {
         profileButton.addTarget(self, action: #selector(toggleProfile), for: .touchUpInside)
         updateProfileButtonTitle()
 
+        // 盛り上がりの波形の帯は、シークバーの真上に置く (通常画面と
+        // 同じ置き場所)。材料が渡るまでは隠しておく (材料が先に
+        // 渡っている場合は、その状態を引き継ぐ)。
+        excitementStrip.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        excitementStrip.isHidden =
+            !(hasExcitementData && SettingsStore.shared.showExcitementInFullscreen)
+        excitementStrip.onTapped = { [weak self] ratio in
+            guard let self else { return }
+            self.seek(to: ratio * self.effectiveDuration)
+            self.resumePlayback()
+            self.setControlsVisible(true)
+            self.scheduleHideControls()
+        }
+
         let seekRow = UIStackView(arrangedSubviews: [currentTimeLabel, seekContainer, durationLabel])
         seekRow.axis = .horizontal
         seekRow.spacing = 10
@@ -372,7 +392,7 @@ final class FullscreenPlayerViewController: UIViewController {
         optionsRow.spacing = 16
         optionsRow.axis = .horizontal
 
-        let panelStack = UIStackView(arrangedSubviews: [seekRow, optionsRow])
+        let panelStack = UIStackView(arrangedSubviews: [excitementStrip, seekRow, optionsRow])
         panelStack.axis = .vertical
         panelStack.spacing = 10
         panelStack.translatesAutoresizingMaskIntoConstraints = false
@@ -488,6 +508,21 @@ final class FullscreenPlayerViewController: UIViewController {
         hideTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in
             self?.setControlsVisible(false)
         }
+    }
+
+    // MARK: - 盛り上がりの波形
+
+    /// 盛り上がりの波形の材料を呼び出し元 (再生画面) から受け取る。
+    /// 通常画面の帯と同じ材料で、密度が空でないときにだけ帯を出す。
+    /// 設定「全画面でも盛り上がり波形を表示する」がオフのときは
+    /// 材料があっても出さない。
+    func setExcitement(densities: [Double], segments: [HighlightSegment], duration: Double) {
+        excitementStrip.densities = densities
+        excitementStrip.segments = segments
+        excitementStrip.duration = duration
+        hasExcitementData = !densities.isEmpty
+        excitementStrip.isHidden =
+            !(hasExcitementData && SettingsStore.shared.showExcitementInFullscreen)
     }
 
     // MARK: - 進み具合の表示

@@ -230,11 +230,10 @@ final class APIClient {
         try check(response)
         let token = try JSONDecoder().decode(TokenResponse.self, from: data)
         SettingsStore.shared.saveLogin(username: username, password: password, token: token.access_token)
-        // 拡張版だけ: まだ同期したことのない端末では、サーバーに保存済みの
-        // 設定があればログインのついでに自動で取り込む (Web 版と同じ動き)。
-        if AppEdition.isHousehold {
-            Task { await SyncedSettingsStore.shared.adoptServerSettingsOnLogin() }
-        }
+        // まだ同期したことのない端末では、サーバーに保存済みの
+        // 設定があればログインのついでに自動で取り込む (Web 版と同じ
+        // 動き)。アプリだけで完結するため常時有効。
+        Task { await SyncedSettingsStore.shared.adoptServerSettingsOnLogin() }
     }
 
     // MARK: - アカウント情報 (マイページ用)

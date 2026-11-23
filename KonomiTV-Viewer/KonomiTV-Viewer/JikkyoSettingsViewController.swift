@@ -3,20 +3,23 @@ import UIKit
 /// 「ニコニコ実況」の設定画面。Web 版の設定 → ニコニコ実況 (Jikkyo.vue)
 /// の並びに合わせ、ミュート設定への入口を先頭に置き、続けて録画の
 /// 過去ログコメントの表示に効く項目を並べたもの: コメントを表示、
-/// コメントを無制限に表示、コメントの不透明度、コメントの速さ、
-/// コメントの文字サイズ。
+/// コメントを無制限に表示、全画面でも盛り上がり波形を表示する、
+/// コメントの不透明度、コメントの速さ、コメントの文字サイズ。
 ///
 /// コメント投稿まわりの項目 (ニコニコアカウントとの連携、コメントの
 /// 送信先、送信後にフォームを閉じる) は、アプリにコメント投稿が
 /// 無いため置いていない。
 /// 「コメントを表示」「無制限に表示」「不透明度」は Web 版でも端末
 /// ごとに持つ項目 (同期の対象外) で、アプリでも端末に保存する。
+/// 「全画面でも盛り上がり波形を表示する」はアプリ側の項目で、
+/// こちらも端末に保存する (同期の対象外)。
 /// 「速さ」「文字サイズ」とミュート設定は利用者設定と共通で、
 /// 読み書きは SyncedSettingsStore が担う。
 /// 変更はその場で保存され、次に録画再生を始めるときから効く。
 final class JikkyoSettingsViewController: SettingsDetailViewController {
     private let showSwitch = WebToggle()
     private let unlimitedSwitch = WebToggle()
+    private let excitementFullscreenSwitch = WebToggle()
     private let opacitySlider = UISlider()
     private let opacityValueLabel = UILabel()
     private let speedSlider = UISlider()
@@ -50,6 +53,8 @@ final class JikkyoSettingsViewController: SettingsDetailViewController {
     private func buildItems() {
         showSwitch.addTarget(self, action: #selector(showChanged), for: .valueChanged)
         unlimitedSwitch.addTarget(self, action: #selector(unlimitedChanged), for: .valueChanged)
+        excitementFullscreenSwitch.addTarget(
+            self, action: #selector(excitementFullscreenChanged), for: .valueChanged)
         opacitySlider.minimumValue = 0
         opacitySlider.maximumValue = 1
         opacitySlider.addTarget(self, action: #selector(opacityChanged), for: .valueChanged)
@@ -102,6 +107,9 @@ final class JikkyoSettingsViewController: SettingsDetailViewController {
             itemGroup(title: "コメントを無制限に表示", field: makeSwitchRow(
                 text: "オンにすると、コメントの重なりを許容し、可能な限り多くのコメントを表示します。コメントが多い番組でオンにすると、映像が見づらくなる可能性があります。",
                 toggle: unlimitedSwitch), syncDisabled: true),
+            itemGroup(title: "全画面でも盛り上がり波形を表示する", field: makeSwitchRow(
+                text: "オンにすると、録画の再生を全画面で見るときも、シークバーの上に実況コメントの盛り上がりの波形を表示します。",
+                toggle: excitementFullscreenSwitch), syncDisabled: true),
             itemGroup(title: "コメントの不透明度", field: opacityField, syncDisabled: true),
             makeDivider(),
             itemGroup(title: "コメントの速さ", field: speedField),
@@ -118,6 +126,7 @@ final class JikkyoSettingsViewController: SettingsDetailViewController {
         let synced = SyncedSettingsStore.shared.current
         showSwitch.isOn = store.showComments
         unlimitedSwitch.isOn = store.showCommentsUnlimited
+        excitementFullscreenSwitch.isOn = store.showExcitementInFullscreen
         opacitySlider.value = Float(store.commentOpacity)
         opacityValueLabel.text = "\(Int((store.commentOpacity * 100).rounded()))%"
         speedSlider.value = Float(synced.commentSpeedRate)
@@ -139,6 +148,10 @@ final class JikkyoSettingsViewController: SettingsDetailViewController {
 
     @objc private func unlimitedChanged() {
         SettingsStore.shared.showCommentsUnlimited = unlimitedSwitch.isOn
+    }
+
+    @objc private func excitementFullscreenChanged() {
+        SettingsStore.shared.showExcitementInFullscreen = excitementFullscreenSwitch.isOn
     }
 
     @objc private func opacityChanged() {

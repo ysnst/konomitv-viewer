@@ -115,6 +115,7 @@ final class SettingsStore {
         static let timeTableChannelWidth = "viewer_timetable_channel_width"
         static let timeTableHourHeight = "viewer_timetable_hour_height"
         static let timeTableDimShoppingPrograms = "viewer_timetable_dim_shopping_programs"
+        static let timeTableReservationHighlight = "viewer_timetable_reservation_highlight"
         static let timeTableGenreColors = "viewer_timetable_genre_colors"
         // 字幕・ニコニコ実況・全般のうち、サーバーに保存される利用者設定と
         // 共通の項目 (Web 版の項目名に viewer_ を付けたもの)。端末内の控えで、
@@ -143,6 +144,7 @@ final class SettingsStore {
         // コメント表示のうち、Web 版でも端末ごとに持つ項目
         // (dplayer-danmaku-unlimited / dplayer-danmaku-opacity に相当)。
         static let showCommentsUnlimited = "viewer_show_comments_unlimited"
+        static let showExcitementInFullscreen = "viewer_show_excitement_in_fullscreen"
         static let commentOpacity = "viewer_comment_opacity"
         // 表示の大きさ (Web 版うち改造の ui_scale に相当)。Web 版と同じく
         // 端末ごとに持つ設定で、デバイス間同期の対象にはしない。
@@ -496,6 +498,18 @@ final class SettingsStore {
         set { defaults.set(newValue, forKey: Key.showComments) }
     }
 
+    /// 録画再生の全画面でも、シークバーの上に盛り上がりの波形を
+    /// 出すか。設定の「ニコニコ実況」の表示の項目に置く専用スイッチで
+    /// 切り替える。端末だけに保存し、同期の対象にしない。既定はオン
+    /// (キーが無いときはオンで受ける)。
+    var showExcitementInFullscreen: Bool {
+        get {
+            guard defaults.object(forKey: Key.showExcitementInFullscreen) != nil else { return true }
+            return defaults.bool(forKey: Key.showExcitementInFullscreen)
+        }
+        set { defaults.set(newValue, forKey: Key.showExcitementInFullscreen) }
+    }
+
     /// 録画再生で字幕を表示するか (Web 版プレイヤーの字幕の切り替えに相当)。
     /// Web 版では字幕は最初から出るのが既定のため、こちらも既定はオン
     /// (キーが無いときはオンで受ける)。
@@ -562,6 +576,21 @@ final class SettingsStore {
             return defaults.bool(forKey: Key.timeTableDimShoppingPrograms)
         }
         set { defaults.set(newValue, forKey: Key.timeTableDimShoppingPrograms) }
+    }
+
+    /// 番組表で、予約のある番組のセルの塗りとチューナーの使用帯を
+    /// 出すか。改造版サーバーの機能のトグルからは外し、番組表の
+    /// 表示設定の中の専用スイッチで切り替える (2026-11-24 の分類の
+    /// 見直し)。端末だけに保存し、同期の対象にしない。既定はオン
+    /// (キーが無いときはオンで受ける)。
+    var timeTableReservationHighlightEnabled: Bool {
+        get {
+            guard defaults.object(forKey: Key.timeTableReservationHighlight) != nil else {
+                return true
+            }
+            return defaults.bool(forKey: Key.timeTableReservationHighlight)
+        }
+        set { defaults.set(newValue, forKey: Key.timeTableReservationHighlight) }
     }
 
     /// ジャンル別のハイライト色 (Web 版の timetable_genre_colors)。

@@ -527,20 +527,20 @@ final class ReservationDetailViewController: UIViewController {
             addButton = button
             actionsStack.addArrangedSubview(button)
         }
-        // 「シリーズ予約」(拡張版だけ)。Web 版の予約詳細と同じく、
-        // 並びの最後に地のないボタンで出す。押すと、この番組の名前から
-        // 作ったキーワード + 同じチャンネルの自動予約の条件が作られ、
-        // 以後は自動で予約される。
-        if AppEdition.isHousehold {
-            let button = makeActionButton(
-                title: "シリーズ予約", systemImage: "calendar.badge.plus", filled: false,
-                action: #selector(seriesTapped))
-            // 土台が EDCB でない間は押せない (Web 版と同じ)。
-            button.isEnabled = backendIsEDCB == true && !isWorking && !isCreatingSeries
-            button.alpha = button.isEnabled ? 1 : 0.5
-            seriesButton = button
-            actionsStack.addArrangedSubview(button)
-        }
+        // 「シリーズ予約」。Web 版の予約詳細と同じく、並びの最後に
+        // 地のないボタンで出す。押すと、この番組の名前から作った
+        // キーワード + 同じチャンネルの自動予約の条件が作られ、
+        // 以後は自動で予約される。改造版サーバーの機能のトグルからは
+        // 外し、「予約を追加」と同じ条件 (土台が EDCB のときだけ
+        // 押せる) に寄せた。
+        let seriesActionButton = makeActionButton(
+            title: "シリーズ予約", systemImage: "calendar.badge.plus", filled: false,
+            action: #selector(seriesTapped))
+        // 土台が EDCB でない間は押せない (Web 版と同じ)。
+        seriesActionButton.isEnabled = backendIsEDCB == true && !isWorking && !isCreatingSeries
+        seriesActionButton.alpha = seriesActionButton.isEnabled ? 1 : 0.5
+        seriesButton = seriesActionButton
+        actionsStack.addArrangedSubview(seriesActionButton)
         setActionsBarVisible(true)
     }
 
