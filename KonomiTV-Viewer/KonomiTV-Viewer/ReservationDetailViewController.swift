@@ -143,7 +143,10 @@ final class ReservationDetailViewController: UIViewController {
             actionsStack.leadingAnchor.constraint(greaterThanOrEqualTo: actionsBar.leadingAnchor, constant: 16),
         ])
         scrollBottomToBarConstraint = scrollView.bottomAnchor.constraint(equalTo: actionsBar.topAnchor)
-        scrollBottomToViewConstraint = scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        // 操作の帯が出ていないときの下端は、画面の最下端ではなく
+        // セーフエリアの下端に留める (最下端まで伸ばすと末尾が
+        // 下部バーの裏に入り込み、届かなくなるため)。
+        scrollBottomToViewConstraint = scrollView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
         scrollBottomToViewConstraint?.isActive = true
 
         NSLayoutConstraint.activate([

@@ -1,5 +1,17 @@
 import UIKit
 
+extension UIView {
+    /// このビューの中 (自分を含む) で、入力中 (ファーストレスポンダ) の
+    /// 欄を探す。キーボードに隠れないよう寄せるときに使う。
+    func firstResponderDescendant() -> UIView? {
+        if isFirstResponder { return self }
+        for subview in subviews {
+            if let found = subview.firstResponderDescendant() { return found }
+        }
+        return nil
+    }
+}
+
 extension UIViewController {
     /// 画面の左端からの横スワイプで前の画面へ戻る受け口を足す。
     /// 自前の見出し帯を使う設定まわりの画面では標準の戻る動きが
@@ -28,6 +40,8 @@ class SettingsDetailViewController: UIViewController {
     private let backButton = RippleButton()
     /// 項目を積む縦並び。受け継いだ側が viewDidLoad で項目を足す。
     let contentStack = UIStackView()
+    /// 土台のスクロール。キーボードへの追随で使うため保持する。
+    private var scaffoldScrollView: UIScrollView?
 
     init(headingTitle: String) {
         self.headingTitle = headingTitle
@@ -53,10 +67,12 @@ class SettingsDetailViewController: UIViewController {
         // 端からの横スワイプで戻る動きも生かしておく (見出し帯の
         // 矢印ボタンと両立させる)。
         navigationController?.interactivePopGestureRecognizer?.isEnabled = true
+        installKeyboardAvoidance()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        removeKeyboardAvoidance()
         navigationController?.setNavigationBarHidden(false, animated: animated)
     }
 
@@ -100,6 +116,7 @@ class SettingsDetailViewController: UIViewController {
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.addSubview(contentStack)
         view.addSubview(scroll)
+        scaffoldScrollView = scroll
         NSLayoutConstraint.activate([
             headingBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             headingBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -111,7 +128,11 @@ class SettingsDetailViewController: UIViewController {
             scroll.topAnchor.constraint(equalTo: headingBar.bottomAnchor),
             scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            // 下端は画面の最下端ではなくセーフエリアの下端に留める。
+            // 最下端まで伸ばすと、末尾が下部バーの裏に入り込み、
+            // 中身が少しだけはみ出す画面ではスクロール量が足りず
+            // 最後の項目に届かなくなる (マイページと同じ留め方)。
+            scroll.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
             contentStack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 24),
             contentStack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 16),
             contentStack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -16),
@@ -121,6 +142,63 @@ class SettingsDetailViewController: UIViewController {
 
         // 画面の左端からの横スワイプでも前の画面へ戻れるようにする。
         installEdgeSwipeBack(action: #selector(goBack))
+    }
+
+    // MARK: - キーボードへの追随
+
+    /// キーボードの開閉への追随を始める。入力欄のある画面
+    /// (アカウント、ミュート設定など) で編集中の欄がキーボードに
+    /// 隠れないようにするため、土台側で面倒を見る。入力欄の無い
+    /// 画面では、通知が来ても欄が見つからず何も起きない。
+    private func installKeyboardAvoidance() {
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(keyboardWillChangeFrame(_:)),
+            name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(keyboardWillHide(_:)),
+            name: UIResponder.keyboardWillHideNotification, object: nil)
+    }
+
+    private func removeKeyboardAvoidance() {
+        NotificationCenter.default.removeObserver(
+            self, name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+        NotificationCenter.default.removeObserver(
+            self, name: UIResponder.keyboardWillHideNotification, object: nil)
+    }
+
+    @objc private func keyboardWillChangeFrame(_ notification: Notification) {
+        guard let scrollView = scaffoldScrollView,
+              let userInfo = notification.userInfo,
+              let frameValue = userInfo[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue
+        else { return }
+        // キーボードの枠 (画面全体の座標) をこの画面の座標に直し、
+        // スクロール範囲と重なる分だけ下に余白を足す。
+        let keyboardFrame = view.convert(frameValue.cgRectValue, from: nil)
+        let overlap = max(scrollView.frame.maxY - keyboardFrame.minY, 0)
+        let duration = (userInfo[UIResponder.keyboardAnimationDurationUserInfoKey]
+            as? Double) ?? 0.25
+        UIView.animate(withDuration: duration) {
+            scrollView.contentInset.bottom = overlap
+            scrollView.verticalScrollIndicatorInsets.bottom = overlap
+        }
+        // 編集中の欄が見える位置まで寄せる。欄の位置は中身の座標
+        // (スクロール量を含む) に直してから渡す。
+        if let field = scrollView.firstResponderDescendant() {
+            var rect = field.convert(field.bounds, to: scrollView)
+            rect.origin.x += scrollView.contentOffset.x
+            rect.origin.y += scrollView.contentOffset.y
+            scrollView.scrollRectToVisible(rect.insetBy(dx: 0, dy: -16), animated: true)
+        }
+    }
+
+    @objc private func keyboardWillHide(_ notification: Notification) {
+        guard let scrollView = scaffoldScrollView else { return }
+        let duration = (notification.userInfo?[
+            UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
+        UIView.animate(withDuration: duration) {
+            scrollView.contentInset.bottom = 0
+            scrollView.verticalScrollIndicatorInsets.bottom = 0
+        }
     }
 
     // MARK: - 見た目の部品 (Web 版の設定画面の値)

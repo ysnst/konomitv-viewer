@@ -40,6 +40,9 @@ final class SettingsViewController: UIViewController {
     /// 見出し帯の戻るボタン。マイページから押し込まれたときだけ出す
     /// (この画面はナビゲーションバーを隠すため、帯側で戻り口を用意する)。
     private let backButton = RippleButton()
+    /// 土台のスクロール。キーボードへの追随で使うため保持する
+    /// (表示の大きさの変更で組み直すたびに、新しいものへ差し替える)。
+    private weak var scrollView: UIScrollView?
 
     /// リターンキーで移動する順番の入力欄。
     private var orderedFields: [UITextField] {
@@ -136,12 +139,69 @@ final class SettingsViewController: UIViewController {
         backButton.isHidden = navigationController?.viewControllers.first === self
         // 設定アプリ側で変更された場合も含め、現在の保存値を表示する。
         loadValues()
+        installKeyboardAvoidance()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        removeKeyboardAvoidance()
         // 隠すのはこの画面の間だけ。遷移先ではナビゲーションバーを元に戻す。
         navigationController?.setNavigationBarHidden(false, animated: animated)
+    }
+
+    // MARK: - キーボードへの追随
+
+    /// キーボードの開閉への追随。編集中の欄がキーボードに隠れない
+    /// ようにする (設定の分類ごとの画面の土台と同じ動き)。
+    private func installKeyboardAvoidance() {
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(keyboardWillChangeFrame(_:)),
+            name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(keyboardWillHide(_:)),
+            name: UIResponder.keyboardWillHideNotification, object: nil)
+    }
+
+    private func removeKeyboardAvoidance() {
+        NotificationCenter.default.removeObserver(
+            self, name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+        NotificationCenter.default.removeObserver(
+            self, name: UIResponder.keyboardWillHideNotification, object: nil)
+    }
+
+    @objc private func keyboardWillChangeFrame(_ notification: Notification) {
+        guard let scrollView,
+              let userInfo = notification.userInfo,
+              let frameValue = userInfo[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue
+        else { return }
+        // キーボードの枠 (画面全体の座標) をこの画面の座標に直し、
+        // スクロール範囲と重なる分だけ下に余白を足す。
+        let keyboardFrame = view.convert(frameValue.cgRectValue, from: nil)
+        let overlap = max(scrollView.frame.maxY - keyboardFrame.minY, 0)
+        let duration = (userInfo[UIResponder.keyboardAnimationDurationUserInfoKey]
+            as? Double) ?? 0.25
+        UIView.animate(withDuration: duration) {
+            scrollView.contentInset.bottom = overlap
+            scrollView.verticalScrollIndicatorInsets.bottom = overlap
+        }
+        // 編集中の欄が見える位置まで寄せる。欄の位置は中身の座標
+        // (スクロール量を含む) に直してから渡す。
+        if let field = scrollView.firstResponderDescendant() {
+            var rect = field.convert(field.bounds, to: scrollView)
+            rect.origin.x += scrollView.contentOffset.x
+            rect.origin.y += scrollView.contentOffset.y
+            scrollView.scrollRectToVisible(rect.insetBy(dx: 0, dy: -16), animated: true)
+        }
+    }
+
+    @objc private func keyboardWillHide(_ notification: Notification) {
+        guard let scrollView else { return }
+        let duration = (notification.userInfo?[
+            UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
+        UIView.animate(withDuration: duration) {
+            scrollView.contentInset.bottom = 0
+            scrollView.verticalScrollIndicatorInsets.bottom = 0
+        }
     }
 
     // MARK: - 見た目の部品 (Web 版の設定画面の値)
@@ -316,7 +376,9 @@ final class SettingsViewController: UIViewController {
         styleScaleSelectButton(uiScaleButton)
         updateUIScaleControls()
         configure(uiScaleField, placeholder: "100", keyboard: .numberPad)
-        uiScaleField.textAlignment = .right
+        // 他の入力欄と同じく左寄せにする (右寄せだと値が欄の右端に
+        // 出て、他の欄と見た目がそろわない)。
+        uiScaleField.textAlignment = .left
         uiScaleField.addTarget(
             self, action: #selector(uiScaleFieldDidEnd), for: .editingDidEnd)
         let percentLabel = UILabel()
@@ -379,6 +441,7 @@ final class SettingsViewController: UIViewController {
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.addSubview(stack)
         view.addSubview(scroll)
+        scrollView = scroll
         NSLayoutConstraint.activate([
             headingBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             headingBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -390,7 +453,10 @@ final class SettingsViewController: UIViewController {
             scroll.topAnchor.constraint(equalTo: headingBar.bottomAnchor),
             scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            // 下端は画面の最下端ではなくセーフエリアの下端に留める
+            // (最下端まで伸ばすと末尾が下部バーの裏に入り込み、
+            // 最後の項目に届かなくなるため)。
+            scroll.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
             // 中身の余白は Web 版のスマホ縦と同じ左右 16px、上は説明文の
             // margin-top に合わせて 24px。
             stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 24),

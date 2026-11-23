@@ -131,7 +131,8 @@ final class SettingsCategoryViewController: UIViewController {
             scroll.topAnchor.constraint(equalTo: headingBar.bottomAnchor),
             scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            // 下端はセーフエリアの下端に留める (他の設定画面と同じ)。
+            scroll.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
             // 中身の余白は他の設定画面と同じ左右 16px、上は 24px。
             stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 24),
             stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 16),
