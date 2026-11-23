@@ -18,9 +18,9 @@ import UIKit
 ///   この画面にも帯は置かず、見出しは中身の先頭に置く
 ///
 /// 行き先: 「設定」は今の設定画面 (SettingsViewController) をそのまま押し込む。
-/// マイリスト・視聴履歴は第4回以降の範囲なので、「準備中」画面
-/// (ComingSoonViewController) に繋ぐ。アカウント表示のカードは
-/// アカウントの設定画面へ繋いである。
+/// 視聴履歴は専用画面 (WatchedHistoryViewController)、マイリストはまだ
+/// 「準備中」画面 (ComingSoonViewController) に繋ぐ。アカウント表示の
+/// カードはアカウントの設定画面へ繋いである。
 final class MyPageViewController: UIViewController {
     private let iconPhotoView = UIImageView()
     private let iconGlyphView = UIImageView()
@@ -340,7 +340,7 @@ final class MyPageViewController: UIViewController {
     }
 
     @objc private func openWatchedHistory() {
-        navigationController?.pushViewController(ComingSoonViewController(title: "視聴履歴"), animated: true)
+        navigationController?.pushViewController(WatchedHistoryViewController(), animated: true)
     }
 }
 

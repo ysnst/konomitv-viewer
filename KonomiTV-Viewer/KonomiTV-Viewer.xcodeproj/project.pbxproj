@@ -35,11 +35,13 @@
 		2000000000000000000000A1 /* SyncedSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000A0 /* SyncedSettings.swift */; };
 		2000000000000000000000A3 /* SettingsDetailViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000A2 /* SettingsDetailViewController.swift */; };
 		2000000000000000000000A5 /* GeneralSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000A4 /* GeneralSettingsViewController.swift */; };
+		2000000000000000000000C3 /* PinnedChannelsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000C2 /* PinnedChannelsViewController.swift */; };
 		2000000000000000000000A7 /* CaptionSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000A6 /* CaptionSettingsViewController.swift */; };
 		2000000000000000000000A9 /* JikkyoSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000A8 /* JikkyoSettingsViewController.swift */; };
 		2000000000000000000000AB /* CommentMuteSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000AA /* CommentMuteSettingsViewController.swift */; };
 		2000000000000000000000AD /* AccountSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000AC /* AccountSettingsViewController.swift */; };
 		2000000000000000000000AF /* LicenseViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000AE /* LicenseViewController.swift */; };
+		2000000000000000000000BA /* WatchedHistoryViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000B9 /* WatchedHistoryViewController.swift */; };
 		2000000000000000000000B2 /* MobileVLCKit.txt in Resources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000B1 /* MobileVLCKit.txt */; };
 		2000000000000000000000B4 /* libaribcaption.txt in Resources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000B3 /* libaribcaption.txt */; };
 		2000000000000000000000B6 /* FluentUISystemIcons.txt in Resources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000B5 /* FluentUISystemIcons.txt */; };
@@ -84,11 +86,13 @@
 		2000000000000000000000A0 /* SyncedSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncedSettings.swift; sourceTree = "<group>"; };
 		2000000000000000000000A2 /* SettingsDetailViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsDetailViewController.swift; sourceTree = "<group>"; };
 		2000000000000000000000A4 /* GeneralSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeneralSettingsViewController.swift; sourceTree = "<group>"; };
+		2000000000000000000000C2 /* PinnedChannelsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinnedChannelsViewController.swift; sourceTree = "<group>"; };
 		2000000000000000000000A6 /* CaptionSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptionSettingsViewController.swift; sourceTree = "<group>"; };
 		2000000000000000000000A8 /* JikkyoSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JikkyoSettingsViewController.swift; sourceTree = "<group>"; };
 		2000000000000000000000AA /* CommentMuteSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentMuteSettingsViewController.swift; sourceTree = "<group>"; };
 		2000000000000000000000AC /* AccountSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountSettingsViewController.swift; sourceTree = "<group>"; };
 		2000000000000000000000AE /* LicenseViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LicenseViewController.swift; sourceTree = "<group>"; };
+		2000000000000000000000B9 /* WatchedHistoryViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchedHistoryViewController.swift; sourceTree = "<group>"; };
 		2000000000000000000000B1 /* MobileVLCKit.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = MobileVLCKit.txt; sourceTree = "<group>"; };
 		2000000000000000000000B3 /* libaribcaption.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = libaribcaption.txt; sourceTree = "<group>"; };
 		2000000000000000000000B5 /* FluentUISystemIcons.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = FluentUISystemIcons.txt; sourceTree = "<group>"; };
@@ -176,11 +180,13 @@
 				2000000000000000000000A0 /* SyncedSettings.swift */,
 				2000000000000000000000A2 /* SettingsDetailViewController.swift */,
 				2000000000000000000000A4 /* GeneralSettingsViewController.swift */,
+				2000000000000000000000C2 /* PinnedChannelsViewController.swift */,
 				2000000000000000000000A6 /* CaptionSettingsViewController.swift */,
 				2000000000000000000000A8 /* JikkyoSettingsViewController.swift */,
 				2000000000000000000000AA /* CommentMuteSettingsViewController.swift */,
 				2000000000000000000000AC /* AccountSettingsViewController.swift */,
 				2000000000000000000000AE /* LicenseViewController.swift */,
+				2000000000000000000000B9 /* WatchedHistoryViewController.swift */,
 				2000000000000000000000B0 /* Licenses */,
 				200000000000000000000090 /* ReservationListViewController.swift */,
 				200000000000000000000092 /* ReservationDetailViewController.swift */,
@@ -298,11 +304,13 @@
 				2000000000000000000000A1 /* SyncedSettings.swift in Sources */,
 				2000000000000000000000A3 /* SettingsDetailViewController.swift in Sources */,
 				2000000000000000000000A5 /* GeneralSettingsViewController.swift in Sources */,
+				2000000000000000000000C3 /* PinnedChannelsViewController.swift in Sources */,
 				2000000000000000000000A7 /* CaptionSettingsViewController.swift in Sources */,
 				2000000000000000000000A9 /* JikkyoSettingsViewController.swift in Sources */,
 				2000000000000000000000AB /* CommentMuteSettingsViewController.swift in Sources */,
 				2000000000000000000000AD /* AccountSettingsViewController.swift in Sources */,
 				2000000000000000000000AF /* LicenseViewController.swift in Sources */,
+				2000000000000000000000BA /* WatchedHistoryViewController.swift in Sources */,
 				200000000000000000000091 /* ReservationListViewController.swift in Sources */,
 				200000000000000000000093 /* ReservationDetailViewController.swift in Sources */,
 				200000000000000000000095 /* JikkyoCommentOverlay.swift in Sources */,

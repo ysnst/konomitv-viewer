@@ -52,6 +52,9 @@ struct SyncedClientSettings: Equatable {
     var use28HourClock: Bool
     /// 録画番組の再生中に元の放送時刻を表示するか。
     var showOriginalBroadcastTimeDuringPlayback: Bool
+    /// ピン留め中のチャンネルの ID (Web 版の pinned_channel_ids)。
+    /// 並びがそのままピン留め一覧の表示順になる。
+    var pinnedChannelIDs: [String]
 
     /// Web 版の既定値。
     static let defaults = SyncedClientSettings(
@@ -74,7 +77,8 @@ struct SyncedClientSettings: Equatable {
         videoPanelActiveTab: "RecordedProgram",
         tvChannelSortByJikkyoForce: false,
         use28HourClock: false,
-        showOriginalBroadcastTimeDuringPlayback: false)
+        showOriginalBroadcastTimeDuringPlayback: false,
+        pinnedChannelIDs: [])
 
     /// 字幕のフォントの選択肢 (Web 版の字幕設定と同じ並び)。
     /// 値はサーバーに保存される名前、題名は画面に出す名前。
@@ -168,6 +172,7 @@ final class SyncedSettingsStore {
         static let use28HourClock = "viewer_use_28hour_clock"
         static let showOriginalBroadcastTimeDuringPlayback =
             "viewer_show_original_broadcast_time_during_playback"
+        static let pinnedChannelIDs = "viewer_pinned_channel_ids"
     }
 
     /// いま効いている設定。端末内の控えから組み立てて保持する。
@@ -291,6 +296,7 @@ final class SyncedSettingsStore {
         if let value = store.syncedBool(forKey: LocalKey.showOriginalBroadcastTimeDuringPlayback) {
             result.showOriginalBroadcastTimeDuringPlayback = value
         }
+        result.pinnedChannelIDs = store.pinnedChannelIDs
         return result
     }
 
@@ -322,6 +328,7 @@ final class SyncedSettingsStore {
         store.setSyncedBool(settings.use28HourClock, forKey: LocalKey.use28HourClock)
         store.setSyncedBool(settings.showOriginalBroadcastTimeDuringPlayback,
                             forKey: LocalKey.showOriginalBroadcastTimeDuringPlayback)
+        store.pinnedChannelIDs = settings.pinnedChannelIDs
     }
 
     // MARK: - サーバーとのやり取り
@@ -359,6 +366,7 @@ final class SyncedSettingsStore {
                 clientSettings["use_28hour_clock"] = settings.use28HourClock
                 clientSettings["show_original_broadcast_time_during_playback"] =
                     settings.showOriginalBroadcastTimeDuringPlayback
+                clientSettings["pinned_channel_ids"] = settings.pinnedChannelIDs
                 clientSettings["last_synced_at"] = Date().timeIntervalSince1970
                 try await APIClient.shared.updateClientSettings(clientSettings)
                 return
@@ -443,6 +451,9 @@ final class SyncedSettingsStore {
         }
         if let value = clientSettings["show_original_broadcast_time_during_playback"] as? Bool {
             result.showOriginalBroadcastTimeDuringPlayback = value
+        }
+        if let ids = clientSettings["pinned_channel_ids"] as? [String] {
+            result.pinnedChannelIDs = ids
         }
         return result
     }

@@ -133,6 +133,7 @@ final class SettingsStore {
         static let muteCommentKeywordsNormalize = "viewer_mute_comment_keywords_normalize_alphanumeric_width_case"
         static let mutedCommentKeywords = "viewer_muted_comment_keywords"
         static let mutedNiconicoUserIDs = "viewer_muted_niconico_user_ids"
+        static let pinnedChannelIDs = "viewer_pinned_channel_ids"
         static let videoWatchedHistoryMaxCount = "viewer_video_watched_history_max_count"
         static let videoPanelActiveTab = "viewer_video_panel_active_tab"
         // コメント表示のうち、Web 版でも端末ごとに持つ項目
@@ -614,6 +615,13 @@ final class SettingsStore {
     var mutedNiconicoUserIDs: [String] {
         get { defaults.stringArray(forKey: Key.mutedNiconicoUserIDs) ?? [] }
         set { defaults.set(newValue, forKey: Key.mutedNiconicoUserIDs) }
+    }
+
+    /// ピン留め中のチャンネルの ID の控え (Web 版の pinned_channel_ids と
+    /// 同じ文字列の配列、並びがそのまま表示順になる)。
+    var pinnedChannelIDs: [String] {
+        get { defaults.stringArray(forKey: Key.pinnedChannelIDs) ?? [] }
+        set { defaults.set(newValue, forKey: Key.pinnedChannelIDs) }
     }
 
     // MARK: - コメント表示の端末ごとの設定

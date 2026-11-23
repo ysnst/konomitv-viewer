@@ -73,6 +73,17 @@ final class APIClient {
         return try JSONDecoder().decode(RecordedProgramsResponse.self, from: data)
     }
 
+    /// 視聴履歴用。order = "ids" で、渡した ID の並びを保ったまま
+    /// ページ分だけ返る (Web 版の視聴履歴と同じ取り方)。
+    /// ID は Web 版と同じく ids=1&ids=2&... の形で繰り返して渡す。
+    func fetchVideos(page: Int, ids: [Int]) async throws -> RecordedProgramsResponse {
+        let idsQuery = ids.map { "ids=\($0)" }.joined(separator: "&")
+        let request = try request(forPath: "/api/videos?order=ids&page=\(page)&\(idsQuery)")
+        let (data, response) = try await session.data(for: request)
+        try check(response)
+        return try JSONDecoder().decode(RecordedProgramsResponse.self, from: data)
+    }
+
     /// 録画ストレージの容量情報 (ローカル改造の口)。
     /// Web 版と同じく、取得に失敗した場合は表示自体を出さないため nil を返す。
     func fetchStorageStatus() async -> StorageStatus? {
@@ -288,7 +299,10 @@ final class APIClient {
 
     /// 番組表を取る。Web 版と同じく、種別を絞って 4:00 起点の1日分ずつ取る。
     /// 日時はタイムゾーン付きの ISO 8601 で渡す (Web 版の送信形式と同じ)。
-    func fetchTimeTable(start: Date, end: Date, channelType: String?) async throws -> TimeTableResponse {
+    /// ピン留め中のチャンネルの ID を渡したときは、種別より優先して
+    /// そのチャンネルだけの番組表が返る (Web 版の送信形式と同じ)。
+    func fetchTimeTable(start: Date, end: Date, channelType: String?,
+                        pinnedChannelIDs: [String]? = nil) async throws -> TimeTableResponse {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssXXXXX"
@@ -303,6 +317,9 @@ final class APIClient {
             + "&end_time=\(escape(formatter.string(from: end)))"
         if let channelType {
             path += "&channel_type=\(escape(channelType))"
+        }
+        if let pinnedChannelIDs, !pinnedChannelIDs.isEmpty {
+            path += "&pinned_channel_ids=\(escape(pinnedChannelIDs.joined(separator: ",")))"
         }
         let request = try request(forPath: path)
         let (data, response) = try await session.data(for: request)
@@ -484,6 +501,53 @@ final class WatchedHistorySync {
     /// 同期が効く状態か (ログイン中かつ「設定をデバイス間で同期する」がオン)。
     static var isEnabled: Bool {
         SettingsStore.shared.isLoggedIn && SettingsStore.shared.syncSettings
+    }
+
+    /// 視聴履歴の番組 ID を、最後に見た順 (updated_at の新しい順) で返す。
+    /// 視聴履歴の画面が一覧の元として使う (Web 版の視聴履歴と同じ並び)。
+    /// 同期が効いていない・取得に失敗した場合は nil (呼び出し側で
+    /// 案内や失敗の表示に分ける)。
+    static func historyVideoIDs() async -> [Int]? {
+        guard isEnabled else { return nil }
+        guard let settings = try? await APIClient.shared.fetchClientSettings() else { return nil }
+        let history = historyArray(in: settings)
+        let sorted = history.sorted {
+            (($0["updated_at"] as? NSNumber)?.doubleValue ?? 0)
+                > (($1["updated_at"] as? NSNumber)?.doubleValue ?? 0)
+        }
+        return sorted.compactMap { ($0["video_id"] as? NSNumber)?.intValue }
+    }
+
+    /// 視聴履歴から1件を外す。成功したら true。
+    /// 手順は syncPosition と同じ「送る直前に最新を取得 → watched_history の
+    /// 該当項目だけ外す → last_synced_at を今に更新して PUT」で、
+    /// 422 が返ったら1回だけ取り直してやり直す。既に履歴に無い場合は
+    /// 「消えた状態」として成功扱いにする。
+    static func removeEntry(videoID: Int) async -> Bool {
+        guard isEnabled else { return false }
+        for _ in 0..<2 {
+            do {
+                var settings = try await APIClient.shared.fetchClientSettings()
+                var history = historyArray(in: settings)
+                guard history.contains(where: {
+                    ($0["video_id"] as? NSNumber)?.intValue == videoID
+                }) else {
+                    return true
+                }
+                history.removeAll {
+                    ($0["video_id"] as? NSNumber)?.intValue == videoID
+                }
+                settings["watched_history"] = history
+                settings["last_synced_at"] = Date().timeIntervalSince1970
+                try await APIClient.shared.updateClientSettings(settings)
+                return true
+            } catch let APIError.badStatus(code) where code == 422 {
+                continue  // 取り直して1回だけやり直す。
+            } catch {
+                return false
+            }
+        }
+        return false
     }
 
     /// 視聴履歴に残っている前回の再生位置 (秒)。

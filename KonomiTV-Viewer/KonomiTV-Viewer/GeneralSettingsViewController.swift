@@ -1,18 +1,20 @@
 import UIKit
 
 /// 「全般」の設定画面。Web 版の設定 → 全般 (General.vue) の並びに
-/// 合わせてある: 番組表の表示設定への入口、実況勢い順の並び替え、
-/// 28 時間表記、元の放送時刻の表示、ビデオのパネルのタブ、視聴履歴の
-/// 保持件数、スキップ秒数、再生速度。アプリ側の再生まわり (再開時の
-/// 巻き戻し、CM自動スキップ) は、本家に無い項目として末尾に置く。
-/// 本家の全般のうち、アプリに土台が無い項目 (ピン留めの並び替え、
-/// 背景写真、完全な黒、リモコン準拠の方向、キーボードショートカット、
-/// パネルの表示状態、テレビのパネルのタブ、設定の出し入れ) は置かない。
+/// 合わせてある: ピン留め中チャンネルの並び替えへの入口、番組表の
+/// 表示設定への入口、実況勢い順の並び替え、28 時間表記、元の放送
+/// 時刻の表示、ビデオのパネルのタブ、視聴履歴の保持件数、スキップ
+/// 秒数、再生速度。アプリ側の再生まわり (再開時の巻き戻し、
+/// CM自動スキップ) は、本家に無い項目として末尾に置く。
+/// 本家の全般のうち、アプリに土台が無い項目 (背景写真、完全な黒、
+/// リモコン準拠の方向、キーボードショートカット、パネルの表示状態、
+/// テレビのパネルのタブ、設定の出し入れ) は置かない。
 ///
 /// スキップ秒数と再生速度は Web 版 (改造) でも端末ごとに持つ項目で、
 /// アプリでも端末に保存する。それ以外の項目は利用者設定と共通で、
 /// 読み書きは SyncedSettingsStore が担う。変更はその場で保存される。
 final class GeneralSettingsViewController: SettingsDetailViewController {
+    private let pinnedChannelsButton = RippleButton()
     private let timeTableButton = RippleButton()
     private let jikkyoForceSwitch = WebToggle()
     private let use28HourClockSwitch = WebToggle()
@@ -57,6 +59,16 @@ final class GeneralSettingsViewController: SettingsDetailViewController {
         use28HourClockSwitch.addTarget(self, action: #selector(use28HourClockChanged), for: .valueChanged)
         originalTimeSwitch.addTarget(self, action: #selector(originalTimeChanged), for: .valueChanged)
 
+        pinnedChannelsButton.setTitle("ピン留め中チャンネルの並び替え設定を開く", for: .normal)
+        pinnedChannelsButton.addTarget(self, action: #selector(openPinnedChannels), for: .touchUpInside)
+        styleActionButton(pinnedChannelsButton)
+        let pinnedField = UIStackView(arrangedSubviews: [
+            makeDescriptionLabel("ピン留め中のチャンネルの表示順序を変更できます。よくみるチャンネルは先頭に配置しておくと便利です。ピン留め中のチャンネルの追加・削除は、別途 テレビをみる画面のチャンネル一覧から行えます。"),
+            pinnedChannelsButton,
+        ])
+        pinnedField.axis = .vertical
+        pinnedField.spacing = 14
+
         timeTableButton.setTitle("番組表の表示設定を開く", for: .normal)
         timeTableButton.addTarget(self, action: #selector(openTimeTableSettings), for: .touchUpInside)
         styleActionButton(timeTableButton)
@@ -83,6 +95,7 @@ final class GeneralSettingsViewController: SettingsDetailViewController {
         // 並びは本家の全般 (General.vue) に合わせる。本家に無い
         // アプリ側の項目 (再開時の巻き戻し、CM自動スキップ) は末尾。
         for view in [
+            itemGroup(title: "ピン留め中チャンネルの並び替え", field: pinnedField),
             itemGroup(title: "番組表の表示設定", field: timeTableField),
             makeDivider(),
             itemGroup(title: "チャンネル一覧を実況勢いが強い順に並び替える", field: makeSwitchRow(
@@ -208,6 +221,14 @@ final class GeneralSettingsViewController: SettingsDetailViewController {
         var settings = SyncedSettingsStore.shared.current
         settings.showOriginalBroadcastTimeDuringPlayback = originalTimeSwitch.isOn
         SyncedSettingsStore.shared.update(settings)
+    }
+
+    /// ピン留め中チャンネルの並び替えは、設定の詳細画面として押し込む
+    /// (Web 版では全般の中のダイアログだが、アプリの設定は画面遷移で
+    /// 統一しているため、それに合わせた)。
+    @objc private func openPinnedChannels() {
+        navigationController?.pushViewController(
+            PinnedChannelsViewController(), animated: true)
     }
 
     /// 番組表の表示設定は、番組表から開くときと同じシートで開く。

@@ -153,7 +153,9 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
 
     /// 表示中の放送日の開始 (その日の 4:00)。
     private var selectedDayStart = TimeTableViewController.broadcastDayStart(of: Date())
-    /// 表示中の放送種別 ("GR" など)。
+    /// ピン留めの種別を表す印 (API の種別名とは別の、アプリ内の値)。
+    private static let pinnedType = "PINNED"
+    /// 表示中の放送種別 ("GR" など。ピン留めのときは pinnedType)。
     private var selectedType = "GR"
     /// 切り替えに出す放送種別 (チャンネル一覧から分かる範囲)。
     private var availableTypes: [String] = []
@@ -559,6 +561,7 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
     /// API の種別名を表示用の名前にする (生放送一覧と同じ表現)。
     private static func prettyTypeName(_ type: String) -> String {
         switch type {
+        case Self.pinnedType: return "ピン留め"
         case "GR": return "地デジ"
         case "BS": return "BS"
         case "CS": return "CS"
@@ -580,9 +583,21 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
         }
         Task { [weak self] in
             guard let self else { return }
+            // 同期が入っていれば、利用者設定を取り込んでおく
+            // (ピン留めの有無を種別の出し分けに使うため)。
+            _ = await SyncedSettingsStore.shared.refreshFromServer()
             if let response = try? await APIClient.shared.fetchChannels() {
-                let types = response.groups.map { $0.type }
+                var types = response.groups.map { $0.type }
                 if !types.isEmpty {
+                    // ピン留め中のチャンネルがあれば、種別の先頭に
+                    // ピン留めを足す (Web 版の番組表と同じ。ピン留めが
+                    // 無いときは出さない)。
+                    let allIDs = Set(response.groups.flatMap { $0.channels }.map { $0.id })
+                    let hasPinned = SyncedSettingsStore.shared.current.pinnedChannelIDs
+                        .contains { allIDs.contains($0) }
+                    if hasPinned {
+                        types.insert(Self.pinnedType, at: 0)
+                    }
                     self.availableTypes = types
                     if !types.contains(self.selectedType) {
                         self.selectedType = types[0]
@@ -612,10 +627,15 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
         Task { [weak self] in
             guard let self else { return }
             do {
+                // ピン留めの種別では、種別の代わりにピン留め中の
+                // チャンネルの ID を渡す (Web 版の番組表と同じ)。
+                let isPinned = type == Self.pinnedType
                 let response = try await APIClient.shared.fetchTimeTable(
                     start: dayStart,
                     end: dayStart.addingTimeInterval(Self.dayLength),
-                    channelType: type)
+                    channelType: isPinned ? nil : type,
+                    pinnedChannelIDs: isPinned
+                        ? SyncedSettingsStore.shared.current.pinnedChannelIDs : nil)
                 self.loadedBaseURLString = SettingsStore.shared.baseURL?.absoluteString
                 self.channels = response.channels
                 self.dateRange = response.date_range

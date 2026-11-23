@@ -1,7 +1,11 @@
 import UIKit
 
-/// 生放送のチャンネル一覧。上部のカテゴリ切り替え (地デジ／BS／CS など) で絞り込み、
+/// 生放送のチャンネル一覧。上部のカテゴリ切り替え (ピン留め／地デジ／BS／CS など) で絞り込み、
 /// 各カードに局ロゴと局名、今の番組 (時刻・説明つき) と次の番組を出す。
+/// カード右上のピンのボタンでピン留めを付け外しでき、ピン留めした
+/// チャンネルは先頭の「ピン留め」の分類に、ピン留めした順で並ぶ
+/// (Web 版のテレビ一覧と同じ。状態は利用者設定に保存され、同期が
+/// 入っていれば Web 版ともやり取りされる)。
 /// 見た目は Web 版のテレビ一覧 (views/TV/Home.vue、スマホ縦) の実測どおり:
 /// 番組ごとに独立した角丸カードが間隔を空けて並び、カード下端に
 /// 放送中番組の進み具合のバーが付く。
@@ -47,10 +51,23 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
     /// 番組表への浮きボタン (Web 版のテレビ画面と同じ置き方)。
     private let timetableButton = RippleButton()
 
+    /// ピン留めの分類を表す種別名 (API の種別とは別の、アプリ内の印)。
+    private static let pinnedGroupType = "PINNED"
+
     private var groups: [(type: String, channels: [LiveChannel])] = []
     private var selectedGroupIndex = 0
     private var isLoading = false
     private var loadedBaseURLString: String?
+    /// 直近に取得できたチャンネル情報 (応答そのままの控え)。
+    /// ピン留めの付け外しでは再取得せず、この控えから一覧を組み直す。
+    private var lastResponse: LiveChannelsResponse?
+    /// 一覧を一度でも組み立てたか (初回だけ、表示する分類の初期値を
+    /// Web 版と同じ決め方にするため)。
+    private var hasBuiltGroups = false
+    /// ピン留めの付け外しのときに画面下へ短く出す知らせ。
+    private let noticeView = UIView()
+    private let noticeLabel = UILabel()
+    private var noticeDismissWork: DispatchWorkItem?
 
     /// ページ切り替え (ドラッグ／タップのアニメーション) の最中かどうか。
     /// この間は縦スクロールでヘッダーを動かさない (ドラッグ側が受け持つ)。
@@ -134,6 +151,7 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
         view.addSubview(statusLabel)
 
         setupTimetableButton()
+        setupNoticeView()
 
         NSLayoutConstraint.activate([
             pagerContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
@@ -145,6 +163,53 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
             statusLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 24),
             statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -24),
         ])
+    }
+
+    /// 画面下の知らせ (Web 版の下部に出るお知らせと同じ役割) を置く。
+    /// 普段は透明で、ピン留めの付け外しのときだけ短く出す。
+    private func setupNoticeView() {
+        noticeView.backgroundColor = AppPalette.pressed
+        noticeView.layer.cornerRadius = 8
+        noticeView.layer.shadowColor = UIColor.black.cgColor
+        noticeView.layer.shadowOpacity = 0.4
+        noticeView.layer.shadowRadius = 6
+        noticeView.layer.shadowOffset = CGSize(width: 0, height: 2)
+        noticeView.alpha = 0
+        noticeView.isUserInteractionEnabled = false
+        noticeView.translatesAutoresizingMaskIntoConstraints = false
+        noticeLabel.font = .scaledSystemFont(ofSize: 14)
+        noticeLabel.textColor = AppPalette.text
+        noticeLabel.numberOfLines = 0
+        noticeLabel.translatesAutoresizingMaskIntoConstraints = false
+        noticeView.addSubview(noticeLabel)
+        view.addSubview(noticeView)
+        NSLayoutConstraint.activate([
+            noticeView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            // 浮きボタンと同じく、下部バーの上に 16px 浮かせる。
+            noticeView.bottomAnchor.constraint(
+                equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+            noticeView.leadingAnchor.constraint(
+                greaterThanOrEqualTo: view.leadingAnchor, constant: 24),
+            noticeView.trailingAnchor.constraint(
+                lessThanOrEqualTo: view.trailingAnchor, constant: -24),
+            noticeLabel.topAnchor.constraint(equalTo: noticeView.topAnchor, constant: 10),
+            noticeLabel.bottomAnchor.constraint(equalTo: noticeView.bottomAnchor, constant: -10),
+            noticeLabel.leadingAnchor.constraint(equalTo: noticeView.leadingAnchor, constant: 16),
+            noticeLabel.trailingAnchor.constraint(equalTo: noticeView.trailingAnchor, constant: -16),
+        ])
+    }
+
+    /// 知らせを出して、少し経ったら消す。続けて出されたときは
+    /// 前の分の消去を取り消して、新しい文面に差し替える。
+    private func showNotice(_ text: String) {
+        noticeLabel.text = text
+        noticeDismissWork?.cancel()
+        UIView.animate(withDuration: 0.2) { self.noticeView.alpha = 1 }
+        let work = DispatchWorkItem { [weak self] in
+            UIView.animate(withDuration: 0.3) { self?.noticeView.alpha = 0 }
+        }
+        noticeDismissWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2, execute: work)
     }
 
     /// ロゴ帯とカテゴリ帯の重ね物を画面の上に置く。
@@ -204,7 +269,58 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
         // 縦方向のときはこのしぐさが即座に不成立になってスクロールが始まる。
         // どのページが表示中になっても同じ決まりが要るため、作るたびに付ける。
         table.panGestureRecognizer.require(toFail: pagePan)
+        configureEmptyState(for: table)
         return table
+    }
+
+    /// ピン留めの分類が空のときだけ、そのページの地に説明を出す
+    /// (Web 版のピン留めタブの空表示と同じ文面・置き方)。
+    /// それ以外のページ・ピン留めがあるときは何も出さない。
+    private func configureEmptyState(for table: UITableView) {
+        guard groups.indices.contains(table.tag),
+              groups[table.tag].type == Self.pinnedGroupType,
+              groups[table.tag].channels.isEmpty else {
+            table.backgroundView = nil
+            return
+        }
+        let container = UIView()
+        let titleLabel = UILabel()
+        titleLabel.text = "ピン留めされているチャンネルが\nありません。"
+        titleLabel.font = .scaledSystemFont(ofSize: 22, weight: .semibold)
+        titleLabel.textColor = AppPalette.text
+        titleLabel.textAlignment = .center
+        titleLabel.numberOfLines = 0
+        let descriptionLabel = UILabel()
+        descriptionLabel.text = "各チャンネルのピン アイコンから、よくみる\nチャンネルをこのタブにピン留めできます。"
+        descriptionLabel.font = .scaledSystemFont(ofSize: 15)
+        descriptionLabel.textColor = AppPalette.metaText
+        descriptionLabel.textAlignment = .center
+        descriptionLabel.numberOfLines = 0
+        let noteLabel = UILabel()
+        noteLabel.text = "チャンネルをピン留めすると、\nこのタブが最初に表示されます。"
+        noteLabel.font = .scaledSystemFont(ofSize: 15)
+        noteLabel.textColor = AppPalette.metaText
+        noteLabel.textAlignment = .center
+        noteLabel.numberOfLines = 0
+        let stack = UIStackView(arrangedSubviews: [titleLabel, descriptionLabel, noteLabel])
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 12
+        stack.setCustomSpacing(16, after: titleLabel)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            // ページの先頭は重ね物 (ロゴ帯+カテゴリ帯) の下に隠れるため、
+            // その分だけ中心を下へずらして見える範囲の中央に寄せる。
+            stack.centerYAnchor.constraint(
+                equalTo: container.centerYAnchor, constant: tablesTopInset / 2),
+            stack.leadingAnchor.constraint(
+                greaterThanOrEqualTo: container.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(
+                lessThanOrEqualTo: container.trailingAnchor, constant: -24),
+        ])
+        table.backgroundView = container
     }
 
     override func viewDidLayoutSubviews() {
@@ -570,6 +686,7 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
         currentTableView = newTable
         neighborTableView = nil
         selectedGroupIndex = index
+        configureEmptyState(for: newTable)
         newTable.isScrollEnabled = true
         newTable.refreshControl = refreshControl
         newTable.frame = pagerContainer.bounds
@@ -673,6 +790,7 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
     /// API の種別名を表示用の名前にする (Web 版の表現に合わせる)。
     private static func prettyTypeName(_ type: String) -> String {
         switch type {
+        case Self.pinnedGroupType: return "ピン留め"
         case "GR": return "地デジ"
         case "BS": return "BS"
         case "CS": return "CS"
@@ -698,41 +816,171 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
         isLoading = true
         Task { [weak self] in
             guard let self else { return }
+            // 同期が入っていれば、利用者設定を先に取り込んでおく
+            // (Web 版で付け外ししたピン留めなどを、この画面にも
+            // 反映するため。失敗しても端末内の値で続ける)。
+            _ = await SyncedSettingsStore.shared.refreshFromServer()
             do {
                 let response = try await APIClient.shared.fetchChannels()
                 self.loadedBaseURLString = SettingsStore.shared.baseURL?.absoluteString
-                // Web 版で表示対象になっているチャンネルだけに絞る (印が無い場合は全部出す)。
-                // 設定が入っていれば、各分類の中で実況の勢いが強い順に並び替える
-                // (Web 版の「実況勢いが強い順」と同じ。勢いが同じか無い局は
-                // チャンネル番号の順を保つ)。
-                let sortByForce = SyncedSettingsStore.shared.current.tvChannelSortByJikkyoForce
-                self.groups = response.groups.map { group in
-                    var channels = group.channels.filter { $0.is_display ?? true }
-                    if sortByForce {
-                        channels = channels.enumerated().sorted { lhs, rhs in
-                            let lhsForce = lhs.element.jikkyo_force ?? 0
-                            let rhsForce = rhs.element.jikkyo_force ?? 0
-                            if lhsForce != rhsForce { return lhsForce > rhsForce }
-                            return lhs.offset < rhs.offset
-                        }.map(\.element)
-                    }
-                    return (type: group.type, channels: channels)
-                }.filter { !$0.channels.isEmpty }
-                self.statusLabel.text = self.groups.isEmpty ? "チャンネルがありません。" : nil
-                self.rebuildCategoryControl()
-                // カテゴリの並びが変わっていた場合に備え、表示中のページの
-                // 番号を選択中の項目に付け直してから読み直す。
-                self.currentTableView.tag = self.selectedGroupIndex
-                self.currentTableView.reloadData()
-                self.updateHeaderMetrics()
+                self.lastResponse = response
+                // 取得できたチャンネルに無いピン留めは取り除く
+                // (Web 版がチャンネル情報の更新時に行う掃除と同じ)。
+                self.removeStalePins(using: response)
+                self.rebuildGroups()
             } catch {
-                if self.groups.isEmpty {
+                if self.lastResponse == nil {
                     self.statusLabel.text = "読み込めませんでした。\n接続先とネットワークを確認してください。\n(\(error.localizedDescription))"
                 }
             }
             self.isLoading = false
             self.refreshControl.endRefreshing()
         }
+    }
+
+    /// 取得済みのチャンネル情報と現在の設定から、分類ごとの一覧を
+    /// 組み直して表示へ反映する。再取得はしないため、ピン留めの
+    /// 付け外しの直後にもそのまま使える。
+    /// 並びは Web 版と同じ: 先頭がピン留めの分類 (ピン留めが無いときも
+    /// 分類自体は残す)、続いて種別ごとの分類 (中身が無い分類は出さない)。
+    private func rebuildGroups() {
+        guard let response = lastResponse else { return }
+        let synced = SyncedSettingsStore.shared.current
+        let sortByForce = synced.tvChannelSortByJikkyoForce
+        let allChannels = response.groups.flatMap { $0.channels }
+
+        // ピン留めの分類: 表示対象外のサブチャンネルも含め、
+        // ピン留めした順に並べる。ピン留めしたチャンネルは、
+        // 種別ごとの分類にも今までどおり残る。
+        var pinned = synced.pinnedChannelIDs.compactMap { id in
+            allChannels.first { $0.id == id }
+        }
+        if sortByForce {
+            pinned = Self.sortPinnedByJikkyoForce(pinned)
+        }
+        var newGroups: [(type: String, channels: [LiveChannel])] =
+            [(type: Self.pinnedGroupType, channels: pinned)]
+        // 種別ごとの分類: Web 版で表示対象になっているチャンネルだけに
+        // 絞る (印が無い場合は全部出す)。設定が入っていれば、各分類の中で
+        // 実況の勢いが強い順に並び替える (Web 版の「実況勢いが強い順」と
+        // 同じ。勢いが同じか無い局はチャンネル番号の順を保つ)。
+        for group in response.groups {
+            var channels = group.channels.filter { $0.is_display ?? true }
+            if sortByForce {
+                channels = channels.enumerated().sorted { lhs, rhs in
+                    let lhsForce = lhs.element.jikkyo_force ?? 0
+                    let rhsForce = rhs.element.jikkyo_force ?? 0
+                    if lhsForce != rhsForce { return lhsForce > rhsForce }
+                    return lhs.offset < rhs.offset
+                }.map(\.element)
+            }
+            if !channels.isEmpty {
+                newGroups.append((type: group.type, channels: channels))
+            }
+        }
+
+        // 表示中の分類はなるべく保つ。初回だけ Web 版と同じ決め方で、
+        // ピン留めがあればピン留めの分類、無ければ地デジの分類を出す。
+        let previousType = groups.indices.contains(selectedGroupIndex)
+            ? groups[selectedGroupIndex].type : nil
+        groups = newGroups
+        if !hasBuiltGroups {
+            hasBuiltGroups = true
+            selectedGroupIndex = pinned.isEmpty
+                ? (newGroups.firstIndex { $0.type == "GR" } ?? 0)
+                : 0
+        } else if let previousType,
+                  let index = newGroups.firstIndex(where: { $0.type == previousType }) {
+            selectedGroupIndex = index
+        } else if !newGroups.indices.contains(selectedGroupIndex) {
+            selectedGroupIndex = 0
+        }
+        statusLabel.text = newGroups.contains { !$0.channels.isEmpty }
+            ? nil : "チャンネルがありません。"
+        rebuildCategoryControl()
+        // 分類の並びが変わっていた場合に備え、表示中のページの番号を
+        // 選択中の項目に付け直してから読み直す。
+        currentTableView.tag = selectedGroupIndex
+        currentTableView.reloadData()
+        configureEmptyState(for: currentTableView)
+        scrollCategoryBarToSelected()
+        updateHeaderMetrics()
+    }
+
+    /// 取得できたチャンネルに存在しないピン留めを取り除く。
+    /// 取得に失敗したときは呼ばない (意図せずピン留めが消えるのを
+    /// 防ぐためで、Web 版も更新に失敗したときはこの掃除を飛ばす)。
+    private func removeStalePins(using response: LiveChannelsResponse) {
+        let allIDs = Set(response.groups.flatMap { $0.channels }.map { $0.id })
+        var settings = SyncedSettingsStore.shared.current
+        let filtered = settings.pinnedChannelIDs.filter { allIDs.contains($0) }
+        guard filtered != settings.pinnedChannelIDs else { return }
+        settings.pinnedChannelIDs = filtered
+        SyncedSettingsStore.shared.update(settings)
+    }
+
+    /// チャンネルのピン留めを付け外しする (Web 版のテレビ一覧と同じ動き)。
+    /// 変更は利用者設定へその場で保存され、同期が入っていれば Web 版とも
+    /// やり取りされる。一覧は再取得せず、手元の情報で組み直す。
+    private func togglePin(for channel: LiveChannel) {
+        var settings = SyncedSettingsStore.shared.current
+        let wasPinned = settings.pinnedChannelIDs.contains(channel.id)
+        if wasPinned {
+            settings.pinnedChannelIDs.removeAll { $0 == channel.id }
+        } else {
+            settings.pinnedChannelIDs.append(channel.id)
+        }
+        SyncedSettingsStore.shared.update(settings)
+        rebuildGroups()
+        showNotice(wasPinned
+            ? "\(channel.name)のピン留めを外しました。"
+            : "\(channel.name)をピン留めしました。")
+        // Web 版と同じく、ピン留めが無くなったら地デジの分類へ移る。
+        if wasPinned && settings.pinnedChannelIDs.isEmpty {
+            switchToGroup(type: "GR")
+        }
+    }
+
+    /// 指定した種別の分類へ、カテゴリのボタンを押したときと同じ
+    /// 滑る動きで移る。すでにその分類にいるときは何もしない。
+    private func switchToGroup(type: String) {
+        guard let index = groups.firstIndex(where: { $0.type == type }),
+              index != selectedGroupIndex,
+              let button = categoryButtons.first(where: { $0.tag == index })
+        else { return }
+        categoryButtonTapped(button)
+    }
+
+    /// ピン留めの分類を実況勢い順に並び替えるときの比べ方
+    /// (Web 版と同じ: 勢いの強い順、同点ならチャンネル番号順、
+    /// それも同じなら ID 順)。
+    private static func sortPinnedByJikkyoForce(_ channels: [LiveChannel]) -> [LiveChannel] {
+        channels.sorted { a, b in
+            let aForce = a.jikkyo_force ?? 0
+            let bForce = b.jikkyo_force ?? 0
+            if aForce != bForce { return aForce > bForce }
+            let numberOrder = compareChannelNumber(a.channel_number, b.channel_number)
+            if numberOrder != 0 { return numberOrder < 0 }
+            return a.id < b.id
+        }
+    }
+
+    /// チャンネル番号の比べ方 (Web 版と同じ: メイン番号とサブ番号を
+    /// 数値として比べ、読めない番号は最後に回す)。
+    /// 戻り値は a が前なら -1、後なら 1、同じなら 0。
+    private static func compareChannelNumber(_ a: String?, _ b: String?) -> Int {
+        func parse(_ value: String?) -> (main: Int, sub: Int) {
+            guard let value else { return (Int.max, Int.max) }
+            let parts = value.split(separator: "-", maxSplits: 1)
+            guard let main = Int(parts[0]) else { return (Int.max, Int.max) }
+            let sub = parts.count > 1 ? (Int(parts[1]) ?? 0) : 0
+            return (main, sub)
+        }
+        let parsedA = parse(a)
+        let parsedB = parse(b)
+        if parsedA.main != parsedB.main { return parsedA.main < parsedB.main ? -1 : 1 }
+        if parsedA.sub != parsedB.sub { return parsedA.sub < parsedB.sub ? -1 : 1 }
+        return 0
     }
 
     // MARK: - UITableViewDataSource
@@ -745,7 +993,9 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
         let cell = tableView.dequeueReusableCell(
             withIdentifier: LiveChannelCell.reuseID, for: indexPath) as! LiveChannelCell
         let channel = channels(forGroupAt: tableView.tag)[indexPath.row]
-        cell.configure(with: channel)
+        let isPinned = SyncedSettingsStore.shared.current.pinnedChannelIDs.contains(channel.id)
+        cell.configure(with: channel, isPinned: isPinned)
+        cell.onPinToggle = { [weak self] in self?.togglePin(for: channel) }
         // ロゴはキャッシュにあればその場で出し、無ければ行ごとに後から読み込む
         // (一覧の表示をロゴの取得で待たせない)。
         if let logo = logoCache.object(forKey: channel.id as NSString) {
@@ -828,6 +1078,10 @@ final class LiveChannelCell: UITableViewCell {
     private let followingTitleLabel = UILabel()
     private let followingTimeLabel = UILabel()
     private let progressView = LiveProgressView()
+    /// ピン留めの付け外しのボタン (Web 版カードの右上のピンと同じ)。
+    private let pinButton = RippleButton()
+    /// ピンのボタンが押されたときの受け口 (一覧側で付け外しを行う)。
+    var onPinToggle: (() -> Void)?
     /// 押したときの波紋 (共通部品)。本家 Web 版のカードと同じく、
     /// カード全体を対象に、触れた位置から広げる。
     private let ripple = RippleSurface()
@@ -894,8 +1148,29 @@ final class LiveChannelCell: UITableViewCell {
         broadcasterContent.spacing = 2
         broadcasterContent.translatesAutoresizingMaskIntoConstraints = false
 
+        // ピンのボタンは Web 版どおり、局の行の右端に置く (当たり判定は
+        // 34x34、絵は 24px 相当)。絵は Fluent のピンの代わりに字形の近い
+        // SF Symbol で近似する (勢い・視聴数の絵と同じ扱い)。色は
+        // configure で、ピン留め中は primary、それ以外は text-darken-1 に
+        // 切り替える (Web 版と同じ)。
+        pinButton.setImage(
+            UIImage(systemName: "pin.fill",
+                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 20))?
+                .withRenderingMode(.alwaysTemplate),
+            for: .normal)
+        pinButton.addTarget(self, action: #selector(pinButtonTapped), for: .touchUpInside)
+        pinButton.translatesAutoresizingMaskIntoConstraints = false
+        pinButton.setContentHuggingPriority(.required, for: .horizontal)
+        pinButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        NSLayoutConstraint.activate([
+            pinButton.widthAnchor.constraint(equalToConstant: 34),
+            pinButton.heightAnchor.constraint(equalToConstant: 34),
+        ])
+        // 局名側は残りの幅で縮み、ピンのボタンが押し出されないようにする。
+        broadcasterContent.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
         // ロゴと本文の間は Web 版 (スマホ縦) の margin-left 14px。
-        let broadcasterRow = UIStackView(arrangedSubviews: [logoView, broadcasterContent])
+        let broadcasterRow = UIStackView(arrangedSubviews: [logoView, broadcasterContent, pinButton])
         broadcasterRow.axis = .horizontal
         broadcasterRow.alignment = .center
         broadcasterRow.spacing = 14
@@ -1037,9 +1312,18 @@ final class LiveChannelCell: UITableViewCell {
         logoView.image = nil
         presentDescriptionLabel.text = nil
         progressView.ratio = 0
+        onPinToggle = nil
     }
 
-    func configure(with channel: LiveChannel) {
+    @objc private func pinButtonTapped() {
+        onPinToggle?()
+    }
+
+    func configure(with channel: LiveChannel, isPinned: Bool) {
+        // ピンの色と読み上げ名は、ピン留めの状態で切り替える (Web 版の
+        // ピンの色・ツールチップと同じ意味合い)。
+        pinButton.tintColor = isPinned ? AppPalette.accent : AppPalette.metaText
+        pinButton.accessibilityLabel = isPinned ? "ピン留めを外す" : "ピン留めする"
         // 局名行は Web 版どおり「Ch: 番号 局名」。番号が無い応答では局名だけにする。
         if let number = channel.channel_number, !number.isEmpty {
             nameLabel.text = "Ch: \(number) \(channel.name)"
