@@ -66,6 +66,34 @@ final class LivePlayerViewController: UIViewController {
     private var startWatchdog: Timer?
     private var didStartPlaying = false
 
+    // MARK: - データ放送 (重ね合わせの検証、拡張版だけ)
+    /// 情報欄の「リモコン」ボタン (浮き出るパネルを出す)。
+    private let remoteButton = RippleButton()
+    private var dataBroadcastOverlay: DataBroadcastOverlay?
+    private var isDataBroadcastActive = false
+    /// 知らせ欄にデータ放送の状態を出しているかどうか。
+    private var showingDataBroadcastStatus = false
+    /// 「データ」を押して開始したとき、常駐文書が開けたところで
+    /// データボタンの合図 (20) を送るための控え。
+    private var pendingDataKey = false
+    /// 常駐文書まで開けたかどうか (読み込み中かどうかの判定に使う)。
+    private var dataBroadcastLoaded = false
+    /// 開始が失敗したままかどうか。失敗のままなら、次の「データ」で
+    /// 作り直して開始し直す。
+    private var dataBroadcastStartFailed = false
+    /// リモコンのパネル (Web 版と同じ浮き出る形) と、その後ろの幕。
+    private var remoteBackdrop: UIView?
+    private var remotePanel: UIView?
+    private var remoteSpinner: UIActivityIndicatorView?
+    /// 「データ」以外のデータ放送キー (十字・戻る・色・数字) の置き場。
+    /// 始まっていない間と読み込み中は薄くして押せなくする
+    /// (Web 版の使えない間の見せ方と同じ)。
+    private var remoteDimmableViews: [UIView] = []
+    /// 重ね合わせを通常画面に固定する決まり (制約) の控え。
+    private var bmlHomeConstraints: [NSLayoutConstraint] = []
+    /// 全画面へ貸し出し中に、重ね合わせを全画面側へ固定する決まり (制約)。
+    private var bmlBorrowConstraints: [NSLayoutConstraint] = []
+
     init(channel: LiveChannel) {
         self.channel = channel
         // 回線の区分はこの時点で決める。手動切り替えの記憶があればそれを
@@ -116,6 +144,9 @@ final class LivePlayerViewController: UIViewController {
             return
         }
 #endif
+        remoteBackdrop?.isHidden = true
+        remotePanel?.isHidden = true
+        stopDataBroadcast()
         stopStream()
     }
 
@@ -288,6 +319,20 @@ final class LivePlayerViewController: UIViewController {
         chipsRow2.axis = .horizontal
         chipsRow2.spacing = 8
 
+        // データ放送の重ね合わせ (検証用、拡張版だけ)。入り口は情報欄の
+        // 「リモコン」ボタンで、押すと Web 版と同じ浮き出るパネル型の
+        // リモコンが出る。データ放送の開始はパネルの「データ」ボタン
+        // から行う (テレビで dボタンを押して開くのと同じ入り口)。
+        // パネル本体は buildRemotePanel() で画面全体の上に作る。
+        if AppEdition.isHousehold {
+            remoteButton.setTitle("リモコン", for: .normal)
+            remoteButton.addTarget(self, action: #selector(showRemotePanel), for: .touchUpInside)
+            stylePlayerChip(remoteButton)
+        }
+        let chipsRow3 = UIStackView(arrangedSubviews: [remoteButton, UIView()])
+        chipsRow3.axis = .horizontal
+        chipsRow3.spacing = 8
+
         let infoStack = UIStackView(arrangedSubviews: [
             messageLabel, broadcasterRow, infoTitleLabel, infoTimeLabel, descriptionLabel,
             statusLabel, nextHeaderLabel, nextTitleLabel, nextTimeLabel, chipsRow, chipsRow2,
@@ -304,6 +349,9 @@ final class LivePlayerViewController: UIViewController {
         infoStack.setCustomSpacing(4, after: nextHeaderLabel)
         infoStack.setCustomSpacing(2, after: nextTitleLabel)
         infoStack.setCustomSpacing(16, after: nextTimeLabel)
+        if AppEdition.isHousehold {
+            infoStack.addArrangedSubview(chipsRow3)
+        }
         scrollView.addSubview(infoStack)
 
         // 映像の高さは viewDidLayoutSubviews で決める (16:9 と画面に収まる高さの小さい方)。
@@ -349,6 +397,12 @@ final class LivePlayerViewController: UIViewController {
             infoStack.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
             infoStack.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor),
         ])
+
+        // リモコンのパネルは画面全体の上に浮かせるため、最後に足す
+        // (拡張版だけ)。
+        if AppEdition.isHousehold {
+            buildRemotePanel()
+        }
     }
 
     /// 局ロゴを読み込む (取れなければ読み込み前の地のまま)。
@@ -650,6 +704,434 @@ final class LivePlayerViewController: UIViewController {
         )
     }
 
+    // MARK: - データ放送 (重ね合わせの検証、拡張版だけ)
+
+    /// リモコンのパネルを作る (Web 版の Remocon.vue と同じ顔ぶれ)。
+    /// 画面全体にかぶさる幕+中央のパネルで、十字キーは円形、操作キーと
+    /// 数字キーの送る合図 (ARIB のキーコード) は Web 版と同一。
+    /// 「データ」ボタンがデータ放送の入り口で、それ以外のキーは
+    /// dataBroadcastRemoteKey がそのまま合図を送る。
+    private func buildRemotePanel() {
+        // パネルのボタン1つを作る (tag に ARIB のキーコードを入れる)。
+        func makePanelButton(_ title: String, _ keyCode: Int, fontSize: CGFloat) -> RippleButton {
+            let button = RippleButton()
+            button.setTitle(title, for: .normal)
+            button.setTitleColor(AppPalette.text, for: .normal)
+            button.titleLabel?.font = .scaledSystemFont(ofSize: fontSize, weight: .bold)
+            button.backgroundColor = AppPalette.panel
+            button.layer.cornerRadius = 5
+            button.tag = keyCode
+            button.addTarget(self, action: #selector(dataBroadcastRemoteKey(_:)), for: .touchUpInside)
+            return button
+        }
+        // 色ボタンは Web 版の色 (Vuetify の blue-darken-3 など) に寄せる。
+        func makeColorButton(_ title: String, _ keyCode: Int, _ color: UIColor) -> RippleButton {
+            let button = makePanelButton(title, keyCode, fontSize: 15)
+            button.backgroundColor = color
+            button.setTitleColor(.white, for: .normal)
+            return button
+        }
+        // 横1列の並びを作る (中身は同じ幅で広がる)。
+        func makePanelRow(_ buttons: [UIView], height: CGFloat) -> UIStackView {
+            let row = UIStackView(arrangedSubviews: buttons)
+            row.axis = .horizontal
+            row.spacing = 8
+            row.distribution = .fillEqually
+            row.translatesAutoresizingMaskIntoConstraints = false
+            row.heightAnchor.constraint(equalToConstant: height).isActive = true
+            return row
+        }
+
+        // 十字キー: 160x160 の円形の台に、矢印4つと中央の「決定」 (90x90)。
+        let dPad = UIView()
+        dPad.backgroundColor = AppPalette.panel
+        dPad.layer.cornerRadius = 80
+        dPad.clipsToBounds = true
+        dPad.translatesAutoresizingMaskIntoConstraints = false
+        func makeArrowButton(_ symbol: String, _ keyCode: Int) -> RippleButton {
+            let button = RippleButton()
+            button.setImage(
+                UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 26, weight: .bold)),
+                for: .normal
+            )
+            button.tintColor = AppPalette.text
+            button.tag = keyCode
+            button.addTarget(self, action: #selector(dataBroadcastRemoteKey(_:)), for: .touchUpInside)
+            button.translatesAutoresizingMaskIntoConstraints = false
+            return button
+        }
+        let upButton = makeArrowButton("chevron.up", 1)
+        let downButton = makeArrowButton("chevron.down", 2)
+        let leftButton = makeArrowButton("chevron.left", 3)
+        let rightButton = makeArrowButton("chevron.right", 4)
+        let selectButton = RippleButton()
+        selectButton.setTitle("決定", for: .normal)
+        selectButton.setTitleColor(AppPalette.text, for: .normal)
+        selectButton.titleLabel?.font = .scaledSystemFont(ofSize: 14, weight: .bold)
+        selectButton.backgroundColor = AppPalette.background
+        selectButton.layer.cornerRadius = 45
+        selectButton.tag = 18
+        selectButton.addTarget(self, action: #selector(dataBroadcastRemoteKey(_:)), for: .touchUpInside)
+        selectButton.translatesAutoresizingMaskIntoConstraints = false
+        for button in [upButton, downButton, leftButton, rightButton, selectButton] {
+            dPad.addSubview(button)
+        }
+        NSLayoutConstraint.activate([
+            dPad.widthAnchor.constraint(equalToConstant: 160),
+            dPad.heightAnchor.constraint(equalToConstant: 160),
+            upButton.topAnchor.constraint(equalTo: dPad.topAnchor),
+            upButton.centerXAnchor.constraint(equalTo: dPad.centerXAnchor),
+            upButton.widthAnchor.constraint(equalToConstant: 90),
+            upButton.heightAnchor.constraint(equalToConstant: 35),
+            downButton.bottomAnchor.constraint(equalTo: dPad.bottomAnchor),
+            downButton.centerXAnchor.constraint(equalTo: dPad.centerXAnchor),
+            downButton.widthAnchor.constraint(equalToConstant: 90),
+            downButton.heightAnchor.constraint(equalToConstant: 35),
+            leftButton.leadingAnchor.constraint(equalTo: dPad.leadingAnchor),
+            leftButton.centerYAnchor.constraint(equalTo: dPad.centerYAnchor),
+            leftButton.widthAnchor.constraint(equalToConstant: 35),
+            leftButton.heightAnchor.constraint(equalToConstant: 90),
+            rightButton.trailingAnchor.constraint(equalTo: dPad.trailingAnchor),
+            rightButton.centerYAnchor.constraint(equalTo: dPad.centerYAnchor),
+            rightButton.widthAnchor.constraint(equalToConstant: 35),
+            rightButton.heightAnchor.constraint(equalToConstant: 90),
+            selectButton.centerXAnchor.constraint(equalTo: dPad.centerXAnchor),
+            selectButton.centerYAnchor.constraint(equalTo: dPad.centerYAnchor),
+            selectButton.widthAnchor.constraint(equalToConstant: 90),
+            selectButton.heightAnchor.constraint(equalToConstant: 90),
+        ])
+
+        // 「データ」ボタン: Web 版と同じ「d」のロゴを左に置く。
+        // ロゴは Web 版の Remocon.vue に埋め込まれた SVG をそのまま
+        // 素材化したもの (data_broadcast_d_logo)。
+        let dataButton = RippleButton()
+        dataButton.setTitle("データ", for: .normal)
+        dataButton.setTitleColor(AppPalette.text, for: .normal)
+        dataButton.titleLabel?.font = .scaledSystemFont(ofSize: 15, weight: .bold)
+        dataButton.backgroundColor = AppPalette.panel
+        dataButton.layer.cornerRadius = 5
+        dataButton.tintColor = AppPalette.text
+        dataButton.setImage(UIImage(named: "data_broadcast_d_logo"), for: .normal)
+        dataButton.titleEdgeInsets = UIEdgeInsets(top: 0, left: 4, bottom: 0, right: -4)
+        dataButton.addTarget(self, action: #selector(remoteDataKeyPressed), for: .touchUpInside)
+        // 「戻る」ボタン: Web 版と同じく、小さい矢印+文字。
+        let backButton = RippleButton()
+        backButton.setTitle("戻る", for: .normal)
+        backButton.setTitleColor(AppPalette.text, for: .normal)
+        backButton.titleLabel?.font = .scaledSystemFont(ofSize: 15, weight: .bold)
+        backButton.backgroundColor = AppPalette.panel
+        backButton.layer.cornerRadius = 5
+        backButton.tintColor = AppPalette.text
+        backButton.setImage(
+            UIImage(systemName: "chevron.left", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .bold)),
+            for: .normal
+        )
+        backButton.titleEdgeInsets = UIEdgeInsets(top: 0, left: 4, bottom: 0, right: -4)
+        backButton.tag = 19
+        backButton.addTarget(self, action: #selector(dataBroadcastRemoteKey(_:)), for: .touchUpInside)
+
+        let controlRow1 = makePanelRow([dataButton, backButton], height: 35)
+        let controlRow2 = makePanelRow([
+            makeColorButton("青", 21, UIColor(red: 0x15 / 255, green: 0x65 / 255, blue: 0xC0 / 255, alpha: 1)),
+            makeColorButton("赤", 22, UIColor(red: 0xC6 / 255, green: 0x28 / 255, blue: 0x28 / 255, alpha: 1)),
+            makeColorButton("緑", 23, UIColor(red: 0x2E / 255, green: 0x7D / 255, blue: 0x32 / 255, alpha: 1)),
+            makeColorButton("黄", 24, UIColor(red: 0xF9 / 255, green: 0xA8 / 255, blue: 0x25 / 255, alpha: 1)),
+        ], height: 35)
+        for row in [controlRow1, controlRow2] {
+            row.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        }
+
+        // 数字キー (Web 版は 1〜12 を3列に並べる。送る合図は 6〜17)。
+        let numberStack = UIStackView()
+        numberStack.axis = .vertical
+        numberStack.spacing = 8
+        numberStack.translatesAutoresizingMaskIntoConstraints = false
+        let numberTitles = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"]
+        for startIndex in stride(from: 0, to: numberTitles.count, by: 3) {
+            let rowButtons = (0 ..< 3).map { offset in
+                makePanelButton(numberTitles[startIndex + offset], 6 + startIndex + offset, fontSize: 26)
+            }
+            numberStack.addArrangedSubview(makePanelRow(rowButtons, height: 44))
+        }
+        numberStack.widthAnchor.constraint(equalToConstant: 200).isActive = true
+
+        // データ放送の部分 (十字+操作キー)。読み込み中のぐるぐるは
+        // この部分の真ん中に重ねる (Web 版と同じ置き場所)。
+        let broadcastSection = UIStackView(arrangedSubviews: [dPad, controlRow1, controlRow2])
+        broadcastSection.axis = .vertical
+        broadcastSection.alignment = .center
+        broadcastSection.setCustomSpacing(12, after: dPad)
+        broadcastSection.setCustomSpacing(8, after: controlRow1)
+        let spinner = UIActivityIndicatorView(style: .large)
+        spinner.color = AppPalette.secondaryText
+        spinner.hidesWhenStopped = true
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        broadcastSection.addSubview(spinner)
+        NSLayoutConstraint.activate([
+            spinner.centerXAnchor.constraint(equalTo: broadcastSection.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: broadcastSection.centerYAnchor),
+        ])
+        remoteSpinner = spinner
+        // 「データ」以外のキーは、始まっていない間と読み込み中は
+        // 薄くして押せなくする。
+        remoteDimmableViews = [dPad, backButton, controlRow2, numberStack]
+
+        // パネルの中身 (縦の並び)。画面が低いときはパネルの中で滑らせる。
+        let contentStack = UIStackView(arrangedSubviews: [broadcastSection, numberStack])
+        contentStack.axis = .vertical
+        contentStack.alignment = .center
+        contentStack.setCustomSpacing(16, after: broadcastSection)
+        contentStack.isLayoutMarginsRelativeArrangement = true
+        contentStack.layoutMargins = UIEdgeInsets(top: 24, left: 16, bottom: 24, right: 16)
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let panelScroll = UIScrollView()
+        panelScroll.backgroundColor = .clear
+        panelScroll.showsVerticalScrollIndicator = false
+        panelScroll.translatesAutoresizingMaskIntoConstraints = false
+        panelScroll.addSubview(contentStack)
+
+        let panel = UIView()
+        panel.backgroundColor = AppPalette.background
+        panel.layer.cornerRadius = 8
+        panel.layer.shadowColor = UIColor.black.cgColor
+        panel.layer.shadowOpacity = 0.35
+        panel.layer.shadowRadius = 12
+        panel.layer.shadowOffset = CGSize(width: 0, height: 6)
+        panel.isHidden = true
+        panel.translatesAutoresizingMaskIntoConstraints = false
+        panel.addSubview(panelScroll)
+
+        // 閉じるボタン (パネルの右上、Web 版と同じ)。
+        let closeButton = RippleButton()
+        closeButton.setImage(
+            UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .bold)),
+            for: .normal
+        )
+        closeButton.tintColor = AppPalette.text
+        closeButton.layer.cornerRadius = 18
+        closeButton.addTarget(self, action: #selector(hideRemotePanel), for: .touchUpInside)
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        panel.addSubview(closeButton)
+
+        // 幕: 画面全体に薄くかぶさり、押すとパネルを閉じる (Web 版と同じ)。
+        let backdrop = UIView()
+        backdrop.backgroundColor = UIColor(red: 0x1E / 255, green: 0x13 / 255, blue: 0x10 / 255, alpha: 0.5)
+        backdrop.isHidden = true
+        backdrop.translatesAutoresizingMaskIntoConstraints = false
+        backdrop.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(hideRemotePanel)))
+
+        view.addSubview(backdrop)
+        view.addSubview(panel)
+        // パネルの高さは Web 版と同じ 514pt を目安にし、画面が低い
+        // ときは画面に収まる高さまで縮める (中身は滑らせて見せる)。
+        let panelHeight = panel.heightAnchor.constraint(equalToConstant: 514)
+        panelHeight.priority = .defaultHigh
+        panelHeight.isActive = true
+        NSLayoutConstraint.activate([
+            backdrop.topAnchor.constraint(equalTo: view.topAnchor),
+            backdrop.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            backdrop.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            backdrop.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            panel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            panel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            panel.widthAnchor.constraint(equalToConstant: 234),
+            panel.topAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            panel.bottomAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
+            panelScroll.topAnchor.constraint(equalTo: panel.topAnchor),
+            panelScroll.bottomAnchor.constraint(equalTo: panel.bottomAnchor),
+            panelScroll.leadingAnchor.constraint(equalTo: panel.leadingAnchor),
+            panelScroll.trailingAnchor.constraint(equalTo: panel.trailingAnchor),
+            contentStack.topAnchor.constraint(equalTo: panelScroll.contentLayoutGuide.topAnchor),
+            contentStack.bottomAnchor.constraint(equalTo: panelScroll.contentLayoutGuide.bottomAnchor),
+            contentStack.leadingAnchor.constraint(equalTo: panelScroll.contentLayoutGuide.leadingAnchor),
+            contentStack.trailingAnchor.constraint(equalTo: panelScroll.contentLayoutGuide.trailingAnchor),
+            contentStack.widthAnchor.constraint(equalTo: panelScroll.frameLayoutGuide.widthAnchor),
+            closeButton.topAnchor.constraint(equalTo: panel.topAnchor, constant: 10),
+            closeButton.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -10),
+            closeButton.widthAnchor.constraint(equalToConstant: 36),
+            closeButton.heightAnchor.constraint(equalToConstant: 36),
+        ])
+        remoteBackdrop = backdrop
+        remotePanel = panel
+        updateRemotePanelState()
+    }
+
+    /// リモコンのパネルを出す。データ放送が始まっていなくても出せる
+    /// (開始はパネルの「データ」ボタンから行うため)。
+    @objc private func showRemotePanel() {
+        guard let backdrop = remoteBackdrop, let panel = remotePanel else { return }
+        updateRemotePanelState()
+        backdrop.isHidden = false
+        panel.isHidden = false
+        backdrop.alpha = 0
+        panel.alpha = 0
+        UIView.animate(withDuration: 0.2) {
+            backdrop.alpha = 1
+            panel.alpha = 1
+        }
+    }
+
+    @objc private func hideRemotePanel() {
+        guard let backdrop = remoteBackdrop, let panel = remotePanel, !panel.isHidden else { return }
+        UIView.animate(withDuration: 0.2, animations: {
+            backdrop.alpha = 0
+            panel.alpha = 0
+        }, completion: { _ in
+            backdrop.isHidden = true
+            panel.isHidden = true
+        })
+    }
+
+    /// パネルの状態の見せ方を今の状態に合わせる。
+    /// 始まっていて常駐文書まで開けていればキーをそのまま、
+    /// それ以外は「データ」以外のキーを薄くして押せなくし、
+    /// 読み込み中はぐるぐるを出す (Web 版の見せ方と同じ)。
+    private func updateRemotePanelState() {
+        let running = isDataBroadcastActive && dataBroadcastLoaded && !dataBroadcastStartFailed
+        let loading = isDataBroadcastActive && !dataBroadcastLoaded && !dataBroadcastStartFailed
+        for target in remoteDimmableViews {
+            target.alpha = running ? 1 : 0.4
+            target.isUserInteractionEnabled = running
+        }
+        if loading {
+            remoteSpinner?.startAnimating()
+        } else {
+            remoteSpinner?.stopAnimating()
+        }
+    }
+
+    /// 「データ」ボタン。まだ始まっていなければ材料の受け取りから
+    /// 始めて、常駐文書が開けたところでデータボタンの合図 (20) を
+    /// 送って中身の画面を開く。すでに開いているときの再押しは、
+    /// 合図を送るだけにして文書側の作法に任せる (Web 版・テレビと同じ)。
+    @objc private func remoteDataKeyPressed() {
+        if isDataBroadcastActive && dataBroadcastLoaded {
+            dataBroadcastOverlay?.sendKey(20)
+        } else if isDataBroadcastActive && !dataBroadcastStartFailed {
+            // 読み込み中にもう一度押されたら、開けたところで送り直す。
+            pendingDataKey = true
+        } else {
+            // まだ始まっていないか、開始が失敗したままのときは、
+            // 作り直して開始する。
+            if dataBroadcastOverlay != nil {
+                stopDataBroadcast()
+            }
+            pendingDataKey = true
+            startDataBroadcast()
+        }
+    }
+
+    /// データ放送の重ね合わせを始める。透明な WebView を映像の真上に置き、
+    /// 中のデータ放送ブラウザへ、材料の口 (アプリ内の中継経由) を渡す。
+    private func startDataBroadcast() {
+        guard let originURL = APIClient.shared.psiArchivedDataURL(
+            displayChannelID: channel.display_channel_id,
+            quality: quality,
+            profile: profile
+        ) else {
+            messageLabel.text = "接続先が設定されていません。"
+            pendingDataKey = false
+            return
+        }
+        let overlay = DataBroadcastOverlay()
+        overlay.onStatus = { [weak self] status in
+            self?.handleDataBroadcastStatus(status)
+        }
+        dataBroadcastOverlay = overlay
+        let webView = overlay.prepareWebView()
+        videoArea.insertSubview(webView, aboveSubview: videoView)
+        bmlHomeConstraints = [
+            webView.topAnchor.constraint(equalTo: videoArea.topAnchor),
+            webView.bottomAnchor.constraint(equalTo: videoArea.bottomAnchor),
+            webView.leadingAnchor.constraint(equalTo: videoArea.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: videoArea.trailingAnchor),
+        ]
+        NSLayoutConstraint.activate(bmlHomeConstraints)
+        // 材料の口は映像と同じくアプリ内の中継を通す (外回線の合言葉が付く)。
+        // 中継が使えないときは元の URL に落ちる (映像と同じ扱い)。
+        let psiURL = StreamRelayServer.shared.relayURL(for: originURL) ?? originURL
+        isDataBroadcastActive = true
+        dataBroadcastLoaded = false
+        dataBroadcastStartFailed = false
+        overlay.start(psiURL: psiURL, serviceID: channel.service_id)
+        updateRemotePanelState()
+    }
+
+    /// データ放送を止める。止めるのは、チャンネルを離れるときと、
+    /// データ放送が無い局と分かったときだけ (「戻る」や「データ」の
+    /// 再押しでは止めない。文書側の作法に任せる)。
+    /// clearStatusMessage が false のときは、知らせ欄の文面を残す
+    /// (「データ放送はありません」を消さないため)。
+    private func stopDataBroadcast(clearStatusMessage: Bool = true) {
+        guard isDataBroadcastActive || dataBroadcastOverlay != nil else { return }
+        isDataBroadcastActive = false
+        pendingDataKey = false
+        dataBroadcastLoaded = false
+        dataBroadcastStartFailed = false
+        if clearStatusMessage, showingDataBroadcastStatus {
+            messageLabel.text = nil
+            showingDataBroadcastStatus = false
+        }
+        NSLayoutConstraint.deactivate(bmlHomeConstraints)
+        NSLayoutConstraint.deactivate(bmlBorrowConstraints)
+        bmlHomeConstraints = []
+        bmlBorrowConstraints = []
+        dataBroadcastOverlay?.teardown()
+        dataBroadcastOverlay = nil
+        updateRemotePanelState()
+    }
+
+    /// リモコンのボタン。ボタンの tag に ARIB のキーコードが入っている。
+    @objc private func dataBroadcastRemoteKey(_ sender: UIButton) {
+        dataBroadcastOverlay?.sendKey(sender.tag)
+    }
+
+    /// ページ側から届く状態を、知らせ欄の文面に直す。
+    private func handleDataBroadcastStatus(_ status: String) {
+        guard isDataBroadcastActive else { return }
+        switch status {
+        case "loading":
+            messageLabel.text = "データ放送を読み込んでいます…"
+            showingDataBroadcastStatus = true
+        case "loaded":
+            dataBroadcastLoaded = true
+            dataBroadcastStartFailed = false
+            // 「データ」を押して開始したときは、常駐文書が開けた
+            // ところでデータボタンの合図を送り、中身の画面を開く。
+            if pendingDataKey {
+                pendingDataKey = false
+                dataBroadcastOverlay?.sendKey(20)
+            }
+            if showingDataBroadcastStatus {
+                messageLabel.text = nil
+                showingDataBroadcastStatus = false
+            }
+        case "available":
+            if showingDataBroadcastStatus {
+                messageLabel.text = nil
+                showingDataBroadcastStatus = false
+            }
+        case "unavailable":
+            messageLabel.text = "このチャンネルにデータ放送はありません。"
+            showingDataBroadcastStatus = true
+            pendingDataKey = false
+            // データ放送が無い局と分かったら、重ね合わせは止める
+            // (知らせの文面は残す)。
+            stopDataBroadcast(clearStatusMessage: false)
+        case "error":
+            messageLabel.text = "データ放送を開始できませんでした。"
+            showingDataBroadcastStatus = true
+            pendingDataKey = false
+            if !dataBroadcastLoaded {
+                dataBroadcastStartFailed = true
+            }
+        default:
+            break
+        }
+        updateRemotePanelState()
+    }
+
     /// フルスクリーン表示へ移る。映像の枠ごと全画面側へ貸し出すだけで、
     /// 受信そのものは止めない。
     @objc private func showFullscreen() {
@@ -694,6 +1176,19 @@ final class LivePlayerViewController: UIViewController {
         // 貸し出し中は、通常画面側のタップ (操作帯の出し入れ) を止める
         // (全画面側のタップと二重に効かないように)。
         videoTapRecognizer?.isEnabled = false
+        // データ放送の重ね合わせも、映像の枠と一緒に貸し出す。
+        if let webView = dataBroadcastOverlay?.webView, webView.superview === videoArea {
+            NSLayoutConstraint.deactivate(bmlHomeConstraints)
+            webView.removeFromSuperview()
+            container.addSubview(webView)
+            bmlBorrowConstraints = [
+                webView.topAnchor.constraint(equalTo: container.topAnchor),
+                webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+                webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            ]
+            NSLayoutConstraint.activate(bmlBorrowConstraints)
+        }
     }
 
     /// 貸し出した映像の枠を通常画面へ戻す。
@@ -707,6 +1202,14 @@ final class LivePlayerViewController: UIViewController {
         videoArea.sendSubviewToBack(videoView)
         NSLayoutConstraint.activate(videoViewHomeConstraints)
         videoTapRecognizer?.isEnabled = true
+        // データ放送の重ね合わせも、映像の枠と一緒に通常画面へ戻す。
+        if let webView = dataBroadcastOverlay?.webView, webView.superview !== videoArea {
+            NSLayoutConstraint.deactivate(bmlBorrowConstraints)
+            bmlBorrowConstraints = []
+            webView.removeFromSuperview()
+            videoArea.insertSubview(webView, aboveSubview: videoView)
+            NSLayoutConstraint.activate(bmlHomeConstraints)
+        }
     }
 
     private func refreshPlayPauseIcon() {

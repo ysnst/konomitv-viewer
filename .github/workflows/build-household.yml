@@ -1,0 +1,25 @@
+name: Build (unsigned IPA, extended)
+
+# 拡張版のビルド。push では回らず、手動実行のときだけ回る
+# (一般版と同時にビルドが走って番号や手間が二重になるのを避けるため)。
+# 本体は build-ipa.yml (共通) にあり、ここでは版の指定だけを渡す。
+#
+# 版番号の下駄は 60。非公開リポジトリで作っていた拡張版が 0.60 まで進んでいた
+# ため、公開側の実行番号 (1 から) に 60 を足して 0.61 から続ける。
+
+on:
+  workflow_dispatch:
+
+# 固定タグのリリースへ IPA を置くため、リリースへの書き込み権限が要る。
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-ipa.yml
+    permissions:
+      contents: write
+    with:
+      edition: household
+      version_offset: 60
+      release_tag: sideload-latest-extended

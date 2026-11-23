@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>データ放送 (検証)</title>
+<style>
+    /* 土台の地は透明にし、下に置いたネイティブの映像がそのまま見えるようにする。
+       データ放送の文書の地の透明化は web-bml 側 (映像の面の切り抜き) が行う。 */
+    html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+    }
+    #stage {
+        position: absolute;
+        inset: 0;
+        background: transparent;
+        overflow: hidden;
+    }
+    /* BML ブラウザの置き場。Web 版の .dplayer-bml-browser と同じ形:
+       幅と高さは固定サイズ (960x540 など) で持ち、拡大率は Web 版の
+       計算で求めた CSS カスタムプロパティで transform: scale() する。
+       Web 版は映像の要素をこの中へ差し込むが、こちらは映像の要素を
+       空にしておき、切り抜かれた穴から下の映像が見えるかを確かめる。 */
+    .bml-container {
+        display: block;
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: var(--bml-browser-width, 960px);
+        height: var(--bml-browser-height, 540px);
+        color: rgb(0, 0, 0);
+        overflow: hidden;
+        transform-origin: center;
+        transform: translate(-50%, -50%) scale(var(--bml-browser-scale-factor-width, 1), var(--bml-browser-scale-factor-height, 1));
+    }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script src="web-bml.js"></script>
+<script src="bml-main.js"></script>
+</body>
+</html>

@@ -736,6 +736,13 @@ final class APIClient {
         return url(forPath: "/api/streams/live/\(displayChannelID)/\(apiQuality)/mpegts")
     }
 
+    /// データ放送の材料 (PSI/SI アーカイブデータ) の口。
+    /// 映像とは別の流れで、番組情報とデータ放送の中身だけが届き続ける。
+    func psiArchivedDataURL(displayChannelID: String, quality: String, profile: PlaybackProfile) -> URL? {
+        let apiQuality = SettingsStore.shared.apiQuality(base: quality, media: .tv, profile: profile)
+        return url(forPath: "/api/streams/live/\(displayChannelID)/\(apiQuality)/psi-archived-data")
+    }
+
     // MARK: - AVPlayer 用
 
     /// CF ヘッダーを付けた AVURLAsset を作る (プレイリストと分割ファイルの両方に同じヘッダーが付く)。

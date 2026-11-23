@@ -1,0 +1,148 @@
+name: Build IPA (shared)
+
+# 署名なし IPA を作る本体。版ごとの呼び出し側 (build.yml = 一般版、
+# build-household.yml = 拡張版) から、版の指定を受けて呼ばれる。
+# このワークフローは署名を一切しない (証明書・プロファイルは使わない)。
+#
+# 版番号は呼び出し側ワークフローの実行番号に、版ごとの下駄 (version_offset) を
+# 足して決める。呼び出し側ごとに実行番号の数え方が独立しているため、
+# 一般版と拡張版で番号を取り合うことはない。
+
+on:
+  workflow_call:
+    inputs:
+      edition:
+        description: '版の種類 (general = 一般版 / household = 拡張版)'
+        type: string
+        required: true
+      version_offset:
+        description: '版番号の下駄 (実行番号に足す数)'
+        type: number
+        required: true
+        default: 0
+      release_tag:
+        description: 'IPA を置く固定リリースのタグ'
+        type: string
+        required: true
+
+jobs:
+  build:
+    name: Build unsigned IPA
+    runs-on: macos-latest
+    # 成果物 zip に記録される時刻がビルド機の現地時刻 (世界標準時) の壁時計になり、
+    # 解凍したときに日本時間とずれて見えるのを防ぐため、ジョブ全体を日本時間にする。
+    env:
+      TZ: Asia/Tokyo
+      # 版分け (一般版 / 拡張版)。呼び出し側から受け取る。
+      # アプリ側の判定は AppEdition.swift。
+      EDITION: ${{ inputs.edition }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set timezone to Asia/Tokyo
+        run: |
+          sudo systemsetup -settimezone "Asia/Tokyo"
+          systemsetup -gettimezone
+          date
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      # 版番号と IPA のファイル名をここで確定させる。
+      # 表示版は「0.<実行番号＋下駄>」、内部のビルド番号も同じ数。
+      # IPA のファイル名には版の印 (general / extended) を入れる。
+      - name: Compute version and IPA name
+        run: |
+          NUM=$(( ${{ github.run_number }} + ${{ inputs.version_offset }} ))
+          echo "APP_VERSION=0.$NUM" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=$NUM" >> "$GITHUB_ENV"
+          if [ "$EDITION" = "general" ]; then
+            echo "IPA_NAME=KonomiTV-Viewer-unsigned-general-0.$NUM.ipa" >> "$GITHUB_ENV"
+          else
+            echo "IPA_NAME=KonomiTV-Viewer-unsigned-extended-0.$NUM.ipa" >> "$GITHUB_ENV"
+          fi
+          echo "Version: 0.$NUM (run ${{ github.run_number }} + offset ${{ inputs.version_offset }}), edition: $EDITION"
+
+      # 再生部品 (MobileVLCKit) と字幕の文字化の部品 (libaribcaption) を
+      # CocoaPods で入れる。libaribcaption は公式の podspec が無いため、
+      # ソースを KonomiTV-Viewer/Vendor/ に置いたローカルの pod として
+      # Podfile から取り込む (この pod install の中で一緒に組み立てられる)。
+      # 以後のビルドはプロジェクト単体ではなくワークスペース経由になる。
+      - name: Install CocoaPods dependencies
+        working-directory: KonomiTV-Viewer
+        run: pod install
+
+      - name: Build (no code signing)
+        run: |
+          echo "Edition: $EDITION"
+          xcodebuild build \
+            -workspace KonomiTV-Viewer/KonomiTV-Viewer.xcworkspace \
+            -scheme KonomiTV-Viewer \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/DerivedData \
+            APP_EDITION="$EDITION" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      # アプリ本体・リリース説明・IPA のファイル名の3か所へ同じ版番号を入れて、
+      # 「何を入れたか」が見分けられるようにする。
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p build/Payload
+          cp -R "build/DerivedData/Build/Products/Release-iphoneos/KonomiTV-Viewer.app" build/Payload/
+          PLIST="build/Payload/KonomiTV-Viewer.app/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PLIST"
+          echo "CFBundleShortVersionString: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")"
+          echo "CFBundleVersion: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")"
+          echo "AppEdition: $(/usr/libexec/PlistBuddy -c 'Print :AppEdition' "$PLIST")"
+          cd build
+          zip -r "$IPA_NAME" Payload
+          ls -lh "$IPA_NAME"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: KonomiTV-Viewer-unsigned-ipa-${{ inputs.edition }}
+          path: build/${{ env.IPA_NAME }}
+          if-no-files-found: error
+
+      # 取り方の本線は「固定タグのリリースに IPA をそのまま置く」形。
+      # 毎回のビルドで同じリリースの中身 (IPA と説明) を差し替える。
+      # IPA のファイル名には版番号が入るため、--clobber では名前違いの古い IPA が
+      # 差し替わらずに残ってしまう。置く前に既存の IPA 資産をすべて消し、
+      # 常に「最新の IPA が1つだけ」になるようにする。
+      # Source code の自動資産は .ipa で終わらないので、この削除には掛からない。
+      - name: Publish IPA to fixed release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          IPA="build/$IPA_NAME"
+          if [ "$EDITION" = "general" ]; then
+            TITLE="最新の IPA (一般版)"
+            EDITION_LABEL="一般版"
+          else
+            TITLE="最新の IPA (拡張版)"
+            EDITION_LABEL="拡張版"
+          fi
+          NOTES="版番号: $APP_VERSION
+          版の種類: $EDITION_LABEL
+          ビルド日時 (日本時間): $(date '+%Y/%m/%d %H:%M')
+          Actions 実行 ID: ${{ github.run_id }}
+          実行ページ: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --title "$TITLE" --notes "$NOTES" --prerelease
+          else
+            gh release create "$RELEASE_TAG" --title "$TITLE" --notes "$NOTES" --prerelease
+          fi
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name | select(endswith(".ipa"))' | while IFS= read -r asset; do
+            echo "Deleting old IPA asset: $asset"
+            gh release delete-asset "$RELEASE_TAG" "$asset"
+          done
+          gh release upload "$RELEASE_TAG" "$IPA" --clobber
+          gh release view "$RELEASE_TAG"

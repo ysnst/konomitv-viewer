@@ -350,9 +350,20 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
             "connection", "keep-alive", "transfer-encoding", "content-length",
             "trailer", "te", "proxy-connection",
         ]
+        var hasCORSHeader = false
         for (key, value) in headers {
             guard let name = key as? String, !skipped.contains(name.lowercased()) else { continue }
+            if name.lowercased() == "access-control-allow-origin" {
+                hasCORSHeader = true
+            }
             lines.append("\(name): \(value)")
+        }
+        // データ放送の検証ページ (アプリ同梱の WebView) が材料の口を
+        // fetch で取りに行けるよう、サーバー側に印が無いときは足す。
+        // 中継は端末の中だけに閉じているため、相手を問わない印で問題ない。
+        // 再生側 (VLCKit) はこの印を見ないので影響しない。
+        if !hasCORSHeader {
+            lines.append("Access-Control-Allow-Origin: *")
         }
         if chunked {
             lines.append("Transfer-Encoding: chunked")

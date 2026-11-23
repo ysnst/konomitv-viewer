@@ -53,6 +53,9 @@
 		2000000000000000000000D5 /* HighlightReel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000D4 /* HighlightReel.swift */; };
 		2000000000000000000000D7 /* HighlightsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000D6 /* HighlightsViewController.swift */; };
 		2000000000000000000000D9 /* RecordingResultsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000D8 /* RecordingResultsViewController.swift */; };
+		2000000000000000000000DB /* DataBroadcastOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000DA /* DataBroadcastOverlay.swift */; };
+		2000000000000000000000DD /* DataBroadcast in Resources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000DC /* DataBroadcast */; };
+		2000000000000000000000DF /* web-bml.txt in Resources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000DE /* web-bml.txt */; };
 		2000000000000000000000B2 /* MobileVLCKit.txt in Resources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000B1 /* MobileVLCKit.txt */; };
 		2000000000000000000000B4 /* libaribcaption.txt in Resources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000B3 /* libaribcaption.txt */; };
 		2000000000000000000000B6 /* FluentUISystemIcons.txt in Resources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000B5 /* FluentUISystemIcons.txt */; };
@@ -115,6 +118,9 @@
 		2000000000000000000000D4 /* HighlightReel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightReel.swift; sourceTree = "<group>"; };
 		2000000000000000000000D6 /* HighlightsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightsViewController.swift; sourceTree = "<group>"; };
 		2000000000000000000000D8 /* RecordingResultsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingResultsViewController.swift; sourceTree = "<group>"; };
+		2000000000000000000000DA /* DataBroadcastOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataBroadcastOverlay.swift; sourceTree = "<group>"; };
+		2000000000000000000000DC /* DataBroadcast */ = {isa = PBXFileReference; lastKnownFileType = folder; path = DataBroadcast; sourceTree = "<group>"; };
+		2000000000000000000000DE /* web-bml.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = web-bml.txt; sourceTree = "<group>"; };
 		2000000000000000000000B1 /* MobileVLCKit.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = MobileVLCKit.txt; sourceTree = "<group>"; };
 		2000000000000000000000B3 /* libaribcaption.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = libaribcaption.txt; sourceTree = "<group>"; };
 		2000000000000000000000B5 /* FluentUISystemIcons.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = FluentUISystemIcons.txt; sourceTree = "<group>"; };
@@ -167,6 +173,7 @@
 				2000000000000000000000B3 /* libaribcaption.txt */,
 				2000000000000000000000B5 /* FluentUISystemIcons.txt */,
 				2000000000000000000000B7 /* MaterialIcons.txt */,
+				2000000000000000000000DE /* web-bml.txt */,
 			);
 			path = Licenses;
 			sourceTree = "<group>";
@@ -220,6 +227,8 @@
 				2000000000000000000000D4 /* HighlightReel.swift */,
 				2000000000000000000000D6 /* HighlightsViewController.swift */,
 				2000000000000000000000D8 /* RecordingResultsViewController.swift */,
+				2000000000000000000000DA /* DataBroadcastOverlay.swift */,
+				2000000000000000000000DC /* DataBroadcast */,
 				2000000000000000000000B0 /* Licenses */,
 				200000000000000000000090 /* ReservationListViewController.swift */,
 				200000000000000000000092 /* ReservationDetailViewController.swift */,
@@ -299,6 +308,8 @@
 				2000000000000000000000B4 /* libaribcaption.txt in Resources */,
 				2000000000000000000000B6 /* FluentUISystemIcons.txt in Resources */,
 				2000000000000000000000B8 /* MaterialIcons.txt in Resources */,
+				2000000000000000000000DD /* DataBroadcast in Resources */,
+				2000000000000000000000DF /* web-bml.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -355,6 +366,7 @@
 				2000000000000000000000D5 /* HighlightReel.swift in Sources */,
 				2000000000000000000000D7 /* HighlightsViewController.swift in Sources */,
 				2000000000000000000000D9 /* RecordingResultsViewController.swift in Sources */,
+				2000000000000000000000DB /* DataBroadcastOverlay.swift in Sources */,
 				200000000000000000000091 /* ReservationListViewController.swift in Sources */,
 				200000000000000000000093 /* ReservationDetailViewController.swift in Sources */,
 				200000000000000000000095 /* JikkyoCommentOverlay.swift in Sources */,

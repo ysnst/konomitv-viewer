@@ -11,6 +11,7 @@ import UIKit
 ///   全文は同梱先にある LICENSE の実物。
 /// - Fluent UI System Icons: 画面のアイコン素材 (MIT)。
 /// - Material Icons: マイリストのアイコン素材 (Apache License 2.0)。
+/// - web-bml: データ放送を描く部品 (MIT)。検証用に同梱している。
 final class LicenseViewController: SettingsDetailViewController {
     struct Component {
         let name: String
@@ -32,6 +33,9 @@ final class LicenseViewController: SettingsDetailViewController {
         Component(name: "Material Icons",
                   licenseName: "Apache License 2.0",
                   resourceName: "MaterialIcons"),
+        Component(name: "web-bml",
+                  licenseName: "MIT License",
+                  resourceName: "web-bml"),
     ]
 
     init() {
