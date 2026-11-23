@@ -93,6 +93,73 @@ final class LivePlayerViewController: UIViewController {
     private var captionProbeEdge: Double?
     private let captionProbeLabel = UILabel()
 
+    // MARK: - パネル (番組情報/チャンネル/コメント) と実況コメント
+    /// パネルのタブ (Web 版と同じ3つ。値は利用者設定の保存名と同じ)。
+    private enum PanelTab: String {
+        case program = "Program"
+        case channel = "Channel"
+        case comment = "Comment"
+    }
+    private var selectedPanelTab: PanelTab = .program
+    private let panelTabBar = UIView()
+    private let programTabButton = RippleButton()
+    private let programTabIconView = UIImageView()
+    private let programTabTitleLabel = UILabel()
+    private let channelTabButton = RippleButton()
+    private let channelTabIconView = UIImageView()
+    private let channelTabTitleLabel = UILabel()
+    private let commentTabButton = RippleButton()
+    private let commentTabIconView = UIImageView()
+    private let commentTabTitleLabel = UILabel()
+
+    // チャンネルパネル
+    private let channelPanel = UIView()
+    private let channelCategoryScrollView = UIScrollView()
+    private let channelCategoryStack = UIStackView()
+    private let channelStatusLabel = UILabel()
+    private var channelPanelStatusWrap: UIView?
+    private let channelTableView = UITableView(frame: .zero, style: .plain)
+    private var channelGroups: [(type: String, channels: [LiveChannel])] = []
+    private var channelResponse: LiveChannelsResponse?
+    private var selectedChannelGroupIndex = 0
+    private var channelPanelLoaded = false
+
+    // コメントパネルと実況コメント
+    private let commentPanel = UIView()
+    private let commentStatusLabel = UILabel()
+    private var commentPanelStatusWrap: UIView?
+    private let commentTableView = UITableView(frame: .zero, style: .plain)
+    private let commentEmptyLabel = UILabel()
+    private let commentJumpButton = RippleButton()
+    private let commentTextField = UITextField()
+    private let commentSendButton = RippleButton()
+    private var commentFormBottomConstraint: NSLayoutConstraint?
+    private var postColorButtons: [RippleButton] = []
+    private var selectedPostColorName = "white"
+    private let postPositionSegment = UISegmentedControl(items: ["上", "流れ", "下"])
+    private let postSizeSegment = UISegmentedControl(items: ["大", "中", "小"])
+    /// 届いた実況コメント (一覧の元。初回のまとめも含む)。
+    private var liveComments: [LiveJikkyoComment] = []
+    /// コメントの初期化に失敗したときの文 (無ければ nil)。
+    private var commentInitFailure: String?
+    /// 一覧が新しいコメントへ追随するかどうか (手で遡っている間は切る)。
+    private var commentFollow = true
+    /// 実況コメントの土台 (2本の窓口の管理)。
+    private var commentSession: LiveCommentSession?
+    /// コメントを映像の上に流す重ね物 (録画と同じ描き手)。
+    private let commentOverlay = JikkyoCommentOverlayView()
+    private var commentHomeConstraints: [NSLayoutConstraint] = []
+    private var commentBorrowConstraints: [NSLayoutConstraint] = []
+    /// コメント表示のオン/オフ (操作帯の中。録画と同じ置き場所・設定)。
+    private let commentButton = RippleButton()
+    /// 流れる表示の仮想の時計 (秒)。再生中だけ進む (止まっている間は
+    /// コメントも止めるため)。liveCommentNow() で読む。
+    private var liveCommentClockOffset: Double = 0
+    private var liveCommentClockStart: Date?
+    /// 流れる表示を遅らせる量 (秒)。映像の溜めの量 (低遅延の設定で
+    /// 変わる) から startStream で決める。
+    private var liveCommentDelaySeconds: Double = 4
+
     // MARK: - データ放送 (重ね合わせ)
     /// リモコンの浮きボタン (情報欄の右下に浮かせ、押すとリモコンの
     /// パネルが出る。Web 版の浮きボタンと同じ置き場所)。
@@ -151,9 +218,23 @@ final class LivePlayerViewController: UIViewController {
         // 生放送の文字スーパーは、字幕の設定のテレビ側の項目に従う
         // (Web 版の生放送の扱いと同じ)。
         captionEngine.useTVSuperimposeSetting = true
+        // パネルのタブは、前回開いていたものを引き継ぐ (利用者設定)。
+        selectedPanelTab = PanelTab(
+            rawValue: SyncedSettingsStore.shared.current.tvPanelActiveTab) ?? .program
         buildLayout()
         applyCaptionDisplayState()
+        applyPanelTab(selectedPanelTab, save: false)
+        // 実況コメントの流れる表示の用意 (録画と同じ描き手・同じ設定)。
+        commentOverlay.positionProvider = { [weak self] in self?.liveCommentNow() ?? 0 }
+        let synced = SyncedSettingsStore.shared.current
+        commentOverlay.displayOpacity = SettingsStore.shared.commentOpacity
+        commentOverlay.speedRate = synced.commentSpeedRate
+        commentOverlay.fontSizeReference = synced.commentFontSize
+        commentOverlay.unlimited = SettingsStore.shared.showCommentsUnlimited
+        commentOverlay.setDisplayEnabled(SettingsStore.shared.showComments && !audioOnly)
+        commentOverlay.start()
         startStream()
+        startCommentSession()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -188,20 +269,24 @@ final class LivePlayerViewController: UIViewController {
 #endif
         hideRemotePanelImmediately()
         stopDataBroadcast()
+        // 実況コメントの接続と流れる表示も止める。
+        commentSession?.stop()
+        commentOverlay.stop()
         stopStream()
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        // 映像の高さ: 幅なりの 16:9 が情報欄の最低限 (120pt) を残して収まるならそのまま、
-        // 収まらない (主に横向き) なら収まる高さまで縮める。
+        // 映像の高さ: 幅なりの 16:9 が下の領域の最低限 (タブ 50pt +
+        // パネル 120pt) を残して収まるならそのまま、収まらない
+        // (主に横向き) なら収まる高さまで縮める。
         // 映像は VLC 側で全体が収まるように描かれるため、切れることはない。
         if let heightConstraint = videoHeightConstraint {
             let ideal = view.bounds.width * 9.0 / 16.0
             let available = view.bounds.height
                 - view.safeAreaInsets.top
                 - view.safeAreaInsets.bottom
-                - 120
+                - 170
             let target = max(120, min(ideal, available))
             if abs(heightConstraint.constant - target) > 0.5 {
                 heightConstraint.constant = target
@@ -235,14 +320,17 @@ final class LivePlayerViewController: UIViewController {
         playPauseButton.addTarget(self, action: #selector(togglePlayPause), for: .touchUpInside)
         playPauseButton.translatesAutoresizingMaskIntoConstraints = false
 
-        // 操作帯には、放送中の番組の時刻 (左) と字幕の切り替え (右) を置く
-        // (Web 版の操作帯の並びに相当。字幕ボタンは録画と同じ顔ぶれ)。
+        // 操作帯には、放送中の番組の時刻 (左) と字幕・コメントの
+        // 切り替え (右) を置く (Web 版の操作帯の並びに相当。
+        // 字幕・コメントのボタンは録画と同じ顔ぶれ)。
         liveTimeLabel.text = channel.program_present.map { programTimeText($0) } ?? ""
         liveTimeLabel.textColor = AppPalette.text
         liveTimeLabel.font = .scaledSystemFont(ofSize: 13, weight: .medium)
         captionButton.addTarget(self, action: #selector(toggleCaptions), for: .touchUpInside)
         updateCaptionButton()
-        let controlsRow = UIStackView(arrangedSubviews: [liveTimeLabel, UIView(), captionButton])
+        commentButton.addTarget(self, action: #selector(toggleComments), for: .touchUpInside)
+        updateCommentButton()
+        let controlsRow = UIStackView(arrangedSubviews: [liveTimeLabel, UIView(), captionButton, commentButton])
         controlsRow.axis = .horizontal
         controlsRow.spacing = 10
         controlsRow.alignment = .center
@@ -269,6 +357,20 @@ final class LivePlayerViewController: UIViewController {
             captionOverlayView.trailingAnchor.constraint(equalTo: videoArea.trailingAnchor),
         ]
         NSLayoutConstraint.activate(captionHomeConstraints)
+
+        // 実況コメントの流れる表示の重ね物 (映像の上に重ねる。
+        // 操作は受けない)。字幕より下に置く (字幕が一番上)。
+        commentOverlay.translatesAutoresizingMaskIntoConstraints = false
+        videoArea.addSubview(commentOverlay)
+        commentHomeConstraints = [
+            commentOverlay.topAnchor.constraint(equalTo: videoArea.topAnchor),
+            commentOverlay.bottomAnchor.constraint(equalTo: videoArea.bottomAnchor),
+            commentOverlay.leadingAnchor.constraint(equalTo: videoArea.leadingAnchor),
+            commentOverlay.trailingAnchor.constraint(equalTo: videoArea.trailingAnchor),
+        ]
+        NSLayoutConstraint.activate(commentHomeConstraints)
+        // 字幕をコメントより上に戻す (この後ろに足した分だけ)。
+        videoArea.bringSubviewToFront(captionOverlayView)
 
         // MARK: 映像の下の情報欄 (Web 版パネル)
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -462,16 +564,33 @@ final class LivePlayerViewController: UIViewController {
             playPauseButton.centerYAnchor.constraint(equalTo: videoArea.centerYAnchor),
             playPauseButton.widthAnchor.constraint(equalToConstant: 64),
             playPauseButton.heightAnchor.constraint(equalToConstant: 64),
-            scrollView.topAnchor.constraint(equalTo: videoArea.bottomAnchor),
+            panelTabBar.topAnchor.constraint(equalTo: videoArea.bottomAnchor),
+            panelTabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            panelTabBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            panelTabBar.heightAnchor.constraint(equalToConstant: 50),
+            scrollView.topAnchor.constraint(equalTo: panelTabBar.bottomAnchor),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            channelPanel.topAnchor.constraint(equalTo: panelTabBar.bottomAnchor),
+            channelPanel.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            channelPanel.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            channelPanel.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            commentPanel.topAnchor.constraint(equalTo: panelTabBar.bottomAnchor),
+            commentPanel.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            commentPanel.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            commentPanel.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             infoStack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
             infoStack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
             infoStack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
             infoStack.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
             infoStack.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor),
         ])
+
+        // MARK: パネルのタブと、チャンネル/コメントのパネル
+        buildPanelTabBar()
+        buildChannelPanel()
+        buildCommentPanel()
 
         // リモコンの浮きボタンは情報欄の右下に浮かせる (映像には重ねない)。
         view.addSubview(remoteFloatingButton)
@@ -502,6 +621,781 @@ final class LivePlayerViewController: UIViewController {
             return program.timeRangeText
         }
         return "\(TimeFormat.dateTime(start)) ～ \(TimeFormat.hourMinute(end))"
+    }
+
+    // MARK: - パネルのタブ (番組情報/チャンネル/コメント)
+
+    /// パネルのタブの帯を作る (録画再生の情報欄のタブと同じ形:
+    /// 絵の上に文字の縦並び、選択中は primary の色)。
+    private func buildPanelTabBar() {
+        panelTabBar.backgroundColor = AppPalette.background
+        panelTabBar.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(panelTabBar)
+        buildPanelTabButton(programTabButton, iconView: programTabIconView,
+                            titleLabel: programTabTitleLabel,
+                            symbol: "info.circle", title: "番組情報",
+                            action: #selector(selectProgramTab))
+        buildPanelTabButton(channelTabButton, iconView: channelTabIconView,
+                            titleLabel: channelTabTitleLabel,
+                            symbol: "antenna.radiowaves.left.and.right", title: "チャンネル",
+                            action: #selector(selectChannelTab))
+        buildPanelTabButton(commentTabButton, iconView: commentTabIconView,
+                            titleLabel: commentTabTitleLabel,
+                            symbol: "text.bubble.fill", title: "コメント",
+                            action: #selector(selectCommentTab))
+        let stack = UIStackView(arrangedSubviews: [programTabButton, channelTabButton, commentTabButton])
+        stack.axis = .horizontal
+        stack.distribution = .fillEqually
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        panelTabBar.addSubview(stack)
+        let divider = UIView()
+        divider.backgroundColor = AppPalette.pressed
+        divider.translatesAutoresizingMaskIntoConstraints = false
+        panelTabBar.addSubview(divider)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: panelTabBar.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: panelTabBar.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: panelTabBar.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: panelTabBar.bottomAnchor),
+            divider.leadingAnchor.constraint(equalTo: panelTabBar.leadingAnchor),
+            divider.trailingAnchor.constraint(equalTo: panelTabBar.trailingAnchor),
+            divider.bottomAnchor.constraint(equalTo: panelTabBar.bottomAnchor),
+            divider.heightAnchor.constraint(equalToConstant: 1),
+        ])
+    }
+
+    /// パネルのタブボタンの中身 (絵の上に文字の縦並び) を作る。
+    private func buildPanelTabButton(_ button: RippleButton, iconView: UIImageView,
+                                     titleLabel: UILabel, symbol: String, title: String,
+                                     action: Selector) {
+        let config = UIImage.SymbolConfiguration(pointSize: 19, weight: .regular)
+        iconView.image = UIImage(systemName: symbol, withConfiguration: config)
+        iconView.contentMode = .scaleAspectFit
+        titleLabel.text = title
+        titleLabel.font = .scaledSystemFont(ofSize: 10.5)
+        titleLabel.textAlignment = .center
+        let stack = UIStackView(arrangedSubviews: [iconView, titleLabel])
+        stack.axis = .vertical
+        stack.spacing = 2
+        stack.alignment = .center
+        stack.isUserInteractionEnabled = false
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        button.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+        ])
+        button.addTarget(self, action: action, for: .touchUpInside)
+    }
+
+    /// タブの色を選択状態に合わせる (選択中は primary、他は通常の文字色)。
+    private func updatePanelTabButtons() {
+        let tabs: [(PanelTab, UIImageView, UILabel)] = [
+            (.program, programTabIconView, programTabTitleLabel),
+            (.channel, channelTabIconView, channelTabTitleLabel),
+            (.comment, commentTabIconView, commentTabTitleLabel),
+        ]
+        for (tab, iconView, titleLabel) in tabs {
+            let color = tab == selectedPanelTab ? AppPalette.accent : AppPalette.text
+            iconView.tintColor = color
+            titleLabel.textColor = color
+        }
+    }
+
+    @objc private func selectProgramTab() { applyPanelTab(.program) }
+    @objc private func selectChannelTab() { applyPanelTab(.channel) }
+    @objc private func selectCommentTab() { applyPanelTab(.comment) }
+
+    /// パネルを切り替える。切り替えの状態は利用者設定に保存し、
+    /// 次に開いたとき (と Web 版) に引き継ぐ。
+    private func applyPanelTab(_ tab: PanelTab, save: Bool = true) {
+        selectedPanelTab = tab
+        if save {
+            var settings = SyncedSettingsStore.shared.current
+            if settings.tvPanelActiveTab != tab.rawValue {
+                settings.tvPanelActiveTab = tab.rawValue
+                SyncedSettingsStore.shared.update(settings)
+            }
+        }
+        scrollView.isHidden = tab != .program
+        channelPanel.isHidden = tab != .channel
+        commentPanel.isHidden = tab != .comment
+        updatePanelTabButtons()
+        updateRemoteButtonVisibility()
+        if tab == .channel {
+            loadChannelPanelIfNeeded()
+        }
+        if tab == .comment {
+            commentFollow = true
+            commentJumpButton.isHidden = true
+            scrollCommentListToBottom(animated: false)
+        }
+    }
+
+    /// リモコンの浮きボタンの出し分け。Web 版と同じく、番組情報か
+    /// チャンネルのパネルを開いているときだけ出す (コメントのパネル
+    /// では出さない)。データ放送機能がオフのときは常に出さない。
+    private func updateRemoteButtonVisibility() {
+        remoteFloatingButton.isHidden =
+            !(SettingsStore.shared.dataBroadcastingEnabled && selectedPanelTab != .comment)
+    }
+
+    // MARK: - チャンネルパネル
+
+    private func buildChannelPanel() {
+        channelPanel.backgroundColor = AppPalette.background
+        channelPanel.isHidden = true
+        channelPanel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(channelPanel)
+
+        channelCategoryScrollView.showsHorizontalScrollIndicator = false
+        channelCategoryScrollView.translatesAutoresizingMaskIntoConstraints = false
+        channelCategoryStack.axis = .horizontal
+        channelCategoryStack.spacing = 8
+        channelCategoryStack.alignment = .center
+        channelCategoryStack.isLayoutMarginsRelativeArrangement = true
+        channelCategoryStack.layoutMargins = UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
+        channelCategoryStack.translatesAutoresizingMaskIntoConstraints = false
+        channelCategoryScrollView.addSubview(channelCategoryStack)
+
+        channelStatusLabel.textColor = AppPalette.metaText
+        channelStatusLabel.font = .scaledSystemFont(ofSize: 12.5)
+        channelStatusLabel.numberOfLines = 0
+        let statusWrap = UIView()
+        statusWrap.isHidden = true
+        statusWrap.translatesAutoresizingMaskIntoConstraints = false
+        channelStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusWrap.addSubview(channelStatusLabel)
+        NSLayoutConstraint.activate([
+            channelStatusLabel.topAnchor.constraint(equalTo: statusWrap.topAnchor, constant: 4),
+            channelStatusLabel.bottomAnchor.constraint(equalTo: statusWrap.bottomAnchor, constant: -4),
+            channelStatusLabel.leadingAnchor.constraint(equalTo: statusWrap.leadingAnchor, constant: 16),
+            channelStatusLabel.trailingAnchor.constraint(equalTo: statusWrap.trailingAnchor, constant: -16),
+        ])
+        channelPanelStatusWrap = statusWrap
+
+        channelTableView.dataSource = self
+        channelTableView.delegate = self
+        channelTableView.register(LiveChannelCell.self, forCellReuseIdentifier: LiveChannelCell.reuseID)
+        channelTableView.rowHeight = UITableView.automaticDimension
+        channelTableView.estimatedRowHeight = 172
+        channelTableView.backgroundColor = AppPalette.background
+        channelTableView.separatorStyle = .none
+        channelTableView.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = UIStackView(arrangedSubviews: [
+            channelCategoryScrollView, statusWrap, channelTableView,
+        ])
+        stack.axis = .vertical
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        channelPanel.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: channelPanel.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: channelPanel.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: channelPanel.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: channelPanel.trailingAnchor),
+            channelCategoryScrollView.heightAnchor.constraint(equalToConstant: 44),
+            channelCategoryStack.topAnchor.constraint(
+                equalTo: channelCategoryScrollView.contentLayoutGuide.topAnchor),
+            channelCategoryStack.bottomAnchor.constraint(
+                equalTo: channelCategoryScrollView.contentLayoutGuide.bottomAnchor),
+            channelCategoryStack.leadingAnchor.constraint(
+                equalTo: channelCategoryScrollView.contentLayoutGuide.leadingAnchor),
+            channelCategoryStack.trailingAnchor.constraint(
+                equalTo: channelCategoryScrollView.contentLayoutGuide.trailingAnchor),
+            channelCategoryStack.heightAnchor.constraint(
+                equalTo: channelCategoryScrollView.frameLayoutGuide.heightAnchor),
+        ])
+    }
+
+    /// チャンネルパネルの状態の文を出す (nil で消す)。
+    private func setChannelStatus(_ text: String?) {
+        channelStatusLabel.text = text
+        channelPanelStatusWrap?.isHidden = text == nil
+    }
+
+    /// チャンネルパネルを初めて開いたときに、一覧を取りに行く。
+    private func loadChannelPanelIfNeeded() {
+        guard !channelPanelLoaded else { return }
+        channelPanelLoaded = true
+        setChannelStatus("読み込み中…")
+        Task { [weak self] in
+            do {
+                let response = try await APIClient.shared.fetchChannels()
+                guard let self else { return }
+                self.channelResponse = response
+                self.setChannelStatus(nil)
+                self.rebuildChannelGroups()
+            } catch {
+                self?.setChannelStatus("チャンネルを取得できませんでした。")
+            }
+        }
+    }
+
+    /// 取得したチャンネルを、ピン留め + 放送の種類ごとの分類に組み直す
+    /// (生放送一覧の画面と同じ並び・絞り込み)。
+    private func rebuildChannelGroups() {
+        guard let response = channelResponse else { return }
+        let synced = SyncedSettingsStore.shared.current
+        let sortByForce = synced.tvChannelSortByJikkyoForce
+        let allChannels = response.groups.flatMap { $0.channels }
+        var pinned = synced.pinnedChannelIDs.compactMap { id in
+            allChannels.first { $0.id == id }
+        }
+        if sortByForce {
+            pinned = pinned.enumerated().sorted { lhs, rhs in
+                let lhsForce = lhs.element.jikkyo_force ?? 0
+                let rhsForce = rhs.element.jikkyo_force ?? 0
+                if lhsForce != rhsForce { return lhsForce > rhsForce }
+                return lhs.offset < rhs.offset
+            }.map(\.element)
+        }
+        var newGroups: [(type: String, channels: [LiveChannel])] = [("PINNED", pinned)]
+        for group in response.groups {
+            var channels = group.channels.filter { $0.is_display ?? true }
+            if sortByForce {
+                channels = channels.enumerated().sorted { lhs, rhs in
+                    let lhsForce = lhs.element.jikkyo_force ?? 0
+                    let rhsForce = rhs.element.jikkyo_force ?? 0
+                    if lhsForce != rhsForce { return lhsForce > rhsForce }
+                    return lhs.offset < rhs.offset
+                }.map(\.element)
+            }
+            if !channels.isEmpty {
+                newGroups.append((type: group.type, channels: channels))
+            }
+        }
+        // 表示中の分類はなるべく保つ。最初は、今見ているチャンネルの
+        // 分類を出す。
+        let previousType = channelGroups.indices.contains(selectedChannelGroupIndex)
+            ? channelGroups[selectedChannelGroupIndex].type : nil
+        channelGroups = newGroups
+        if let previousType, let index = newGroups.firstIndex(where: { $0.type == previousType }) {
+            selectedChannelGroupIndex = index
+        } else if let index = newGroups.firstIndex(where: { group in
+            group.channels.contains { $0.id == channel.id }
+        }) {
+            selectedChannelGroupIndex = index
+        } else {
+            selectedChannelGroupIndex = 0
+        }
+        rebuildChannelCategoryChips()
+        channelTableView.reloadData()
+    }
+
+    /// 分類の切り替えの帯を作り直す。
+    private func rebuildChannelCategoryChips() {
+        for arranged in channelCategoryStack.arrangedSubviews {
+            channelCategoryStack.removeArrangedSubview(arranged)
+            arranged.removeFromSuperview()
+        }
+        for (index, group) in channelGroups.enumerated() {
+            let button = RippleButton()
+            button.setTitle(Self.channelGroupTitle(group.type), for: .normal)
+            button.titleLabel?.font = .scaledSystemFont(ofSize: 13.5, weight: .medium)
+            button.setTitleColor(
+                index == selectedChannelGroupIndex ? AppPalette.accent : AppPalette.text,
+                for: .normal)
+            button.backgroundColor =
+                index == selectedChannelGroupIndex ? AppPalette.pressed : .clear
+            button.layer.cornerRadius = 16
+            button.contentEdgeInsets = UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
+            button.tag = index
+            button.addTarget(self, action: #selector(selectChannelGroup(_:)), for: .touchUpInside)
+            channelCategoryStack.addArrangedSubview(button)
+        }
+    }
+
+    @objc private func selectChannelGroup(_ sender: RippleButton) {
+        guard channelGroups.indices.contains(sender.tag) else { return }
+        selectedChannelGroupIndex = sender.tag
+        rebuildChannelCategoryChips()
+        channelTableView.reloadData()
+    }
+
+    /// API の種別名を表示用の名前にする (生放送一覧と同じ)。
+    private static func channelGroupTitle(_ type: String) -> String {
+        switch type {
+        case "PINNED": return "ピン留め"
+        case "GR": return "地デジ"
+        default: return type
+        }
+    }
+
+    /// チャンネルのピン留めを付け外しする (生放送一覧と同じ動き)。
+    private func toggleChannelPin(_ target: LiveChannel) {
+        var settings = SyncedSettingsStore.shared.current
+        if settings.pinnedChannelIDs.contains(target.id) {
+            settings.pinnedChannelIDs.removeAll { $0 == target.id }
+        } else {
+            settings.pinnedChannelIDs.append(target.id)
+        }
+        SyncedSettingsStore.shared.update(settings)
+        rebuildChannelGroups()
+    }
+
+    /// その場で別のチャンネルへ切り替える。今の再生画面を、新しい
+    /// チャンネルの再生画面に入れ替える (再生は作り直しになる)。
+    private func switchChannel(to target: LiveChannel) {
+        guard target.id != channel.id else { return }
+        if AppEdition.isHousehold, !target.isTunerViewable {
+            setChannelStatus("チューナーに空きがないため、このチャンネルは視聴できません。録画中のチャンネルは視聴できます。")
+            return
+        }
+        setChannelStatus(nil)
+        let next = LivePlayerViewController(channel: target)
+        guard let navigationController else { return }
+        var stack = navigationController.viewControllers
+        guard let index = stack.firstIndex(of: self) else { return }
+        stack[index] = next
+        navigationController.setViewControllers(stack, animated: false)
+    }
+
+    // MARK: - コメントパネル
+
+    private func buildCommentPanel() {
+        commentPanel.backgroundColor = AppPalette.background
+        commentPanel.isHidden = true
+        commentPanel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(commentPanel)
+
+        // 見出しの行: 「コメント」 + ミュート設定への入口 (Web 版と同じ)。
+        let titleLabel = UILabel()
+        titleLabel.text = "コメント"
+        titleLabel.textColor = AppPalette.text
+        titleLabel.font = .scaledSystemFont(ofSize: 15, weight: .bold)
+        let muteButton = RippleButton()
+        muteButton.setTitle("ミュート設定", for: .normal)
+        muteButton.addTarget(self, action: #selector(openCommentMuteSettings), for: .touchUpInside)
+        stylePlayerChip(muteButton)
+        let headerRow = UIStackView(arrangedSubviews: [titleLabel, UIView(), muteButton])
+        headerRow.axis = .horizontal
+        headerRow.alignment = .center
+        headerRow.isLayoutMarginsRelativeArrangement = true
+        headerRow.layoutMargins = UIEdgeInsets(top: 6, left: 16, bottom: 6, right: 16)
+        headerRow.translatesAutoresizingMaskIntoConstraints = false
+
+        commentStatusLabel.textColor = .systemYellow
+        commentStatusLabel.font = .scaledSystemFont(ofSize: 12.5)
+        commentStatusLabel.numberOfLines = 0
+        commentStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+        let statusWrap = UIView()
+        statusWrap.isHidden = true
+        statusWrap.translatesAutoresizingMaskIntoConstraints = false
+        statusWrap.addSubview(commentStatusLabel)
+        NSLayoutConstraint.activate([
+            commentStatusLabel.topAnchor.constraint(equalTo: statusWrap.topAnchor, constant: 2),
+            commentStatusLabel.bottomAnchor.constraint(equalTo: statusWrap.bottomAnchor, constant: -2),
+            commentStatusLabel.leadingAnchor.constraint(equalTo: statusWrap.leadingAnchor, constant: 16),
+            commentStatusLabel.trailingAnchor.constraint(equalTo: statusWrap.trailingAnchor, constant: -16),
+        ])
+        commentPanelStatusWrap = statusWrap
+
+        commentTableView.dataSource = self
+        commentTableView.delegate = self
+        commentTableView.register(
+            LiveCommentListCell.self, forCellReuseIdentifier: LiveCommentListCell.reuseID)
+        commentTableView.rowHeight = UITableView.automaticDimension
+        commentTableView.estimatedRowHeight = 34
+        commentTableView.backgroundColor = AppPalette.background
+        commentTableView.separatorStyle = .none
+        commentTableView.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = UIStackView(arrangedSubviews: [headerRow, statusWrap, commentTableView])
+        stack.axis = .vertical
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        commentPanel.addSubview(stack)
+
+        // 一覧を遡っているときに出る「最新へ戻る」ボタン。
+        commentJumpButton.setImage(
+            UIImage(systemName: "arrow.down",
+                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .bold)),
+            for: .normal)
+        commentJumpButton.tintColor = AppPalette.text
+        commentJumpButton.backgroundColor = AppPalette.panel
+        commentJumpButton.layer.cornerRadius = 20
+        commentJumpButton.layer.shadowColor = UIColor.black.cgColor
+        commentJumpButton.layer.shadowOpacity = 0.3
+        commentJumpButton.layer.shadowRadius = 6
+        commentJumpButton.layer.shadowOffset = CGSize(width: 0, height: 3)
+        commentJumpButton.isHidden = true
+        commentJumpButton.addTarget(self, action: #selector(jumpToLatestComments), for: .touchUpInside)
+        commentJumpButton.translatesAutoresizingMaskIntoConstraints = false
+        commentPanel.addSubview(commentJumpButton)
+
+        let form = buildCommentForm()
+        commentPanel.addSubview(form)
+
+        let formBottom = form.bottomAnchor.constraint(equalTo: commentPanel.bottomAnchor)
+        commentFormBottomConstraint = formBottom
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: commentPanel.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: commentPanel.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: commentPanel.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: form.topAnchor),
+            form.leadingAnchor.constraint(equalTo: commentPanel.leadingAnchor),
+            form.trailingAnchor.constraint(equalTo: commentPanel.trailingAnchor),
+            formBottom,
+            commentJumpButton.trailingAnchor.constraint(
+                equalTo: commentPanel.trailingAnchor, constant: -12),
+            commentJumpButton.bottomAnchor.constraint(equalTo: form.topAnchor, constant: -12),
+            commentJumpButton.widthAnchor.constraint(equalToConstant: 40),
+            commentJumpButton.heightAnchor.constraint(equalToConstant: 40),
+        ])
+        updateCommentEmptyState()
+        updateCommentFormState()
+        // キーボードの出し入れに投稿欄を追随させる。
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(keyboardWillChangeFrame(_:)),
+            name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+    }
+
+    /// 投稿欄 (入力欄 + 送信ボタン + 色・位置・大きさの選択) を作る。
+    private func buildCommentForm() -> UIView {
+        let form = UIView()
+        form.backgroundColor = AppPalette.background
+        form.translatesAutoresizingMaskIntoConstraints = false
+
+        commentTextField.placeholder = "コメントを入力"
+        commentTextField.textColor = AppPalette.text
+        commentTextField.font = .scaledSystemFont(ofSize: 14)
+        commentTextField.backgroundColor = AppPalette.panel
+        commentTextField.layer.cornerRadius = 8
+        commentTextField.leftView = UIView(frame: CGRect(x: 0, y: 0, width: 10, height: 1))
+        commentTextField.leftViewMode = .always
+        commentTextField.returnKeyType = .send
+        commentTextField.delegate = self
+        commentTextField.translatesAutoresizingMaskIntoConstraints = false
+
+        commentSendButton.setTitle("送信", for: .normal)
+        commentSendButton.addTarget(self, action: #selector(sendCommentTapped), for: .touchUpInside)
+        stylePlayerChip(commentSendButton)
+
+        let inputRow = UIStackView(arrangedSubviews: [commentTextField, commentSendButton])
+        inputRow.axis = .horizontal
+        inputRow.spacing = 8
+        inputRow.alignment = .center
+
+        // 色の選択 (Web 版の入力欄と同じ8色)。
+        let colorsStack = UIStackView()
+        colorsStack.axis = .horizontal
+        colorsStack.spacing = 8
+        colorsStack.alignment = .center
+        for (index, color) in NicoCommentCommand.postingColors.enumerated() {
+            let button = RippleButton()
+            button.backgroundColor = Self.colorFromHex(color.hex)
+            button.layer.cornerRadius = 13
+            button.tag = index
+            button.addTarget(self, action: #selector(postColorTapped(_:)), for: .touchUpInside)
+            button.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                button.widthAnchor.constraint(equalToConstant: 26),
+                button.heightAnchor.constraint(equalToConstant: 26),
+            ])
+            colorsStack.addArrangedSubview(button)
+            postColorButtons.append(button)
+        }
+        updatePostColorSelection()
+
+        postPositionSegment.selectedSegmentIndex = 1
+        postSizeSegment.selectedSegmentIndex = 1
+        let optionsRow = UIStackView(arrangedSubviews: [
+            colorsStack, UIView(), postPositionSegment, postSizeSegment,
+        ])
+        optionsRow.axis = .horizontal
+        optionsRow.spacing = 10
+        optionsRow.alignment = .center
+
+        let stack = UIStackView(arrangedSubviews: [inputRow, optionsRow])
+        stack.axis = .vertical
+        stack.spacing = 8
+        stack.isLayoutMarginsRelativeArrangement = true
+        stack.layoutMargins = UIEdgeInsets(top: 8, left: 12, bottom: 10, right: 12)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        form.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: form.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: form.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: form.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: form.trailingAnchor),
+            commentTextField.heightAnchor.constraint(equalToConstant: 38),
+        ])
+        return form
+    }
+
+    /// "#RRGGBB" を UIColor に直す。解釈できなければ白。
+    private static func colorFromHex(_ hex: String) -> UIColor {
+        var s = hex
+        if s.hasPrefix("#") { s.removeFirst() }
+        guard s.count == 6, let value = UInt32(s, radix: 16) else { return .white }
+        return UIColor(
+            red: CGFloat((value >> 16) & 0xFF) / 255,
+            green: CGFloat((value >> 8) & 0xFF) / 255,
+            blue: CGFloat(value & 0xFF) / 255,
+            alpha: 1)
+    }
+
+    @objc private func postColorTapped(_ sender: RippleButton) {
+        guard NicoCommentCommand.postingColors.indices.contains(sender.tag) else { return }
+        selectedPostColorName = NicoCommentCommand.postingColors[sender.tag].name
+        updatePostColorSelection()
+    }
+
+    /// 色の選択の見た目 (選んでいる色に枠を付ける)。
+    private func updatePostColorSelection() {
+        for (index, button) in postColorButtons.enumerated() {
+            let selected = NicoCommentCommand.postingColors.indices.contains(index)
+                && NicoCommentCommand.postingColors[index].name == selectedPostColorName
+            button.layer.borderWidth = selected ? 2.5 : 0
+            button.layer.borderColor = AppPalette.accent.cgColor
+        }
+    }
+
+    @objc private func openCommentMuteSettings() {
+        navigationController?.pushViewController(
+            CommentMuteSettingsViewController(), animated: true)
+    }
+
+    /// コメントパネルの知らせを出す (nil で消す)。
+    private func showCommentStatus(_ text: String?) {
+        commentStatusLabel.text = text
+        commentPanelStatusWrap?.isHidden = text == nil
+    }
+
+    /// コメント一覧の空表示を、状態に合わせて出し分ける
+    /// (Web 版コメントパネルの案内の文に合わせる)。
+    private func updateCommentEmptyState() {
+        guard liveComments.isEmpty else {
+            commentTableView.backgroundView = nil
+            return
+        }
+        if let failure = commentInitFailure {
+            commentEmptyLabel.text = "コメントがありません。\n\(failure)"
+        } else {
+            commentEmptyLabel.text = "まだコメントがありません。\nこのチャンネルに対応するニコニコ実況のコメントが、リアルタイムで表示されます。"
+        }
+        if commentTableView.backgroundView == nil {
+            let container = UIView()
+            commentEmptyLabel.textColor = AppPalette.metaText
+            commentEmptyLabel.font = .scaledSystemFont(ofSize: 13)
+            commentEmptyLabel.numberOfLines = 0
+            commentEmptyLabel.textAlignment = .center
+            commentEmptyLabel.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(commentEmptyLabel)
+            NSLayoutConstraint.activate([
+                commentEmptyLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+                commentEmptyLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 32),
+                commentEmptyLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -32),
+            ])
+            commentTableView.backgroundView = container
+        }
+    }
+
+    /// 投稿欄の有効・無効を、初期化の成否に合わせる。
+    private func updateCommentFormState() {
+        let failed = commentInitFailure != nil
+        commentTextField.isEnabled = !failed
+        commentSendButton.isEnabled = !failed
+        commentTextField.placeholder = failed
+            ? "このチャンネルではコメントできません"
+            : "コメントを入力"
+    }
+
+    /// コメントを送信する。成否は知らせに出し、成功したら入力を消す。
+    /// 「送信後にフォームを閉じる」設定がオンなら、キーボードも閉じる。
+    @objc private func sendCommentTapped() {
+        let text = commentTextField.text?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty, let session = commentSession else { return }
+        let position = ["ue", "naka", "shita"][postPositionSegment.selectedSegmentIndex]
+        let size = ["big", "medium", "small"][postSizeSegment.selectedSegmentIndex]
+        commentSendButton.isEnabled = false
+        session.postComment(
+            text: text, colorName: selectedPostColorName,
+            position: position, size: size
+        ) { [weak self] error in
+            guard let self else { return }
+            self.commentSendButton.isEnabled = true
+            if let error {
+                self.showCommentStatus(error)
+            } else {
+                self.commentTextField.text = ""
+                self.showCommentStatus(nil)
+                if SyncedSettingsStore.shared.current.closeCommentFormAfterSending {
+                    self.commentTextField.resignFirstResponder()
+                }
+            }
+        }
+    }
+
+    @objc private func jumpToLatestComments() {
+        commentFollow = true
+        commentJumpButton.isHidden = true
+        scrollCommentListToBottom(animated: true)
+    }
+
+    private func scrollCommentListToBottom(animated: Bool) {
+        guard !liveComments.isEmpty, commentTableView.bounds.height > 0 else { return }
+        commentTableView.scrollToRow(
+            at: IndexPath(row: liveComments.count - 1, section: 0),
+            at: .bottom, animated: animated)
+    }
+
+    /// キーボードの出し入れに合わせて、投稿欄の位置を持ち上げる。
+    @objc private func keyboardWillChangeFrame(_ note: Notification) {
+        guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
+              let constraint = commentFormBottomConstraint else { return }
+        let overlap = max(
+            0, view.bounds.height - frame.origin.y - view.safeAreaInsets.bottom)
+        constraint.constant = -overlap
+        UIView.animate(withDuration: 0.25) { self.view.layoutIfNeeded() }
+    }
+
+    /// コメント1件の操作 (Web 版のコメント一覧のドロップダウンと同じ顔ぶれ)。
+    private func showCommentMenu(for comment: LiveJikkyoComment) {
+        let sheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
+        sheet.addAction(UIAlertAction(title: "クリップボードにコピー", style: .default) { _ in
+            UIPasteboard.general.string = comment.text
+        })
+        sheet.addAction(UIAlertAction(title: "このコメントのユーザー ID をコピー", style: .default) { _ in
+            UIPasteboard.general.string = comment.userID
+        })
+        sheet.addAction(UIAlertAction(title: "このコメントをミュート", style: .default) { [weak self] _ in
+            self?.muteComment(comment)
+        })
+        sheet.addAction(UIAlertAction(title: "このコメントの投稿者をミュート", style: .default) { [weak self] _ in
+            self?.muteCommentAuthor(comment)
+        })
+        sheet.addAction(UIAlertAction(title: "キャンセル", style: .cancel))
+        present(sheet, animated: true)
+    }
+
+    /// コメント本文を、そのままの完全一致のキーワードとしてミュートに足す
+    /// (Web 版の「このコメントをミュート」と同じ)。
+    private func muteComment(_ comment: LiveJikkyoComment) {
+        var settings = SyncedSettingsStore.shared.current
+        guard !settings.mutedCommentKeywords.contains(
+            where: { $0.match == "exact" && $0.pattern == comment.text }) else { return }
+        settings.mutedCommentKeywords.append(
+            MutedCommentKeyword(match: "exact", pattern: comment.text))
+        SyncedSettingsStore.shared.update(settings)
+        showCommentStatus("このコメントをミュートしました。")
+    }
+
+    /// 投稿者の ID をミュートに足す (Web 版と同じ)。
+    private func muteCommentAuthor(_ comment: LiveJikkyoComment) {
+        var settings = SyncedSettingsStore.shared.current
+        guard !settings.mutedNiconicoUserIDs.contains(comment.userID) else { return }
+        settings.mutedNiconicoUserIDs.append(comment.userID)
+        SyncedSettingsStore.shared.update(settings)
+        showCommentStatus("このコメントの投稿者をミュートしました。")
+    }
+
+    // MARK: - 実況コメントの土台と時計
+
+    /// 実況コメントの接続を始める (画面を開いたときに1回だけ)。
+    private func startCommentSession() {
+        let session = LiveCommentSession(channelID: channel.id)
+        session.nowProvider = { [weak self] in self?.liveCommentNow() ?? 0 }
+        session.delayProvider = { [weak self] in self?.liveCommentDelaySeconds ?? 0 }
+        session.onComments = { [weak self] comments, isInitial in
+            self?.receiveLiveComments(comments, isInitial: isInitial)
+        }
+        session.onNotice = { [weak self] text in
+            // 知らせは、番組情報パネルの知らせ欄とコメントパネルの
+            // 両方に出す (開いているパネルで気付けるように)。
+            self?.messageLabel.text = text
+            self?.showCommentStatus(text)
+        }
+        session.onInitFailure = { [weak self] message in
+            self?.commentInitFailure = message
+            self?.updateCommentEmptyState()
+            self?.updateCommentFormState()
+        }
+        commentSession = session
+        session.start()
+    }
+
+    /// 届いたコメントを、一覧と流れる表示へ回す。
+    /// 初回のまとめは一覧にだけ出す (Web 版と同じ)。
+    private func receiveLiveComments(_ comments: [LiveJikkyoComment], isInitial: Bool) {
+        let oldCount = liveComments.count
+        liveComments.append(contentsOf: comments)
+        // 一覧が際限なく伸びないよう、古い分から少しずつ落とす。
+        var trimmed = false
+        if liveComments.count > 1200 {
+            liveComments.removeFirst(liveComments.count - 1000)
+            trimmed = true
+        }
+        if !isInitial {
+            commentOverlay.appendComments(comments.map { $0.asJikkyoComment })
+            commentOverlay.pruneSpawnedComments(before: liveCommentNow() - 30)
+        }
+        if trimmed || oldCount == 0 {
+            commentTableView.reloadData()
+        } else {
+            let indexPaths = (oldCount..<liveComments.count).map {
+                IndexPath(row: $0, section: 0)
+            }
+            commentTableView.insertRows(at: indexPaths, with: .none)
+        }
+        updateCommentEmptyState()
+        if commentFollow {
+            scrollCommentListToBottom(animated: false)
+        } else if selectedPanelTab == .comment {
+            commentJumpButton.isHidden = false
+        }
+    }
+
+    /// 流れる表示の仮想の時計 (秒)。再生中だけ進む。
+    private func liveCommentNow() -> Double {
+        var now = liveCommentClockOffset
+        if let start = liveCommentClockStart {
+            now += Date().timeIntervalSince(start)
+        }
+        return now
+    }
+
+    /// 再生の状態に合わせて、仮想の時計の進みを切り替える
+    /// (再生部品の状態変化の合図から呼ばれる)。
+    private func updateCommentClock() {
+#if canImport(MobileVLCKit)
+        let playing = vlcPlayer?.isPlaying ?? false
+#else
+        let playing = false
+#endif
+        if playing, liveCommentClockStart == nil {
+            liveCommentClockStart = Date()
+        } else if !playing, let start = liveCommentClockStart {
+            liveCommentClockOffset += Date().timeIntervalSince(start)
+            liveCommentClockStart = nil
+        }
+    }
+
+    /// コメント表示の切り替え (録画と同じ。設定は端末に保存する)。
+    @objc private func toggleComments() {
+        SettingsStore.shared.showComments.toggle()
+        updateCommentButton()
+        applyCommentDisplayState()
+        scheduleHideControls()
+    }
+
+    /// コメント切り替えボタンの見た目を、現在の設定に合わせる (録画と同じ)。
+    private func updateCommentButton() {
+        let on = SettingsStore.shared.showComments
+        let config = UIImage.SymbolConfiguration(pointSize: 20, weight: .regular)
+        commentButton.setImage(
+            UIImage(systemName: on ? "text.bubble.fill" : "text.bubble", withConfiguration: config),
+            for: .normal)
+        commentButton.tintColor = .white
+        commentButton.alpha = on ? 1 : 0.4
+        commentButton.accessibilityLabel = on ? "コメント表示オン" : "コメント表示オフ"
+    }
+
+    /// コメントを流すかどうかを、重ね物へ反映する。
+    /// 音声のみの間は映像が出ていないので、コメントも流さない (録画と同じ)。
+    private func applyCommentDisplayState() {
+        commentOverlay.setDisplayEnabled(SettingsStore.shared.showComments && !audioOnly)
     }
 
     // MARK: - 操作帯の出し入れ
@@ -571,6 +1465,9 @@ final class LivePlayerViewController: UIViewController {
         // 溜めを 低遅延オン = 1000ms / オフ = 4000ms に切り替えて近づける。
         // 効き具合 (遅れの減り方と止まりやすさ) は実機確認が要る。
         let networkCaching = SettingsStore.shared.lowLatencyMode(profile: profile) ? 1000 : 4000
+        // 実況コメントを流れる表示へ出すまでの遅れは、再生の溜めの量に
+        // 合わせる (Web 版と同じ考え方)。
+        liveCommentDelaySeconds = Double(networkCaching) / 1000
         media.addOption(":network-caching=\(networkCaching)")
         if audioOnly {
             media.addOption(":no-video")
@@ -908,6 +1805,7 @@ final class LivePlayerViewController: UIViewController {
         audioOnlyButton.setTitle(audioOnly ? "音声のみ: ON" : "音声のみ: OFF", for: .normal)
         videoView.isHidden = audioOnly
         applyCaptionDisplayState()
+        applyCommentDisplayState()
         startStream()
         playPauseButton.setImage(
             UIImage(systemName: "pause.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 36)),
@@ -1258,7 +2156,7 @@ final class LivePlayerViewController: UIViewController {
     /// 画面に戻ってくるたびに確かめる。
     private func refreshDataBroadcastAvailability() {
         let enabled = SettingsStore.shared.dataBroadcastingEnabled
-        remoteFloatingButton.isHidden = !enabled
+        updateRemoteButtonVisibility()
         if !enabled {
             hideRemotePanelImmediately()
             if isDataBroadcastActive {
@@ -1519,6 +2417,20 @@ final class LivePlayerViewController: UIViewController {
             ]
             NSLayoutConstraint.activate(bmlBorrowConstraints)
         }
+        // 実況コメントの流れる表示も、映像の枠と一緒に貸し出す
+        // (データ放送の上、字幕の下)。
+        if commentOverlay.superview === videoArea {
+            NSLayoutConstraint.deactivate(commentHomeConstraints)
+            commentOverlay.removeFromSuperview()
+            container.addSubview(commentOverlay)
+            commentBorrowConstraints = [
+                commentOverlay.topAnchor.constraint(equalTo: container.topAnchor),
+                commentOverlay.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+                commentOverlay.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                commentOverlay.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            ]
+            NSLayoutConstraint.activate(commentBorrowConstraints)
+        }
         // 字幕の重ね物も、映像の枠と一緒に貸し出す (一番上に置く)。
         if captionOverlayView.superview === videoArea {
             NSLayoutConstraint.deactivate(captionHomeConstraints)
@@ -1553,7 +2465,15 @@ final class LivePlayerViewController: UIViewController {
             videoArea.insertSubview(webView, aboveSubview: videoView)
             NSLayoutConstraint.activate(bmlHomeConstraints)
         }
-        // 字幕の重ね物も通常画面へ戻す。
+        // 実況コメントの流れる表示も通常画面へ戻す。
+        if commentOverlay.superview !== videoArea {
+            NSLayoutConstraint.deactivate(commentBorrowConstraints)
+            commentBorrowConstraints = []
+            commentOverlay.removeFromSuperview()
+            videoArea.addSubview(commentOverlay)
+            NSLayoutConstraint.activate(commentHomeConstraints)
+        }
+        // 字幕の重ね物も通常画面へ戻す (一番上に置く)。
         if captionOverlayView.superview !== videoArea {
             NSLayoutConstraint.deactivate(captionBorrowConstraints)
             captionBorrowConstraints = []
@@ -1602,6 +2522,7 @@ extension LivePlayerViewController: VLCMediaPlayerDelegate {
                 }
             }
             self.refreshPlayPauseIcon()
+            self.updateCommentClock()
             self.updateNowPlaying()
             // 画質の切り替え後に再生が始まったら、切り替え完了時点の
             // 書き戻しを行う (開始時点で書き戻したのと同じ値を、
@@ -1850,3 +2771,131 @@ final class LiveFullscreenViewController: UIViewController {
     }
 }
 #endif
+
+// MARK: - パネルの一覧 (チャンネル/コメント)
+
+extension LivePlayerViewController: UITableViewDataSource, UITableViewDelegate {
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        if tableView === channelTableView {
+            guard channelGroups.indices.contains(selectedChannelGroupIndex) else { return 0 }
+            return channelGroups[selectedChannelGroupIndex].channels.count
+        }
+        return liveComments.count
+    }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        if tableView === channelTableView {
+            let cell = tableView.dequeueReusableCell(
+                withIdentifier: LiveChannelCell.reuseID, for: indexPath) as! LiveChannelCell
+            let target = channelGroups[selectedChannelGroupIndex].channels[indexPath.row]
+            let isPinned = SyncedSettingsStore.shared.current.pinnedChannelIDs.contains(target.id)
+            cell.configure(with: target, isPinned: isPinned)
+            cell.onPinToggle = { [weak self] in self?.toggleChannelPin(target) }
+            return cell
+        }
+        let cell = tableView.dequeueReusableCell(
+            withIdentifier: LiveCommentListCell.reuseID, for: indexPath) as! LiveCommentListCell
+        let comment = liveComments[indexPath.row]
+        cell.configure(with: comment)
+        cell.onMenu = { [weak self] in self?.showCommentMenu(for: comment) }
+        return cell
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: false)
+        guard tableView === channelTableView,
+              channelGroups.indices.contains(selectedChannelGroupIndex) else { return }
+        let target = channelGroups[selectedChannelGroupIndex].channels[indexPath.row]
+        switchChannel(to: target)
+    }
+
+    /// コメント一覧を手で動かしているときは、一番下にいるかどうかで
+    /// 「最新に追いかける」状態を切り替える。
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard scrollView === commentTableView,
+              scrollView.isDragging || scrollView.isDecelerating else { return }
+        let distanceToBottom = scrollView.contentSize.height
+            - scrollView.contentOffset.y - scrollView.bounds.height
+        let atBottom = distanceToBottom < 60
+        if atBottom != commentFollow {
+            commentFollow = atBottom
+            commentJumpButton.isHidden = atBottom
+        }
+    }
+}
+
+extension LivePlayerViewController: UITextFieldDelegate {
+    /// 送信キーでもコメントを送る。
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+        if textField === commentTextField {
+            sendCommentTapped()
+        }
+        return true
+    }
+}
+
+/// 生放送のコメント一覧の1行 (本文 + 時刻 + 操作ボタン)。
+/// 自分の投稿は、地の色を変えて目印にする。
+final class LiveCommentListCell: UITableViewCell {
+    static let reuseID = "LiveCommentListCell"
+
+    var onMenu: (() -> Void)?
+
+    private let bodyLabel = UILabel()
+    private let timeLabel = UILabel()
+    private let menuButton = RippleButton()
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        backgroundColor = .clear
+        selectionStyle = .none
+
+        bodyLabel.textColor = AppPalette.text
+        bodyLabel.font = .scaledSystemFont(ofSize: 13)
+        bodyLabel.numberOfLines = 0
+        bodyLabel.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(bodyLabel)
+
+        timeLabel.textColor = AppPalette.metaText
+        timeLabel.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        timeLabel.setContentHuggingPriority(.required, for: .horizontal)
+        timeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        timeLabel.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(timeLabel)
+
+        menuButton.setImage(
+            UIImage(systemName: "ellipsis",
+                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 14)),
+            for: .normal)
+        menuButton.tintColor = AppPalette.metaText
+        menuButton.addTarget(self, action: #selector(menuTapped), for: .touchUpInside)
+        menuButton.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(menuButton)
+
+        NSLayoutConstraint.activate([
+            bodyLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 5),
+            bodyLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -5),
+            bodyLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            timeLabel.centerYAnchor.constraint(equalTo: bodyLabel.centerYAnchor),
+            timeLabel.leadingAnchor.constraint(equalTo: bodyLabel.trailingAnchor, constant: 10),
+            menuButton.centerYAnchor.constraint(equalTo: bodyLabel.centerYAnchor),
+            menuButton.leadingAnchor.constraint(equalTo: timeLabel.trailingAnchor, constant: 4),
+            menuButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -8),
+            menuButton.widthAnchor.constraint(equalToConstant: 32),
+            menuButton.heightAnchor.constraint(equalToConstant: 32),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(with comment: LiveJikkyoComment) {
+        bodyLabel.text = comment.text
+        timeLabel.text = comment.timeText
+        contentView.backgroundColor = comment.myPost
+            ? AppPalette.panel.withAlphaComponent(0.6) : .clear
+    }
+
+    @objc private func menuTapped() {
+        onMenu?()
+    }
+}

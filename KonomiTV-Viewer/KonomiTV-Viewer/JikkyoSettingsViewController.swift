@@ -1,22 +1,28 @@
+import SafariServices
 import UIKit
 
 /// 「ニコニコ実況」の設定画面。Web 版の設定 → ニコニコ実況 (Jikkyo.vue)
-/// の並びに合わせ、ミュート設定への入口を先頭に置き、続けて録画の
-/// 過去ログコメントの表示に効く項目を並べたもの: コメントを表示、
+/// の並びに合わせたもの: ニコニコアカウントとの連携、可能であれば
+/// ニコニコ実況にコメントする、コメント送信後にコメント入力フォームを
+/// 閉じる、コメントのミュート設定への入口、コメントを表示、
 /// コメントを無制限に表示、全画面でも盛り上がり波形を表示する、
 /// コメントの不透明度、コメントの速さ、コメントの文字サイズ。
 ///
-/// コメント投稿まわりの項目 (ニコニコアカウントとの連携、コメントの
-/// 送信先、送信後にフォームを閉じる) は、アプリにコメント投稿が
-/// 無いため置いていない。
+/// ニコニコ連携の認証情報はサーバー側が持ち、アプリは連携用の
+/// ページをアプリ内ブラウザで開くだけで、認証情報を持たない。
 /// 「コメントを表示」「無制限に表示」「不透明度」は Web 版でも端末
 /// ごとに持つ項目 (同期の対象外) で、アプリでも端末に保存する。
 /// 「全画面でも盛り上がり波形を表示する」はアプリ側の項目で、
 /// こちらも端末に保存する (同期の対象外)。
-/// 「速さ」「文字サイズ」とミュート設定は利用者設定と共通で、
+/// 連携以外の項目とミュート設定は利用者設定と共通で、
 /// 読み書きは SyncedSettingsStore が担う。
-/// 変更はその場で保存され、次に録画再生を始めるときから効く。
+/// 変更はその場で保存され、次に再生を始めるときから効く。
 final class JikkyoSettingsViewController: SettingsDetailViewController {
+    private let niconicoStatusLabel = UILabel()
+    private let niconicoDescriptionLabel = UILabel()
+    private let niconicoActionButton = RippleButton()
+    private let preferSwitch = WebToggle()
+    private let closeFormSwitch = WebToggle()
     private let showSwitch = WebToggle()
     private let unlimitedSwitch = WebToggle()
     private let excitementFullscreenSwitch = WebToggle()
@@ -48,9 +54,28 @@ final class JikkyoSettingsViewController: SettingsDetailViewController {
                 self?.reloadValues()
             }
         }
+        refreshNiconicoState()
     }
 
     private func buildItems() {
+        // ニコニコ連携のまとまり (状態の文 + 説明 + ボタン)。
+        niconicoStatusLabel.font = .scaledSystemFont(ofSize: 14.5, weight: .medium)
+        niconicoStatusLabel.textColor = AppPalette.text
+        niconicoStatusLabel.numberOfLines = 0
+        niconicoDescriptionLabel.font = .scaledSystemFont(ofSize: 13.5)
+        niconicoDescriptionLabel.textColor = AppPalette.metaText
+        niconicoDescriptionLabel.numberOfLines = 0
+        niconicoActionButton.addTarget(
+            self, action: #selector(niconicoActionTapped), for: .touchUpInside)
+        styleActionButton(niconicoActionButton)
+        let niconicoField = UIStackView(arrangedSubviews: [
+            niconicoStatusLabel, niconicoDescriptionLabel, niconicoActionButton,
+        ])
+        niconicoField.axis = .vertical
+        niconicoField.spacing = 14
+        preferSwitch.addTarget(self, action: #selector(preferChanged), for: .valueChanged)
+        closeFormSwitch.addTarget(self, action: #selector(closeFormChanged), for: .valueChanged)
+        refreshNiconicoState()
         showSwitch.addTarget(self, action: #selector(showChanged), for: .valueChanged)
         unlimitedSwitch.addTarget(self, action: #selector(unlimitedChanged), for: .valueChanged)
         excitementFullscreenSwitch.addTarget(
@@ -95,10 +120,17 @@ final class JikkyoSettingsViewController: SettingsDetailViewController {
         muteField.axis = .vertical
         muteField.spacing = 14
 
-        // 並びは本家 (Jikkyo.vue) に合わせ、ミュート設定を先頭に置く。
-        // 本家の先頭にあるコメント投稿の項目は、アプリに投稿の
-        // 土台が無いため置いていない。
+        // 並びは本家 (Jikkyo.vue) に合わせ、ニコニコ連携と投稿の
+        // 設定を先頭に置き、続けてミュート設定、表示の項目を並べる。
         for view in [
+            itemGroup(title: "ニコニコアカウントとの連携", field: niconicoField),
+            itemGroup(title: "可能であればニコニコ実況にコメントする", field: makeSwitchRow(
+                text: "オンにすると、ニコニコ実況にコメントできる場合はニコニコ実況へ、できない場合は NX-Jikkyo へコメントします。オフにすると、常に NX-Jikkyo へコメントします。",
+                toggle: preferSwitch)),
+            itemGroup(title: "コメント送信後にコメント入力フォームを閉じる", field: makeSwitchRow(
+                text: "オンにすると、生放送のコメントを送信したあとに、コメントの入力欄 (キーボード) を自動で閉じます。",
+                toggle: closeFormSwitch)),
+            makeDivider(),
             itemGroup(title: "コメントのミュート設定", field: muteField),
             makeDivider(),
             itemGroup(title: "コメントを表示", field: makeSwitchRow(
@@ -124,6 +156,8 @@ final class JikkyoSettingsViewController: SettingsDetailViewController {
     private func reloadValues() {
         let store = SettingsStore.shared
         let synced = SyncedSettingsStore.shared.current
+        preferSwitch.isOn = synced.preferPostingToNicolive
+        closeFormSwitch.isOn = synced.closeCommentFormAfterSending
         showSwitch.isOn = store.showComments
         unlimitedSwitch.isOn = store.showCommentsUnlimited
         excitementFullscreenSwitch.isOn = store.showExcitementInFullscreen
@@ -140,6 +174,129 @@ final class JikkyoSettingsViewController: SettingsDetailViewController {
             return "\(Int(rate))倍"
         }
         return String(format: "%.1f倍", rate)
+    }
+
+    // MARK: - ニコニコ連携
+
+    /// 連携の状態 (未ログイン/確認中/未連携/連携済み)。
+    private enum NiconicoLinkState {
+        case notLoggedIn
+        case loading
+        case unlinked
+        case linked(name: String)
+    }
+    private var niconicoState: NiconicoLinkState = .loading {
+        didSet { applyNiconicoState() }
+    }
+
+    /// サーバーからユーザー情報を取り直して、連携の状態を更新する。
+    private func refreshNiconicoState() {
+        guard SettingsStore.shared.isLoggedIn else {
+            niconicoState = .notLoggedIn
+            return
+        }
+        niconicoState = .loading
+        Task { [weak self] in
+            do {
+                let user = try await APIClient.shared.fetchCurrentUser()
+                guard let self else { return }
+                if let userID = user.niconico_user_id {
+                    let name = user.niconico_user_name ?? "\(userID)"
+                    self.niconicoState = .linked(name: name)
+                } else {
+                    self.niconicoState = .unlinked
+                }
+            } catch {
+                self?.niconicoState = .unlinked
+            }
+        }
+    }
+
+    /// 連携の状態を、文とボタンへ反映する。
+    private func applyNiconicoState() {
+        switch niconicoState {
+        case .notLoggedIn:
+            niconicoStatusLabel.text = "ログインしていません"
+            niconicoDescriptionLabel.text = "ニコニコアカウントとの連携には、アプリへのログインが必要です。"
+            niconicoActionButton.isHidden = true
+        case .loading:
+            niconicoStatusLabel.text = "連携の状態を確認中…"
+            niconicoDescriptionLabel.text = nil
+            niconicoActionButton.isHidden = true
+        case .unlinked:
+            niconicoStatusLabel.text = "ニコニコアカウントと連携していません"
+            niconicoDescriptionLabel.text = "ニコニコアカウントと連携すると、テレビを見ながらニコニコ実況にコメントできるようになります。"
+            niconicoActionButton.setTitle("ニコニコアカウントと連携する", for: .normal)
+            niconicoActionButton.isHidden = false
+        case .linked(let name):
+            niconicoStatusLabel.text = "\(name) と連携しています"
+            niconicoDescriptionLabel.text = "連携を解除すると、コメントは NX-Jikkyo への投稿に戻ります。"
+            niconicoActionButton.setTitle("連携を解除する", for: .normal)
+            niconicoActionButton.isHidden = false
+        }
+    }
+
+    @objc private func niconicoActionTapped() {
+        switch niconicoState {
+        case .unlinked:
+            openNiconicoAuth()
+        case .linked:
+            confirmNiconicoLogout()
+        case .notLoggedIn, .loading:
+            break
+        }
+    }
+
+    /// 連携用のページをアプリ内ブラウザで開く。認証情報はサーバー側が
+    /// 持ち、アプリはページを開くだけ (パスワード等は扱わない)。
+    private func openNiconicoAuth() {
+        Task { [weak self] in
+            do {
+                let urlString = try await APIClient.shared.fetchNiconicoAuthURL()
+                guard let self, let url = URL(string: urlString) else { return }
+                let browser = SFSafariViewController(url: url)
+                browser.delegate = self
+                self.present(browser, animated: true)
+            } catch {
+                self?.showNiconicoError("連携用のページを開けませんでした。")
+            }
+        }
+    }
+
+    private func confirmNiconicoLogout() {
+        let alert = UIAlertController(
+            title: "ニコニコアカウントとの連携を解除しますか？",
+            message: nil, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "キャンセル", style: .cancel))
+        alert.addAction(UIAlertAction(title: "連携を解除する", style: .destructive) { [weak self] _ in
+            Task { [weak self] in
+                do {
+                    try await APIClient.shared.logoutNiconico()
+                    self?.refreshNiconicoState()
+                } catch {
+                    self?.showNiconicoError("連携を解除できませんでした。")
+                }
+            }
+        })
+        present(alert, animated: true)
+    }
+
+    private func showNiconicoError(_ message: String) {
+        let alert = UIAlertController(title: message, message: nil, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+
+    @objc private func preferChanged() {
+        var settings = SyncedSettingsStore.shared.current
+        settings.preferPostingToNicolive = preferSwitch.isOn
+        SyncedSettingsStore.shared.update(settings)
+    }
+
+    @objc private func closeFormChanged() {
+        var settings = SyncedSettingsStore.shared.current
+        settings.closeCommentFormAfterSending = closeFormSwitch.isOn
+        SyncedSettingsStore.shared.update(settings)
     }
 
     @objc private func showChanged() {
@@ -181,5 +338,12 @@ final class JikkyoSettingsViewController: SettingsDetailViewController {
     @objc private func openMuteSettings() {
         navigationController?.pushViewController(
             CommentMuteSettingsViewController(), animated: true)
+    }
+}
+
+extension JikkyoSettingsViewController: SFSafariViewControllerDelegate {
+    /// 連携用のブラウザを閉じたら、連携の状態を取り直す。
+    func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
+        refreshNiconicoState()
     }
 }

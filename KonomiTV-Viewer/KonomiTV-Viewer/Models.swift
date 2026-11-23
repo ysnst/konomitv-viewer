@@ -251,13 +251,38 @@ struct TokenResponse: Codable {
     let token_type: String
 }
 
-/// GET /api/users/me の応答のうち、マイページのアカウント表示に使う項目。
-/// サーバーは連携アカウント情報なども返すが、アプリではこの3つだけ読む
-/// (Web 版の IUser の id / name / is_admin に相当)。
+/// GET /api/users/me の応答のうち、マイページのアカウント表示と
+/// ニコニコ連携の状態表示に使う項目 (Web 版の IUser に相当)。
+/// ニコニコ側の項目は、連携していないときは null で返る。
 struct UserInfo: Codable {
     let id: Int
     let name: String
     let is_admin: Bool
+    /// 連携しているニコニコアカウントのユーザー ID (未連携なら nil)。
+    let niconico_user_id: Int?
+    /// 連携しているニコニコアカウントの名前 (未連携なら nil)。
+    let niconico_user_name: String?
+    /// 連携しているニコニコアカウントがプレミアム会員か (未連携なら nil)。
+    let niconico_user_premium: Bool?
+}
+
+/// GET /api/channels/{チャンネルID}/jikkyo の応答。
+/// 生放送の実況コメントの接続先 (視聴セッションとコメントセッションの
+/// WebSocket の URL) をサーバーからもらうためのもの。
+/// ニコニコ実況側の接続先は、ログインしていてニコニコアカウントと
+/// 連携しているときだけ返る (それ以外は null)。
+struct JikkyoWebSocketInfo: Codable {
+    /// NX-Jikkyo の視聴セッションの URL。チャンネルがニコニコ実況に
+    /// 対応していないときは null。
+    let watch_session_url: String?
+    /// ニコニコ実況の視聴セッションの URL (取得できなければ null)。
+    let nicolive_watch_session_url: String?
+    /// ニコニコ実況側の接続先を取得できなかった理由 (無ければ null)。
+    let nicolive_watch_session_error: String?
+    /// NX-Jikkyo のコメントセッションの URL。
+    let comment_session_url: String?
+    /// そのチャンネルが NX-Jikkyo 専用 (ニコニコ実況に無い) かどうか。
+    let is_nxjikkyo_exclusive: Bool?
 }
 
 struct LiveProgram: Codable {

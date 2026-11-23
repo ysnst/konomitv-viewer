@@ -25,6 +25,11 @@ struct SyncedClientSettings: Equatable {
     var commentSpeedRate: Double
     /// コメントの文字サイズの基準値 (px)。
     var commentFontSize: Double
+    // ニコニコ実況 (投稿まわり)
+    /// 可能であればニコニコ実況にコメントするか (コメントの送信先)。
+    var preferPostingToNicolive: Bool
+    /// コメント送信後にコメント入力フォームを閉じるか。
+    var closeCommentFormAfterSending: Bool
     // ニコニコ実況 (ミュート設定)
     /// 文字サイズが大きいコメントをミュートするか。
     var muteBigSizeComments: Bool
@@ -46,6 +51,9 @@ struct SyncedClientSettings: Equatable {
     /// ビデオをみるときにデフォルトで表示されるパネルのタブ
     /// ("RecordedProgram" = 番組情報 / "Comment" = コメント)。
     var videoPanelActiveTab: String
+    /// テレビをみるときにデフォルトで表示されるパネルのタブ
+    /// ("Program" = 番組情報 / "Channel" = チャンネル / "Comment" = コメント)。
+    var tvPanelActiveTab: String
     /// チャンネル一覧を実況勢いが強い順に並び替えるか。
     var tvChannelSortByJikkyoForce: Bool
     /// 時刻を 28 時間表記で表示するか。
@@ -69,6 +77,8 @@ struct SyncedClientSettings: Equatable {
         videoShowSuperimpose: false,
         commentSpeedRate: 1,
         commentFontSize: 34,
+        preferPostingToNicolive: true,
+        closeCommentFormAfterSending: true,
         muteBigSizeComments: true,
         muteFixedComments: false,
         muteColoredComments: false,
@@ -78,6 +88,7 @@ struct SyncedClientSettings: Equatable {
         mutedNiconicoUserIDs: [],
         videoWatchedHistoryMaxCount: 50,
         videoPanelActiveTab: "RecordedProgram",
+        tvPanelActiveTab: "Program",
         tvChannelSortByJikkyoForce: false,
         use28HourClock: false,
         showOriginalBroadcastTimeDuringPlayback: false,
@@ -201,6 +212,8 @@ final class SyncedSettingsStore {
         static let videoShowSuperimpose = "viewer_video_show_superimpose"
         static let commentSpeedRate = "viewer_comment_speed_rate"
         static let commentFontSize = "viewer_comment_font_size"
+        static let preferPostingToNicolive = "viewer_prefer_posting_to_nicolive"
+        static let closeCommentFormAfterSending = "viewer_close_comment_form_after_sending"
         static let muteBigSizeComments = "viewer_mute_big_size_comments"
         static let muteFixedComments = "viewer_mute_fixed_comments"
         static let muteColoredComments = "viewer_mute_colored_comments"
@@ -208,6 +221,7 @@ final class SyncedSettingsStore {
         static let muteCommentKeywordsNormalize = "viewer_mute_comment_keywords_normalize_alphanumeric_width_case"
         static let videoWatchedHistoryMaxCount = "viewer_video_watched_history_max_count"
         static let videoPanelActiveTab = "viewer_video_panel_active_tab"
+        static let tvPanelActiveTab = "viewer_tv_panel_active_tab"
         static let tvChannelSortByJikkyoForce = "viewer_tv_channel_sort_by_jikkyo_force"
         static let use28HourClock = "viewer_use_28hour_clock"
         static let showOriginalBroadcastTimeDuringPlayback =
@@ -338,6 +352,12 @@ final class SyncedSettingsStore {
         if let value = store.syncedDouble(forKey: LocalKey.commentFontSize) {
             result.commentFontSize = min(60, max(20, value))
         }
+        if let value = store.syncedBool(forKey: LocalKey.preferPostingToNicolive) {
+            result.preferPostingToNicolive = value
+        }
+        if let value = store.syncedBool(forKey: LocalKey.closeCommentFormAfterSending) {
+            result.closeCommentFormAfterSending = value
+        }
         if let value = store.syncedBool(forKey: LocalKey.muteBigSizeComments) {
             result.muteBigSizeComments = value
         }
@@ -364,6 +384,10 @@ final class SyncedSettingsStore {
            value == "RecordedProgram" || value == "Comment" {
             result.videoPanelActiveTab = value
         }
+        if let value = store.syncedString(forKey: LocalKey.tvPanelActiveTab),
+           value == "Program" || value == "Channel" || value == "Comment" {
+            result.tvPanelActiveTab = value
+        }
         if let value = store.syncedBool(forKey: LocalKey.tvChannelSortByJikkyoForce) {
             result.tvChannelSortByJikkyoForce = value
         }
@@ -389,6 +413,9 @@ final class SyncedSettingsStore {
         store.setSyncedBool(settings.videoShowSuperimpose, forKey: LocalKey.videoShowSuperimpose)
         store.setSyncedDouble(settings.commentSpeedRate, forKey: LocalKey.commentSpeedRate)
         store.setSyncedDouble(settings.commentFontSize, forKey: LocalKey.commentFontSize)
+        store.setSyncedBool(settings.preferPostingToNicolive, forKey: LocalKey.preferPostingToNicolive)
+        store.setSyncedBool(settings.closeCommentFormAfterSending,
+                            forKey: LocalKey.closeCommentFormAfterSending)
         store.setSyncedBool(settings.muteBigSizeComments, forKey: LocalKey.muteBigSizeComments)
         store.setSyncedBool(settings.muteFixedComments, forKey: LocalKey.muteFixedComments)
         store.setSyncedBool(settings.muteColoredComments, forKey: LocalKey.muteColoredComments)
@@ -402,6 +429,7 @@ final class SyncedSettingsStore {
         store.mutedNiconicoUserIDs = settings.mutedNiconicoUserIDs
         store.setSyncedInt(settings.videoWatchedHistoryMaxCount, forKey: LocalKey.videoWatchedHistoryMaxCount)
         store.setSyncedString(settings.videoPanelActiveTab, forKey: LocalKey.videoPanelActiveTab)
+        store.setSyncedString(settings.tvPanelActiveTab, forKey: LocalKey.tvPanelActiveTab)
         store.setSyncedBool(settings.tvChannelSortByJikkyoForce, forKey: LocalKey.tvChannelSortByJikkyoForce)
         store.setSyncedBool(settings.use28HourClock, forKey: LocalKey.use28HourClock)
         store.setSyncedBool(settings.showOriginalBroadcastTimeDuringPlayback,
@@ -428,6 +456,9 @@ final class SyncedSettingsStore {
                 clientSettings["video_show_superimpose"] = settings.videoShowSuperimpose
                 clientSettings["comment_speed_rate"] = settings.commentSpeedRate
                 clientSettings["comment_font_size"] = settings.commentFontSize
+                clientSettings["prefer_posting_to_nicolive"] = settings.preferPostingToNicolive
+                clientSettings["close_comment_form_after_sending"] =
+                    settings.closeCommentFormAfterSending
                 clientSettings["mute_big_size_comments"] = settings.muteBigSizeComments
                 clientSettings["mute_fixed_comments"] = settings.muteFixedComments
                 clientSettings["mute_colored_comments"] = settings.muteColoredComments
@@ -441,6 +472,7 @@ final class SyncedSettingsStore {
                 clientSettings["muted_niconico_user_ids"] = settings.mutedNiconicoUserIDs
                 clientSettings["video_watched_history_max_count"] = settings.videoWatchedHistoryMaxCount
                 clientSettings["video_panel_active_tab"] = settings.videoPanelActiveTab
+                clientSettings["tv_panel_active_tab"] = settings.tvPanelActiveTab
                 clientSettings["tv_channel_sort_by_jikkyo_force"] = settings.tvChannelSortByJikkyoForce
                 clientSettings["use_28hour_clock"] = settings.use28HourClock
                 clientSettings["show_original_broadcast_time_during_playback"] =
@@ -490,6 +522,12 @@ final class SyncedSettingsStore {
         if let value = (clientSettings["comment_font_size"] as? NSNumber)?.doubleValue {
             result.commentFontSize = min(60, max(20, value))
         }
+        if let value = clientSettings["prefer_posting_to_nicolive"] as? Bool {
+            result.preferPostingToNicolive = value
+        }
+        if let value = clientSettings["close_comment_form_after_sending"] as? Bool {
+            result.closeCommentFormAfterSending = value
+        }
         if let value = clientSettings["mute_big_size_comments"] as? Bool {
             result.muteBigSizeComments = value
         }
@@ -522,6 +560,10 @@ final class SyncedSettingsStore {
         if let value = clientSettings["video_panel_active_tab"] as? String,
            value == "RecordedProgram" || value == "Comment" {
             result.videoPanelActiveTab = value
+        }
+        if let value = clientSettings["tv_panel_active_tab"] as? String,
+           value == "Program" || value == "Channel" || value == "Comment" {
+            result.tvPanelActiveTab = value
         }
         if let value = clientSettings["tv_channel_sort_by_jikkyo_force"] as? Bool {
             result.tvChannelSortByJikkyoForce = value

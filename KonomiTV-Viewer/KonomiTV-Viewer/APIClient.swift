@@ -439,6 +439,41 @@ final class APIClient {
         return data
     }
 
+    // MARK: - 生放送の実況コメント
+
+    /// 実況コメントの接続先情報を取る。ログインしていると、ニコニコ
+    /// アカウントとの連携の状態に応じた接続先も一緒に返る。
+    func fetchJikkyoWebSocketInfo(channelID: String) async throws -> JikkyoWebSocketInfo {
+        let encoded = channelID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? channelID
+        let request = try request(forPath: "/api/channels/\(encoded)/jikkyo", authorized: true)
+        let (data, response) = try await session.data(for: request)
+        try check(response)
+        return try JSONDecoder().decode(JikkyoWebSocketInfo.self, from: data)
+    }
+
+    // MARK: - ニコニコアカウントとの連携
+
+    /// ニコニコアカウントと連携するための認証用の URL を取る
+    /// (ログイン必須)。認証情報はサーバー側が持つため、アプリは
+    /// この URL をブラウザで開くだけで、認証情報には触れない。
+    func fetchNiconicoAuthURL() async throws -> String {
+        let request = try request(forPath: "/api/niconico/auth", authorized: true)
+        let (data, response) = try await session.data(for: request)
+        try check(response)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let url = object["authorization_url"] as? String else {
+            throw APIError.invalidResponse
+        }
+        return url
+    }
+
+    /// ニコニコアカウントとの連携を解除する (ログイン必須)。
+    func logoutNiconico() async throws {
+        let request = try request(forPath: "/api/niconico/logout", method: "DELETE", authorized: true)
+        let (_, response) = try await session.data(for: request)
+        try check(response)
+    }
+
     // MARK: - 録画再生 (HLS)
 
     // 画質名はここで実際にサーバーへ渡す形に直す (区分ごとの設定に応じて

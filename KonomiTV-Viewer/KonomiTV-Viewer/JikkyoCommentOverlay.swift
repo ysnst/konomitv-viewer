@@ -88,6 +88,26 @@ final class JikkyoCommentOverlayView: UIView {
         reset(to: positionProvider?() ?? 0)
     }
 
+    /// 生放送用: コメントを末尾へ足す。既に出ているコメントは消さない
+    /// (setComments と違い、表示中のものはそのまま流れ続ける)。
+    /// 時刻は届いた順に増えていく前提 (生放送の受け口がそう割り振る)。
+    func appendComments(_ newComments: [JikkyoComment]) {
+        guard !newComments.isEmpty else { return }
+        comments.append(contentsOf: newComments)
+    }
+
+    /// 生放送用: 既に出し終えた古いコメントを蓄えから捨てる
+    /// (長く見続けても蓄えが膨らまないように)。
+    func pruneSpawnedComments(before position: Double) {
+        var dropCount = 0
+        while dropCount < nextIndex, comments[dropCount].time < position {
+            dropCount += 1
+        }
+        guard dropCount > 0 else { return }
+        comments.removeFirst(dropCount)
+        nextIndex -= dropCount
+    }
+
     /// 毎フレームの見張りを始める。
     func start() {
         guard displayLink == nil else { return }
