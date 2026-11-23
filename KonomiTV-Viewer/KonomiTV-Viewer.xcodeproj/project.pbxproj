@@ -42,6 +42,7 @@
 		2000000000000000000000AD /* AccountSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000AC /* AccountSettingsViewController.swift */; };
 		2000000000000000000000AF /* LicenseViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000AE /* LicenseViewController.swift */; };
 		2000000000000000000000BA /* WatchedHistoryViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000B9 /* WatchedHistoryViewController.swift */; };
+		2000000000000000000000BC /* MylistViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000BB /* MylistViewController.swift */; };
 		2000000000000000000000C5 /* TrashViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000C4 /* TrashViewController.swift */; };
 		2000000000000000000000C7 /* CommentHighlights.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000C6 /* CommentHighlights.swift */; };
 		2000000000000000000000C9 /* ExcitementStripView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000C8 /* ExcitementStripView.swift */; };
@@ -107,6 +108,7 @@
 		2000000000000000000000AC /* AccountSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountSettingsViewController.swift; sourceTree = "<group>"; };
 		2000000000000000000000AE /* LicenseViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LicenseViewController.swift; sourceTree = "<group>"; };
 		2000000000000000000000B9 /* WatchedHistoryViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchedHistoryViewController.swift; sourceTree = "<group>"; };
+		2000000000000000000000BB /* MylistViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MylistViewController.swift; sourceTree = "<group>"; };
 		2000000000000000000000C4 /* TrashViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrashViewController.swift; sourceTree = "<group>"; };
 		2000000000000000000000C6 /* CommentHighlights.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentHighlights.swift; sourceTree = "<group>"; };
 		2000000000000000000000C8 /* ExcitementStripView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExcitementStripView.swift; sourceTree = "<group>"; };
@@ -216,6 +218,7 @@
 				2000000000000000000000AC /* AccountSettingsViewController.swift */,
 				2000000000000000000000AE /* LicenseViewController.swift */,
 				2000000000000000000000B9 /* WatchedHistoryViewController.swift */,
+				2000000000000000000000BB /* MylistViewController.swift */,
 				2000000000000000000000C4 /* TrashViewController.swift */,
 				2000000000000000000000C6 /* CommentHighlights.swift */,
 				2000000000000000000000C8 /* ExcitementStripView.swift */,
@@ -355,6 +358,7 @@
 				2000000000000000000000AD /* AccountSettingsViewController.swift in Sources */,
 				2000000000000000000000AF /* LicenseViewController.swift in Sources */,
 				2000000000000000000000BA /* WatchedHistoryViewController.swift in Sources */,
+				2000000000000000000000BC /* MylistViewController.swift in Sources */,
 				2000000000000000000000C5 /* TrashViewController.swift in Sources */,
 				2000000000000000000000C7 /* CommentHighlights.swift in Sources */,
 				2000000000000000000000C9 /* ExcitementStripView.swift in Sources */,

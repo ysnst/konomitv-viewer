@@ -55,6 +55,9 @@ struct SyncedClientSettings: Equatable {
     /// ピン留め中のチャンネルの ID (Web 版の pinned_channel_ids)。
     /// 並びがそのままピン留め一覧の表示順になる。
     var pinnedChannelIDs: [String]
+    /// マイリストの登録 (Web 版の mylist)。シリーズの登録も含めて
+    /// そのまま保持する (アプリで表示するのは録画番組だけ)。
+    var mylist: [MylistEntry]
 
     /// Web 版の既定値。
     static let defaults = SyncedClientSettings(
@@ -78,7 +81,8 @@ struct SyncedClientSettings: Equatable {
         tvChannelSortByJikkyoForce: false,
         use28HourClock: false,
         showOriginalBroadcastTimeDuringPlayback: false,
-        pinnedChannelIDs: [])
+        pinnedChannelIDs: [],
+        mylist: [])
 
     /// 字幕のフォントの選択肢 (Web 版の字幕設定と同じ並び)。
     /// 値はサーバーに保存される名前、題名は画面に出す名前。
@@ -116,6 +120,42 @@ struct SyncedClientSettings: Equatable {
     /// 視聴履歴の保持件数の選択肢 (Web 版は数値入力だが、アプリでは
     /// 他の選択項目と同じく候補から選ぶ形にしてある)。
     static let watchedHistoryMaxCountOptions = [10, 20, 30, 50, 100, 200]
+}
+
+/// マイリストの登録1件分 (Web 版の mylist の要素と同じ形)。
+/// 種類は "Series" (シリーズ) か "RecordedProgram" (録画番組)。
+/// アプリにシリーズの画面は無いので、シリーズの登録は表示しないが、
+/// 保存のときに落とさないよう、読み書きは種類ごとそのまま通す。
+struct MylistEntry: Equatable {
+    /// 種類 ("Series" / "RecordedProgram")。
+    var type: String
+    /// シリーズまたは録画番組の番号。
+    var id: Int
+    /// 追加した時刻 (秒単位。Web 版の created_at と同じ)。
+    var createdAt: Double
+
+    /// 録画番組の登録かどうか。
+    var isRecordedProgram: Bool { type == "RecordedProgram" }
+
+    /// 利用者設定の辞書の形に写す。
+    var dictionary: [String: Any] {
+        ["type": type, "id": id, "created_at": createdAt]
+    }
+
+    /// 利用者設定の辞書から組み立てる。形が違うものは nil。
+    init?(dictionary: [String: Any]) {
+        guard let type = dictionary["type"] as? String, !type.isEmpty,
+              let id = (dictionary["id"] as? NSNumber)?.intValue else { return nil }
+        self.type = type
+        self.id = id
+        self.createdAt = (dictionary["created_at"] as? NSNumber)?.doubleValue ?? 0
+    }
+
+    init(type: String, id: Int, createdAt: Double) {
+        self.type = type
+        self.id = id
+        self.createdAt = createdAt
+    }
 }
 
 /// ミュートするコメントのキーワード1件分 (Web 版の
@@ -173,6 +213,7 @@ final class SyncedSettingsStore {
         static let showOriginalBroadcastTimeDuringPlayback =
             "viewer_show_original_broadcast_time_during_playback"
         static let pinnedChannelIDs = "viewer_pinned_channel_ids"
+        static let mylist = "viewer_mylist"
     }
 
     /// いま効いている設定。端末内の控えから組み立てて保持する。
@@ -333,6 +374,7 @@ final class SyncedSettingsStore {
             result.showOriginalBroadcastTimeDuringPlayback = value
         }
         result.pinnedChannelIDs = store.pinnedChannelIDs
+        result.mylist = store.mylistEntries.compactMap(MylistEntry.init(dictionary:))
         return result
     }
 
@@ -365,6 +407,7 @@ final class SyncedSettingsStore {
         store.setSyncedBool(settings.showOriginalBroadcastTimeDuringPlayback,
                             forKey: LocalKey.showOriginalBroadcastTimeDuringPlayback)
         store.pinnedChannelIDs = settings.pinnedChannelIDs
+        store.mylistEntries = settings.mylist.map { $0.dictionary }
     }
 
     // MARK: - サーバーとのやり取り
@@ -403,6 +446,7 @@ final class SyncedSettingsStore {
                 clientSettings["show_original_broadcast_time_during_playback"] =
                     settings.showOriginalBroadcastTimeDuringPlayback
                 clientSettings["pinned_channel_ids"] = settings.pinnedChannelIDs
+                clientSettings["mylist"] = settings.mylist.map { $0.dictionary }
                 clientSettings["last_synced_at"] = Date().timeIntervalSince1970
                 try await APIClient.shared.updateClientSettings(clientSettings)
                 return
@@ -491,7 +535,38 @@ final class SyncedSettingsStore {
         if let ids = clientSettings["pinned_channel_ids"] as? [String] {
             result.pinnedChannelIDs = ids
         }
+        if let entries = clientSettings["mylist"] as? [[String: Any]] {
+            // 形の違うものは読み飛ばすが、シリーズなど種類の違う登録は
+            // そのまま保持する (保存のときに落とさないため)。
+            result.mylist = entries.compactMap(MylistEntry.init(dictionary:))
+        }
         return result
+    }
+
+    // MARK: - マイリスト
+
+    /// 録画番組がマイリストに入っているか (手元の現在値で判定する)。
+    func isInMylist(videoID: Int) -> Bool {
+        current.mylist.contains { $0.isRecordedProgram && $0.id == videoID }
+    }
+
+    /// マイリストへの追加・削除を切り替える。切り替え後の状態
+    /// (入っていれば true) を返す。シリーズの登録には触れない。
+    /// 同期が効いていないときは端末内の控えだけが変わるため、
+    /// 呼び出し側は SyncedSettingsStore.isSyncEnabled を確かめてから使う。
+    @discardableResult
+    func toggleMylist(videoID: Int) -> Bool {
+        var settings = current
+        if isInMylist(videoID: videoID) {
+            settings.mylist.removeAll { $0.isRecordedProgram && $0.id == videoID }
+            update(settings)
+            return false
+        }
+        settings.mylist.append(MylistEntry(
+            type: "RecordedProgram", id: videoID,
+            createdAt: Date().timeIntervalSince1970.rounded(.down)))
+        update(settings)
+        return true
     }
 
     // MARK: - コメントのミュート判定

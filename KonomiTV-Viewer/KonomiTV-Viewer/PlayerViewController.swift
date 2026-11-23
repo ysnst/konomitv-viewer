@@ -388,6 +388,8 @@ final class PlayerViewController: UIViewController {
     private let audioOnlyButton = RippleButton()
     private let fullscreenButton = RippleButton()
     private let protectButton = RippleButton()
+    /// マイリストへの追加・削除ボタン (両版)。状態で文面と印を変える。
+    private let mylistButton = RippleButton()
     private let watchedButton = RippleButton()
     private let sleepTimerButton = RippleButton()
     // MARK: 拡張版の再生画面まわりの機能 (改造サーバー前提)
@@ -614,6 +616,16 @@ final class PlayerViewController: UIViewController {
         // フルスクリーンから戻ってきたとき用に、消えるタイマーを仕掛け直す。
         if hasActiveEngine {
             scheduleHideControls()
+        }
+        // マイリストの登録状態をサーバー側の最新に追いつかせる
+        // (同期が効いていないときは何もしない)。
+        if SyncedSettingsStore.isSyncEnabled {
+            Task { [weak self] in
+                guard let self else { return }
+                if await SyncedSettingsStore.shared.refreshFromServer() {
+                    self.updateMylistButtonTitle()
+                }
+            }
         }
         // ハイライト横断再生の対象だった画面に戻ってきたとき、順番が
         // すでに先の録画へ進んでいたら、この画面は対象から外れたもの
@@ -1140,6 +1152,8 @@ final class PlayerViewController: UIViewController {
         fullscreenButton.addTarget(self, action: #selector(showFullscreen), for: .touchUpInside)
         protectButton.setTitle(currentProtected ? "保護を外す" : "保護する", for: .normal)
         protectButton.addTarget(self, action: #selector(toggleProtection), for: .touchUpInside)
+        mylistButton.addTarget(self, action: #selector(toggleMylist), for: .touchUpInside)
+        updateMylistButtonTitle()
         watchedButton.setTitle("視聴済みにする", for: .normal)
         watchedButton.addTarget(self, action: #selector(markWatched), for: .touchUpInside)
         watchedButton.isHidden = program.isRecording || (program.watched_ratio ?? 0) >= 1
@@ -1175,7 +1189,7 @@ final class PlayerViewController: UIViewController {
         nextReserveButton.addTarget(self, action: #selector(reserveNextBroadcast), for: .touchUpInside)
         seriesReserveButton.setTitle("シリーズ予約", for: .normal)
         seriesReserveButton.addTarget(self, action: #selector(createSeriesReservation), for: .touchUpInside)
-        for button in [qualityButton, profileButton, rateButton, audioOnlyButton, fullscreenButton, protectButton, watchedButton, sleepTimerButton,
+        for button in [qualityButton, profileButton, rateButton, audioOnlyButton, fullscreenButton, protectButton, mylistButton, watchedButton, sleepTimerButton,
                        prevEpisodeButton, nextEpisodeButton, sceneListButton, addBookmarkButton, digestButton, commentSearchButton,
                        nextReserveButton, seriesReserveButton] {
             stylePlayerChip(button)
@@ -1193,7 +1207,7 @@ final class PlayerViewController: UIViewController {
                             addBookmarkButton, digestButton, commentSearchButton,
                             nextReserveButton, seriesReserveButton, protectButton]
         }
-        infoButtons += [watchedButton, profileButton, sleepTimerButton]
+        infoButtons += [mylistButton, watchedButton, profileButton, sleepTimerButton]
         for button in infoButtons {
             buttonsFlowView.addSubview(button)
         }
@@ -2535,6 +2549,43 @@ final class PlayerViewController: UIViewController {
             } else {
                 self.messageLabel.text = "番組を取得できませんでした。"
             }
+        }
+    }
+
+    // MARK: マイリスト
+
+    /// マイリストボタンの文面と印を、いまの登録状態に合わせる
+    /// (Web 版パネルと同じ: 追加済みはチェックの印で「マイリストに追加済み」、
+    /// 未追加は＋の印で「マイリストに追加」)。
+    private func updateMylistButtonTitle() {
+        let inMylist = SyncedSettingsStore.shared.isInMylist(videoID: program.id)
+        mylistButton.setTitle(inMylist ? "マイリストに追加済み" : "マイリストに追加", for: .normal)
+        mylistButton.setImage(
+            UIImage(systemName: inMylist ? "checkmark" : "plus",
+                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .regular)),
+            for: .normal)
+        mylistButton.imageEdgeInsets = UIEdgeInsets(top: 0, left: 0, bottom: 0, right: 6)
+    }
+
+    /// マイリストへの追加・削除を切り替える。マイリストは視聴履歴と揃えて、
+    /// ログイン中かつ「設定をデバイス間で同期する」がオンのときだけ働く。
+    /// その条件を満たさないときは切り替えず、知らせで案内する。
+    @objc private func toggleMylist() {
+        guard SyncedSettingsStore.isSyncEnabled else {
+            showPlayerNotice(SettingsStore.shared.isLoggedIn
+                ? "マイリストを使うには、「設定をデバイス間で同期する」をオンにしてください。"
+                : "マイリストを使うには、ログインが必要です。")
+            return
+        }
+        let videoID = program.id
+        Task { [weak self] in
+            guard let self else { return }
+            // 他の画面や Web 版での変更に追いついてから切り替える
+            // (古い控えで切り替えると、別の登録を巻き戻しかねないため)。
+            _ = await SyncedSettingsStore.shared.refreshFromServer()
+            let added = SyncedSettingsStore.shared.toggleMylist(videoID: videoID)
+            self.updateMylistButtonTitle()
+            self.showPlayerNotice(added ? "マイリストに追加しました。" : "マイリストから削除しました。")
         }
     }
 

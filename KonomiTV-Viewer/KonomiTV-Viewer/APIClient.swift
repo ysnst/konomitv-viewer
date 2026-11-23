@@ -117,8 +117,15 @@ final class APIClient {
     /// ページ分だけ返る (Web 版の視聴履歴と同じ取り方)。
     /// ID は Web 版と同じく ids=1&ids=2&... の形で繰り返して渡す。
     func fetchVideos(page: Int, ids: [Int]) async throws -> RecordedProgramsResponse {
+        try await fetchVideos(page: page, order: "ids", ids: ids)
+    }
+
+    /// ID を指定して録画番組を取る。order = "ids" のときは渡した ID の
+    /// 並びを保ち、"desc" / "asc" のときは渡した ID の範囲内で録画日時の
+    /// 順に並べ替えて返る (Web 版のマイリストと同じ取り方)。
+    func fetchVideos(page: Int, order: String, ids: [Int]) async throws -> RecordedProgramsResponse {
         let idsQuery = ids.map { "ids=\($0)" }.joined(separator: "&")
-        let request = try request(forPath: "/api/videos?order=ids&page=\(page)&\(idsQuery)")
+        let request = try request(forPath: "/api/videos?order=\(order)&page=\(page)&\(idsQuery)")
         let (data, response) = try await session.data(for: request)
         try check(response)
         return try JSONDecoder().decode(RecordedProgramsResponse.self, from: data)

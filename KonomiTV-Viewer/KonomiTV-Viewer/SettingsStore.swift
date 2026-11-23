@@ -137,6 +137,7 @@ final class SettingsStore {
         static let mutedCommentKeywords = "viewer_muted_comment_keywords"
         static let mutedNiconicoUserIDs = "viewer_muted_niconico_user_ids"
         static let pinnedChannelIDs = "viewer_pinned_channel_ids"
+        static let mylist = "viewer_mylist"
         static let videoWatchedHistoryMaxCount = "viewer_video_watched_history_max_count"
         static let videoPanelActiveTab = "viewer_video_panel_active_tab"
         // コメント表示のうち、Web 版でも端末ごとに持つ項目
@@ -636,6 +637,24 @@ final class SettingsStore {
     var pinnedChannelIDs: [String] {
         get { defaults.stringArray(forKey: Key.pinnedChannelIDs) ?? [] }
         set { defaults.set(newValue, forKey: Key.pinnedChannelIDs) }
+    }
+
+    /// マイリストの控え (Web 版の mylist と同じ形: 種類・番号・追加した
+    /// 時刻の組の配列を、JSON 文字列にして保存する)。
+    var mylistEntries: [[String: Any]] {
+        get {
+            guard let raw = defaults.string(forKey: Key.mylist),
+                  let data = raw.data(using: .utf8),
+                  let entries = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+            else { return [] }
+            return entries
+        }
+        set {
+            if let data = try? JSONSerialization.data(withJSONObject: newValue),
+               let raw = String(data: data, encoding: .utf8) {
+                defaults.set(raw, forKey: Key.mylist)
+            }
+        }
     }
 
     // MARK: - コメント表示の端末ごとの設定

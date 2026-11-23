@@ -1028,10 +1028,12 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         navigationController?.pushViewController(player, animated: true)
     }
 
-    /// 長押しメニュー。「視聴済みにする」と「保護する／外す」を出す
-    /// (保護の項目は拡張版だけ)。「ゴミ箱に移動する」は Web 版のカードの
-    /// メニューと同じく、拡張版かつ管理者のときだけ出し、録画中と
-    /// 保護中は押せなくする。
+    /// 長押しメニュー。「視聴済みにする」「マイリストに追加／から削除」と
+    /// 「保護する／外す」を出す (保護の項目は拡張版だけ)。「ゴミ箱に移動する」は
+    /// Web 版のカードのメニューと同じく、拡張版かつ管理者のときだけ出し、
+    /// 録画中と保護中は押せなくする。マイリストは Web 版ではカード右上の
+    /// 「＋」ボタンだが、アプリのカードにはボタンの置き場が無いため、
+    /// このメニューに寄せた (両版に出す)。
     func tableView(
         _ tableView: UITableView,
         contextMenuConfigurationForRowAt indexPath: IndexPath,
@@ -1049,6 +1051,13 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                     self?.markWatched(program: program)
                 })
             }
+            let inMylist = SyncedSettingsStore.shared.isInMylist(videoID: program.id)
+            actions.append(UIAction(
+                title: inMylist ? "マイリストから削除" : "マイリストに追加",
+                image: UIImage(systemName: inMylist ? "bookmark.fill" : "bookmark")
+            ) { _ in
+                self?.toggleMylist(program: program)
+            })
             if AppEdition.isHousehold {
                 let protected = program.isProtected
                 actions.append(UIAction(
@@ -1087,6 +1096,35 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             } catch {
                 self.showAlert(title: "視聴済みにできませんでした", message: nil)
             }
+        }
+    }
+
+    /// マイリストへの追加・削除を切り替える。マイリストは視聴履歴と揃えて、
+    /// ログイン中かつ「設定をデバイス間で同期する」がオンのときだけ働く。
+    /// その条件を満たさないときは切り替えず、案内を出す。
+    /// カードにはマイリストの状態が出ていないため、一覧の読み直しはしない。
+    private func toggleMylist(program: RecordedProgram) {
+        guard SyncedSettingsStore.isSyncEnabled else {
+            let loggedIn = SettingsStore.shared.isLoggedIn
+            let alert = UIAlertController(
+                title: loggedIn ? "同期をオンにしてください" : "ログインが必要です",
+                message: loggedIn
+                    ? "マイリストを使うには、アカウントの設定で「設定をデバイス間で同期する」をオンにしてください。"
+                    : "マイリストを使うには、ログインして「設定をデバイス間で同期する」をオンにしてください。",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "キャンセル", style: .cancel))
+            alert.addAction(UIAlertAction(title: "設定を開く", style: .default) { [weak self] _ in
+                self?.mainTabBarController?.selectedIndex = 3
+            })
+            present(alert, animated: true)
+            return
+        }
+        Task {
+            // 他の画面や Web 版での変更に追いついてから切り替える
+            // (古い控えで切り替えると、別の登録を巻き戻しかねないため)。
+            _ = await SyncedSettingsStore.shared.refreshFromServer()
+            SyncedSettingsStore.shared.toggleMylist(videoID: program.id)
         }
     }
 

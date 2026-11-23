@@ -18,8 +18,8 @@ import UIKit
 ///   この画面にも帯は置かず、見出しは中身の先頭に置く
 ///
 /// 行き先: 「設定」は今の設定画面 (SettingsViewController) をそのまま押し込む。
-/// 視聴履歴は専用画面 (WatchedHistoryViewController)、マイリストはまだ
-/// 「準備中」画面 (ComingSoonViewController) に繋ぐ。アカウント表示の
+/// 視聴履歴は専用画面 (WatchedHistoryViewController)、マイリストは専用画面
+/// (MylistViewController) に繋ぐ。アカウント表示の
 /// カードはアカウントの設定画面へ繋いである。
 final class MyPageViewController: UIViewController {
     private let iconPhotoView = UIImageView()
@@ -336,7 +336,7 @@ final class MyPageViewController: UIViewController {
     }
 
     @objc private func openMyList() {
-        navigationController?.pushViewController(ComingSoonViewController(title: "マイリスト"), animated: true)
+        navigationController?.pushViewController(MylistViewController(), animated: true)
     }
 
     @objc private func openWatchedHistory() {
