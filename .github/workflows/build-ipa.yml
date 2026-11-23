@@ -1,29 +1,15 @@
 name: Build IPA (shared)
 
-# 署名なし IPA を作る本体。版ごとの呼び出し側 (build.yml = 一般版、
-# build-household.yml = 拡張版) から、版の指定を受けて呼ばれる。
+# 署名なし IPA を作る本体。呼び出し側 (build.yml) から呼ばれる。
 # このワークフローは署名を一切しない (証明書・プロファイルは使わない)。
 #
-# 版番号は呼び出し側ワークフローの実行番号に、版ごとの下駄 (version_offset) を
-# 足して決める。呼び出し側ごとに実行番号の数え方が独立しているため、
-# 一般版と拡張版で番号を取り合うことはない。
+# 版番号は呼び出し側ワークフローの実行番号で決める。以前は一般版 / 拡張版の
+# 2種類を別の呼び出し側から作っていたが、版を1本にまとめたため、
+# 呼び出し側は build.yml だけになった。改造版サーバー向けの機能は、
+# アプリ内の設定トグルで出し入れする (AppEdition.swift)。
 
 on:
   workflow_call:
-    inputs:
-      edition:
-        description: '版の種類 (general = 一般版 / household = 拡張版)'
-        type: string
-        required: true
-      version_offset:
-        description: '版番号の下駄 (実行番号に足す数)'
-        type: number
-        required: true
-        default: 0
-      release_tag:
-        description: 'IPA を置く固定リリースのタグ'
-        type: string
-        required: true
 
 jobs:
   build:
@@ -33,9 +19,6 @@ jobs:
     # 解凍したときに日本時間とずれて見えるのを防ぐため、ジョブ全体を日本時間にする。
     env:
       TZ: Asia/Tokyo
-      # 版分け (一般版 / 拡張版)。呼び出し側から受け取る。
-      # アプリ側の判定は AppEdition.swift。
-      EDITION: ${{ inputs.edition }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,19 +33,14 @@ jobs:
         run: xcodebuild -version
 
       # 版番号と IPA のファイル名をここで確定させる。
-      # 表示版は「0.<実行番号＋下駄>」、内部のビルド番号も同じ数。
-      # IPA のファイル名には版の印 (general / extended) を入れる。
+      # 表示版は「0.<実行番号>」、内部のビルド番号も同じ数。
       - name: Compute version and IPA name
         run: |
-          NUM=$(( ${{ github.run_number }} + ${{ inputs.version_offset }} ))
+          NUM=${{ github.run_number }}
           echo "APP_VERSION=0.$NUM" >> "$GITHUB_ENV"
           echo "BUILD_NUMBER=$NUM" >> "$GITHUB_ENV"
-          if [ "$EDITION" = "general" ]; then
-            echo "IPA_NAME=KonomiTV-Viewer-unsigned-general-0.$NUM.ipa" >> "$GITHUB_ENV"
-          else
-            echo "IPA_NAME=KonomiTV-Viewer-unsigned-extended-0.$NUM.ipa" >> "$GITHUB_ENV"
-          fi
-          echo "Version: 0.$NUM (run ${{ github.run_number }} + offset ${{ inputs.version_offset }}), edition: $EDITION"
+          echo "IPA_NAME=KonomiTV-Viewer-unsigned-0.$NUM.ipa" >> "$GITHUB_ENV"
+          echo "Version: 0.$NUM (run ${{ github.run_number }})"
 
       # 再生部品 (MobileVLCKit) と字幕の文字化の部品 (libaribcaption) を
       # CocoaPods で入れる。libaribcaption は公式の podspec が無いため、
@@ -75,14 +53,12 @@ jobs:
 
       - name: Build (no code signing)
         run: |
-          echo "Edition: $EDITION"
           xcodebuild build \
             -workspace KonomiTV-Viewer/KonomiTV-Viewer.xcworkspace \
             -scheme KonomiTV-Viewer \
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath build/DerivedData \
-            APP_EDITION="$EDITION" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
@@ -98,7 +74,6 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PLIST"
           echo "CFBundleShortVersionString: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")"
           echo "CFBundleVersion: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")"
-          echo "AppEdition: $(/usr/libexec/PlistBuddy -c 'Print :AppEdition' "$PLIST")"
           cd build
           zip -r "$IPA_NAME" Payload
           ls -lh "$IPA_NAME"
@@ -106,7 +81,7 @@ jobs:
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
-          name: KonomiTV-Viewer-unsigned-ipa-${{ inputs.edition }}
+          name: KonomiTV-Viewer-unsigned-ipa
           path: build/${{ env.IPA_NAME }}
           if-no-files-found: error
 
@@ -120,18 +95,11 @@ jobs:
         if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_TAG: sideload-latest
         run: |
           IPA="build/$IPA_NAME"
-          if [ "$EDITION" = "general" ]; then
-            TITLE="最新の IPA (一般版)"
-            EDITION_LABEL="一般版"
-          else
-            TITLE="最新の IPA (拡張版)"
-            EDITION_LABEL="拡張版"
-          fi
+          TITLE="最新の IPA"
           NOTES="版番号: $APP_VERSION
-          版の種類: $EDITION_LABEL
           ビルド日時 (日本時間): $(date '+%Y/%m/%d %H:%M')
           Actions 実行 ID: ${{ github.run_id }}
           実行ページ: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

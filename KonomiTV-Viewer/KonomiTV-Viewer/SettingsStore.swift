@@ -147,6 +147,10 @@ final class SettingsStore {
         // 表示の大きさ (Web 版うち改造の ui_scale に相当)。Web 版と同じく
         // 端末ごとに持つ設定で、デバイス間同期の対象にはしない。
         static let uiScale = "viewer_ui_scale"
+        // 改造版サーバーの機能を使うかどうかと、その区分の解放状態。
+        // どちらも端末ごとに持つ設定で、デバイス間同期の対象にはしない。
+        static let customizedFeaturesEnabled = "viewer_customized_features_enabled"
+        static let customizedFeaturesUnlocked = "viewer_customized_features_unlocked"
     }
 
     private enum KeychainKey {
@@ -709,6 +713,28 @@ final class SettingsStore {
     /// 表示の大きさの倍率 (100% で 1.0)。
     var uiScaleFactor: CGFloat {
         CGFloat(uiScalePercent) / 100
+    }
+
+    // MARK: - 改造版サーバーの機能 (端末ごとの設定)
+
+    /// 改造版サーバーの機能 (録画の保護・ゴミ箱など、konomitv-customizations を
+    /// 適用したサーバーが持つ受け口を使う機能) を使うかどうか。
+    /// 端末ごとに持つ設定で、同期対象ではない。既定はオフで、そのときの
+    /// 出し分けは以前の「一般版」と同じになる。オンのときは以前の「拡張版」
+    /// と同じになる。出し分けの参照は AppEdition 側。
+    /// 置き場所は「このアプリの設定」の「改造版サーバーの機能」の区分で、
+    /// 区分自体は下の解放が済むまで設定画面に出ない。
+    var customizedServerFeaturesEnabled: Bool {
+        get { defaults.bool(forKey: Key.customizedFeaturesEnabled) }
+        set { defaults.set(newValue, forKey: Key.customizedFeaturesEnabled) }
+    }
+
+    /// 「改造版サーバーの機能」の区分が解放済みかどうか。
+    /// マイページの App version の行を7回タップすると解放され、一度解放
+    /// したら残り続ける。端末ごとに持つ状態で、同期対象ではない。
+    var customizedServerFeaturesUnlocked: Bool {
+        get { defaults.bool(forKey: Key.customizedFeaturesUnlocked) }
+        set { defaults.set(newValue, forKey: Key.customizedFeaturesUnlocked) }
     }
 
     /// 前後の空白を取り除き、方式 (https:// 等) が無ければ https:// を補う。

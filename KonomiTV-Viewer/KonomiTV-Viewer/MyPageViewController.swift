@@ -34,6 +34,13 @@ final class MyPageViewController: UIViewController {
     /// サーバーの版の行。開くたびに取り直して文字を差し替えるため保持する。
     private var serverVersionRow: EntryButtonView?
 
+    /// App version の行のタップ回数 (改造版サーバーの機能の区分の解放用)。
+    /// 解放できたら数え直す。解放の状態そのものは端末ごとに保存される。
+    private var appVersionTapCount = 0
+    /// 短い知らせ (解放までの残り回数・解放の完了) を出している間の保持。
+    private weak var briefNoticeAlert: UIAlertController?
+    private var briefNoticeGeneration = 0
+
     init() {
         super.init(nibName: nil, bundle: nil)
         // ナビゲーションバーは隠すため見出しには出ないが、押し込んだ先の
@@ -95,13 +102,16 @@ final class MyPageViewController: UIViewController {
         // バージョン表示。Web 版のこの行は、サーバーと一体で配られる
         // クライアント自身の版を出す (言い回しは "version 番号")。
         // アプリでは、アプリ自身の版と接続中のサーバーの版は別物なので、
-        // 2行に分けて出す。どちらも行き先が無いため押せない表示として置く。
+        // 2行に分けて出す。サーバーの版の行は押せない表示として置く。
+        // アプリの版の行は行き先は無いが、「改造版サーバーの機能」の
+        // 区分の解放用にタップを受け付ける (7回タップで解放。Android の
+        // 開発者向けオプションと同じ出し方)。
         // アプリの版は、ビルド時にアプリへ入った値 (Info.plist の版) から取る。
         let appVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? ""
         let appVersionRow = makeEntryButton(
             iconName: "ic_fluent_info_20_regular", fallbackSystemName: "info.circle",
             title: "App version \(appVersion)")
-        appVersionRow.isEnabled = false
+        appVersionRow.addTarget(self, action: #selector(appVersionRowTapped), for: .touchUpInside)
         // サーバーの版は開くたびに取り直して差し替える (refreshServerVersion)。
         let serverVersionRow = makeEntryButton(
             iconName: "ic_fluent_info_20_regular", fallbackSystemName: "info.circle",
@@ -341,6 +351,44 @@ final class MyPageViewController: UIViewController {
 
     @objc private func openWatchedHistory() {
         navigationController?.pushViewController(WatchedHistoryViewController(), animated: true)
+    }
+
+    // MARK: - 改造版サーバーの機能の解放
+
+    /// App version の行のタップ。7回タップで「改造版サーバーの機能」の
+    /// 区分 (「このアプリの設定」の中) が解放される。残り3回からは
+    /// 「あと○回」と知らせ、解放できたらその旨を知らせる。
+    /// 一度解放したら区分は残り続ける (状態は端末ごとに保存される)。
+    @objc private func appVersionRowTapped() {
+        guard !SettingsStore.shared.customizedServerFeaturesUnlocked else { return }
+        appVersionTapCount += 1
+        let remaining = 7 - appVersionTapCount
+        if remaining <= 0 {
+            appVersionTapCount = 0
+            SettingsStore.shared.customizedServerFeaturesUnlocked = true
+            showBriefNotice("「改造版サーバーの機能」が解放されました。設定の「このアプリの設定」から有効にできます。")
+        } else if remaining <= 3 {
+            showBriefNotice("あと \(remaining) 回タップすると、「改造版サーバーの機能」が解放されます。")
+        }
+    }
+
+    /// ボタンの無い短い知らせを出し、少し経ったら自動で閉じる。
+    /// 連続タップのときは、出ている知らせの文を差し替えて出し直さない。
+    private func showBriefNotice(_ message: String) {
+        briefNoticeGeneration += 1
+        let generation = briefNoticeGeneration
+        if let alert = briefNoticeAlert {
+            alert.message = message
+        } else {
+            let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+            briefNoticeAlert = alert
+            present(alert, animated: true)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
+            guard let self, self.briefNoticeGeneration == generation else { return }
+            self.briefNoticeAlert?.dismiss(animated: true)
+            self.briefNoticeAlert = nil
+        }
     }
 }
 

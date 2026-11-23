@@ -1,9 +1,11 @@
 name: Build (unsigned IPA)
 
-# 一般版のビルド。main への push で自動で回り、手動でも回せる。
-# 本体は build-ipa.yml (共通) にあり、ここでは版の指定だけを渡す。
+# ビルド。main への push で自動で回り、手動でも回せる。
+# 本体は build-ipa.yml (共通) にある。
 # このファイル名 (build.yml) は変えないこと。版番号はこのワークフローの
 # 実行番号で数えており、ファイル名が変わると数え直しになってしまう。
+# 以前は拡張版用の build-household.yml もあったが、版を1本にまとめたため
+# 廃止した (改造版サーバー向けの機能はアプリ内の設定トグルで出し入れする)。
 
 on:
   push:
@@ -23,7 +25,3 @@ jobs:
     uses: ./.github/workflows/build-ipa.yml
     permissions:
       contents: write
-    with:
-      edition: general
-      version_offset: 0
-      release_tag: sideload-latest

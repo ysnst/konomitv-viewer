@@ -66,7 +66,7 @@ final class LivePlayerViewController: UIViewController {
     private var startWatchdog: Timer?
     private var didStartPlaying = false
 
-    // MARK: - データ放送 (重ね合わせの検証、拡張版だけ)
+    // MARK: - データ放送 (重ね合わせ)
     /// 情報欄の「リモコン」ボタン (浮き出るパネルを出す)。
     private let remoteButton = RippleButton()
     private var dataBroadcastOverlay: DataBroadcastOverlay?
@@ -319,16 +319,16 @@ final class LivePlayerViewController: UIViewController {
         chipsRow2.axis = .horizontal
         chipsRow2.spacing = 8
 
-        // データ放送の重ね合わせ (検証用、拡張版だけ)。入り口は情報欄の
+        // データ放送の重ね合わせ。入り口は情報欄の
         // 「リモコン」ボタンで、押すと Web 版と同じ浮き出るパネル型の
         // リモコンが出る。データ放送の開始はパネルの「データ」ボタン
         // から行う (テレビで dボタンを押して開くのと同じ入り口)。
         // パネル本体は buildRemotePanel() で画面全体の上に作る。
-        if AppEdition.isHousehold {
-            remoteButton.setTitle("リモコン", for: .normal)
-            remoteButton.addTarget(self, action: #selector(showRemotePanel), for: .touchUpInside)
-            stylePlayerChip(remoteButton)
-        }
+        // データ放送は素のサーバーの機能なので、改造版サーバーの
+        // 機能のトグルの対象にはしない (常に出す)。
+        remoteButton.setTitle("リモコン", for: .normal)
+        remoteButton.addTarget(self, action: #selector(showRemotePanel), for: .touchUpInside)
+        stylePlayerChip(remoteButton)
         let chipsRow3 = UIStackView(arrangedSubviews: [remoteButton, UIView()])
         chipsRow3.axis = .horizontal
         chipsRow3.spacing = 8
@@ -349,9 +349,7 @@ final class LivePlayerViewController: UIViewController {
         infoStack.setCustomSpacing(4, after: nextHeaderLabel)
         infoStack.setCustomSpacing(2, after: nextTitleLabel)
         infoStack.setCustomSpacing(16, after: nextTimeLabel)
-        if AppEdition.isHousehold {
-            infoStack.addArrangedSubview(chipsRow3)
-        }
+        infoStack.addArrangedSubview(chipsRow3)
         scrollView.addSubview(infoStack)
 
         // 映像の高さは viewDidLayoutSubviews で決める (16:9 と画面に収まる高さの小さい方)。
@@ -398,11 +396,8 @@ final class LivePlayerViewController: UIViewController {
             infoStack.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor),
         ])
 
-        // リモコンのパネルは画面全体の上に浮かせるため、最後に足す
-        // (拡張版だけ)。
-        if AppEdition.isHousehold {
-            buildRemotePanel()
-        }
+        // リモコンのパネルは画面全体の上に浮かせるため、最後に足す。
+        buildRemotePanel()
     }
 
     /// 局ロゴを読み込む (取れなければ読み込み前の地のまま)。
@@ -704,7 +699,7 @@ final class LivePlayerViewController: UIViewController {
         )
     }
 
-    // MARK: - データ放送 (重ね合わせの検証、拡張版だけ)
+    // MARK: - データ放送 (重ね合わせ)
 
     /// リモコンのパネルを作る (Web 版の Remocon.vue と同じ顔ぶれ)。
     /// 画面全体にかぶさる幕+中央のパネルで、十字キーは円形、操作キーと

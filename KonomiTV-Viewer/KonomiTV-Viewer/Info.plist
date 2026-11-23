@@ -4,10 +4,6 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
-	<!-- 版分け (一般版 / 拡張版)。ビルド設定 APP_EDITION の値が入り、
-	     "general" のときだけ一般版になる。詳しくは AppEdition.swift -->
-	<key>AppEdition</key>
-	<string>$(APP_EDITION)</string>
 	<key>CFBundleDisplayName</key>
 	<string>KonomiTV Viewer</string>
 	<!-- GENERATE_INFOPLIST_FILE = NO のため自動では付かない。LiveContainer 等はこのキーで実行ファイル名を引くので必須 -->

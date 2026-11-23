@@ -1,7 +1,7 @@
 import UIKit
 import WebKit
 
-/// データ放送の重ね合わせ (検証用) を担う係。
+/// データ放送の重ね合わせを担う係。
 ///
 /// 同梱した土台のページ (DataBroadcast/index.html) を透明な WebView で開き、
 /// その中で Web 版と同じデータ放送ブラウザ (web-bml) を動かす。映像の要素は

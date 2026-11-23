@@ -1,16 +1,28 @@
 import Foundation
 
-/// ビルドの版分け。
+/// 改造版サーバーの機能の出し分け。
 ///
-/// うちの改造サーバーが前提の機能 (録画の保護まわり、ゴミ箱) は
-/// 「拡張版」だけで出し、一般の KonomiTV サーバー向けの「一般版」では出さない。
-/// 切り替えはビルド設定 APP_EDITION で行い、Info.plist の AppEdition に入る。
-/// 値が "general" のときだけ一般版で、それ以外 (未設定を含む) は拡張版になる
-/// (これまでのビルドは全部拡張版として扱う)。
+/// 録画の保護まわり・ゴミ箱など、konomitv-customizations を適用した
+/// 改造版サーバーが持つ受け口を使う機能は、端末ごとのトグル
+/// 「改造版サーバーの機能を使う」
+/// (SettingsStore.customizedServerFeaturesEnabled、既定オフ) が
+/// オンのときだけ出す。以前はビルドの版分け (一般版 / 拡張版) で
+/// 切り替えていたが、版を1本にまとめたため、このトグルに移した。
+/// トグルがオフのときの動きは以前の一般版と同じ、オンのときは
+/// 以前の拡張版と同じになる。
+///
+/// トグルの置き場所は「このアプリの設定」の「改造版サーバーの機能」の
+/// 区分で、区分自体はマイページの App version の行を7回タップすると
+/// 解放される (解放の状態も端末ごとに保存される)。
+///
+/// 呼び出し側の名前 (isHousehold / isGeneral) は版分けの頃のままだが、
+/// 意味は「トグルがオン / オフ」に読み替える。データ放送は素の
+/// サーバーの機能なので、この出し分けの対象にはしない。
 enum AppEdition {
-    static var isGeneral: Bool {
-        (Bundle.main.object(forInfoDictionaryKey: "AppEdition") as? String) == "general"
+    /// 改造版サーバーの機能を使う (トグルがオン) かどうか。
+    static var isHousehold: Bool {
+        SettingsStore.shared.customizedServerFeaturesEnabled
     }
 
-    static var isHousehold: Bool { !isGeneral }
+    static var isGeneral: Bool { !isHousehold }
 }
