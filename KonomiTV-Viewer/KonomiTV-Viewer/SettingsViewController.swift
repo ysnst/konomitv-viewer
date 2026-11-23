@@ -34,6 +34,9 @@ final class SettingsViewController: UIViewController {
     private let loginStatusLabel = UILabel()
     /// 「設定をデバイス間で同期する」のスイッチ (Web 版の sync_settings に相当)。
     private let syncSettingsSwitch = WebToggle()
+    /// 表示の大きさのプリセットを選ぶボタンと、数値を直接入れる欄。
+    private let uiScaleButton = RippleButton()
+    private let uiScaleField = UITextField()
     /// 見出し帯の戻るボタン。マイページから押し込まれたときだけ出す
     /// (この画面はナビゲーションバーを隠すため、帯側で戻り口を用意する)。
     private let backButton = RippleButton()
@@ -85,6 +88,32 @@ final class SettingsViewController: UIViewController {
         // 左端からの横スワイプでも前の画面へ戻れるようにする
         // (先頭の画面として出ているときは戻り先が無く、押しても何も起きない)。
         installEdgeSwipeBack(action: #selector(goBack))
+        // 表示の大きさが変わったら、この画面自体も新しい大きさで
+        // 組み直す (変えた結果をその場で見られるようにするため)。
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(rebuildForUIScale),
+            name: .uiScaleDidChange, object: nil)
+    }
+
+    /// 組み直しが予定済みかどうか (変更の通知が続いたときに重ねないため)。
+    private var isRebuildScheduled = false
+
+    /// 表示の大きさの変更を受けて、画面の組み立てをやり直す。
+    /// 入力欄などの部品は同じものを使い回し、並べ直しだけを行う
+    /// (値は loadValues で保存値から入れ直す)。
+    /// 通知はプリセットのメニューを閉じる途中にも届くため、組み直しは
+    /// 少し遅らせて、メニューが閉じてから行う。
+    @objc private func rebuildForUIScale() {
+        guard !isRebuildScheduled else { return }
+        isRebuildScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.isRebuildScheduled = false
+            self.view.subviews.forEach { $0.removeFromSuperview() }
+            self.buildLayout()
+            self.loadValues()
+            self.updateUIScaleControls()
+        }
     }
 
     @objc private func dismissKeyboard() {
@@ -121,7 +150,7 @@ final class SettingsViewController: UIViewController {
     private func makeItemHeading(_ text: String) -> UILabel {
         let label = UILabel()
         label.text = text
-        label.font = .systemFont(ofSize: 16.5)
+        label.font = .scaledSystemFont(ofSize: 16.5)
         label.textColor = AppPalette.text
         label.numberOfLines = 0
         return label
@@ -130,7 +159,7 @@ final class SettingsViewController: UIViewController {
     /// 説明文 (13.5px、text-darken-1、行の高さ 1.6 倍)。
     private func makeDescriptionLabel(_ text: String) -> UILabel {
         let label = UILabel()
-        label.font = .systemFont(ofSize: 13.5)
+        label.font = .scaledSystemFont(ofSize: 13.5)
         label.textColor = AppPalette.metaText
         label.numberOfLines = 0
         let style = NSMutableParagraphStyle()
@@ -161,7 +190,7 @@ final class SettingsViewController: UIViewController {
     private func styleActionButton(_ button: UIButton) {
         button.backgroundColor = AppPalette.pressed
         button.setTitleColor(AppPalette.text, for: .normal)
-        button.titleLabel?.font = .systemFont(ofSize: 15.5)
+        button.titleLabel?.font = .scaledSystemFont(ofSize: 15.5)
         button.layer.cornerRadius = 4
         button.heightAnchor.constraint(equalToConstant: 45).isActive = true
     }
@@ -194,7 +223,7 @@ final class SettingsViewController: UIViewController {
         let headingLabel = UILabel()
         // 初回の入力画面では「設定」、分類一覧から開いたときは分類名を出す。
         headingLabel.text = mode == .setup ? "設定" : "このアプリの設定"
-        headingLabel.font = .systemFont(ofSize: 22, weight: .semibold)
+        headingLabel.font = .scaledSystemFont(ofSize: 22, weight: .semibold)
         headingLabel.textColor = AppPalette.text
         // 戻るボタンは本家に合わせて矢印だけ (文字は付けない)。
         backButton.setImage(
@@ -235,7 +264,7 @@ final class SettingsViewController: UIViewController {
         logoutButton.addTarget(self, action: #selector(logout), for: .touchUpInside)
         styleActionButton(logoutButton)
 
-        loginStatusLabel.font = .systemFont(ofSize: 13.5)
+        loginStatusLabel.font = .scaledSystemFont(ofSize: 13.5)
         loginStatusLabel.textColor = AppPalette.metaText
         loginStatusLabel.numberOfLines = 0
 
@@ -244,7 +273,7 @@ final class SettingsViewController: UIViewController {
         saveButton.addTarget(self, action: #selector(save), for: .touchUpInside)
         styleActionButton(saveButton)
 
-        statusLabel.font = .systemFont(ofSize: 13.5)
+        statusLabel.font = .scaledSystemFont(ofSize: 13.5)
         statusLabel.textColor = AppPalette.metaText
         statusLabel.numberOfLines = 0
 
@@ -281,6 +310,38 @@ final class SettingsViewController: UIViewController {
         syncRow.spacing = 12
         let syncGroup = itemGroup(title: "設定をデバイス間で同期する", field: syncRow)
 
+        // 表示の大きさ (Web 版うち改造の ui_scale に相当する、アプリの
+        // 端末ごとの設定)。プリセットの選択ボタンと数値の入力欄を
+        // Web 版と同じく上下に並べる。切り替えはその場で保存する。
+        styleScaleSelectButton(uiScaleButton)
+        updateUIScaleControls()
+        configure(uiScaleField, placeholder: "100", keyboard: .numberPad)
+        uiScaleField.textAlignment = .right
+        uiScaleField.addTarget(
+            self, action: #selector(uiScaleFieldDidEnd), for: .editingDidEnd)
+        let percentLabel = UILabel()
+        percentLabel.text = "%"
+        percentLabel.font = .scaledSystemFont(ofSize: 16)
+        percentLabel.textColor = AppPalette.metaText
+        let uiScaleFieldRow = UIStackView(arrangedSubviews: [uiScaleField, percentLabel])
+        uiScaleFieldRow.axis = .horizontal
+        uiScaleFieldRow.alignment = .center
+        uiScaleFieldRow.spacing = 8
+        let uiScaleControls = UIStackView(arrangedSubviews: [
+            uiScaleButton,
+            makeSpacer(12),
+            uiScaleFieldRow,
+        ])
+        uiScaleControls.axis = .vertical
+        let uiScaleGroup = UIStackView(arrangedSubviews: [
+            makeItemHeading("表示の大きさ"),
+            makeSpacer(14),
+            makeDescriptionLabel("ボタンや文字など、画面全体の表示の大きさをこの端末でのみ変更できます。デフォルトは 100% (標準) です。大きく感じる場合は小さい数値を、小さくて見づらい場合は大きい数値を選んでください。プリセットから選ぶか、下の欄に 50% 〜 150% の数値を直接入力できます。変更すると、この画面と下部バーにはすぐ反映され、他の画面は開き直したときに反映されます。"),
+            makeSpacer(14),
+            uiScaleControls,
+        ])
+        uiScaleGroup.axis = .vertical
+
         // 項目どうしの間隔は Web 版の項目の margin-top と同じ 24px。
         // 接続先のグループとログインのグループの間には区切り線を引く。
         let connectionDivider = makeDivider()
@@ -289,6 +350,7 @@ final class SettingsViewController: UIViewController {
             itemGroup(title: "KonomiTV の URL", field: urlField),
             itemGroup(title: "Access Client ID (任意)", field: cfIDField),
             itemGroup(title: "Access Client Secret (任意)", field: cfSecretField),
+            uiScaleGroup,
             connectionDivider,
             usernameGroup,
             passwordGroup,
@@ -349,7 +411,7 @@ final class SettingsViewController: UIViewController {
         field.layer.borderColor = AppPalette.fieldBorder.cgColor
         field.layer.cornerRadius = 4
         field.textColor = AppPalette.text
-        field.font = .systemFont(ofSize: 16)
+        field.font = .scaledSystemFont(ofSize: 16)
         field.tintColor = AppPalette.accent
         field.attributedPlaceholder = NSAttributedString(
             string: placeholder,
@@ -442,6 +504,79 @@ final class SettingsViewController: UIViewController {
     /// 同期の切り替えはその場で保存する (「保存」ボタンは待たない)。
     @objc private func syncSettingsChanged() {
         SettingsStore.shared.syncSettings = syncSettingsSwitch.isOn
+    }
+
+    // MARK: - 表示の大きさ
+
+    /// プリセットの表示名 (Web 版と同じく、100 だけ「(標準)」を付ける)。
+    private static func uiScaleTitle(_ percent: Int) -> String {
+        percent == 100 ? "100% (標準)" : "\(percent)%"
+    }
+
+    /// 表示の大きさの選択ボタンに、設定画面の入力欄と同じ箱の見た目を
+    /// 付ける (画質の画面の選択ボタンと同じ形)。
+    private func styleScaleSelectButton(_ button: UIButton) {
+        button.contentHorizontalAlignment = .leading
+        button.showsMenuAsPrimaryAction = true
+        button.backgroundColor = AppPalette.background
+        button.layer.borderWidth = 1
+        button.layer.borderColor = AppPalette.fieldBorder.cgColor
+        button.layer.cornerRadius = 4
+        button.setTitleColor(AppPalette.text, for: .normal)
+        button.titleLabel?.font = .scaledSystemFont(ofSize: 16)
+        // 右の余白は、右端に留める矢印の分 (12 + 12 + 8) を空ける。
+        button.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 32)
+        button.heightAnchor.constraint(equalToConstant: 50).isActive = true
+        addSelectChevron(to: button)
+    }
+
+    /// 選択ボタンの右端に、下向きの矢印を留める (他の設定画面と同じ組み方)。
+    private func addSelectChevron(to button: UIButton) {
+        let tag = 0x5E1EC7
+        if button.viewWithTag(tag) != nil { return }
+        let chevron = UIImageView(
+            image: UIImage(systemName: "chevron.down")?
+                .withTintColor(AppPalette.metaText, renderingMode: .alwaysOriginal))
+        chevron.tag = tag
+        chevron.contentMode = .scaleAspectFit
+        chevron.isUserInteractionEnabled = false
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+        button.addSubview(chevron)
+        NSLayoutConstraint.activate([
+            chevron.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -12),
+            chevron.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+            chevron.widthAnchor.constraint(equalToConstant: 12),
+            chevron.heightAnchor.constraint(equalToConstant: 12),
+        ])
+    }
+
+    /// 表示の大きさのボタンと入力欄を、保存値に合わせて付け直す。
+    private func updateUIScaleControls() {
+        let percent = SettingsStore.shared.uiScalePercent
+        uiScaleButton.setTitle(Self.uiScaleTitle(percent), for: .normal)
+        uiScaleButton.menu = UIMenu(children: SettingsStore.uiScalePresets.map { preset in
+            UIAction(title: Self.uiScaleTitle(preset),
+                     state: preset == percent ? .on : .off) { [weak self] _ in
+                SettingsStore.shared.uiScalePercent = preset
+                self?.updateUIScaleControls()
+            }
+        })
+        if !uiScaleField.isFirstResponder {
+            uiScaleField.text = "\(percent)"
+        }
+    }
+
+    /// 数値の入力が確定したら、範囲内 (50 〜 150) に丸めて保存する。
+    /// 数値として読めない場合は、保存値の表示に戻す。
+    @objc private func uiScaleFieldDidEnd() {
+        let text = (uiScaleField.text ?? "").trimmingCharacters(in: .whitespaces)
+        if let value = Int(text) {
+            // 範囲への丸めは保存側 (uiScalePercent) で行う。
+            SettingsStore.shared.uiScalePercent = value
+        }
+        updateUIScaleControls()
+        // 範囲外を入れた場合は、丸められた後の値を欄にも見せる。
+        uiScaleField.text = "\(SettingsStore.shared.uiScalePercent)"
     }
 
     @objc private func save() {

@@ -39,7 +39,7 @@ final class TimeTableSettingsViewController: UIViewController {
     private func makeItemHeading(_ text: String) -> UILabel {
         let label = UILabel()
         label.text = text
-        label.font = .systemFont(ofSize: 16.5)
+        label.font = .scaledSystemFont(ofSize: 16.5)
         label.textColor = AppPalette.text
         label.numberOfLines = 0
         return label
@@ -48,7 +48,7 @@ final class TimeTableSettingsViewController: UIViewController {
     /// 説明文 (13.5px、text-darken-1、行の高さ 1.6 倍)。
     private func makeDescriptionLabel(_ text: String) -> UILabel {
         let label = UILabel()
-        label.font = .systemFont(ofSize: 13.5)
+        label.font = .scaledSystemFont(ofSize: 13.5)
         label.textColor = AppPalette.metaText
         label.numberOfLines = 0
         let style = NSMutableParagraphStyle()
@@ -83,7 +83,7 @@ final class TimeTableSettingsViewController: UIViewController {
         header.addSubview(gearView)
         let titleLabel = UILabel()
         titleLabel.text = "番組表の表示設定"
-        titleLabel.font = .systemFont(ofSize: 20, weight: .bold)
+        titleLabel.font = .scaledSystemFont(ofSize: 20, weight: .bold)
         titleLabel.textColor = AppPalette.text
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(titleLabel)
@@ -211,7 +211,7 @@ final class TimeTableSettingsViewController: UIViewController {
     private func makeGenreRow(genre: String) -> UIStackView {
         let nameLabel = UILabel()
         nameLabel.text = genre
-        nameLabel.font = .systemFont(ofSize: 14)
+        nameLabel.font = .scaledSystemFont(ofSize: 14)
         nameLabel.textColor = AppPalette.text
         nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
@@ -234,7 +234,7 @@ final class TimeTableSettingsViewController: UIViewController {
         swatch.widthAnchor.constraint(equalToConstant: 16).isActive = true
         swatch.heightAnchor.constraint(equalToConstant: 16).isActive = true
         let colorNameLabel = UILabel()
-        colorNameLabel.font = .systemFont(ofSize: 13)
+        colorNameLabel.font = .scaledSystemFont(ofSize: 13)
         colorNameLabel.textColor = AppPalette.text
         colorNameLabel.tag = 2
         let chevron = UIImageView(image: UIImage(systemName: "chevron.down")?

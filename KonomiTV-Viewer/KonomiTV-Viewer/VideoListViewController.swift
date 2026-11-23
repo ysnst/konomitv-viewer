@@ -143,7 +143,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         )?.withTintColor(AppPalette.text.withAlphaComponent(0.75), renderingMode: .alwaysOriginal)
         storageIconView.contentMode = .scaleAspectFit
         storageRowView.addSubview(storageIconView)
-        storageLabel.font = .systemFont(ofSize: 13.5)
+        storageLabel.font = .scaledSystemFont(ofSize: 13.5)
         storageLabel.textColor = AppPalette.text.withAlphaComponent(0.75)
         storageLabel.numberOfLines = 1
         storageLabel.lineBreakMode = .byTruncatingTail
@@ -154,11 +154,11 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         // たつやさんの判断で付けない。
         headContainerView.addSubview(listHeaderView)
         listTitleLabel.text = "録画番組一覧"
-        listTitleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+        listTitleLabel.font = .scaledSystemFont(ofSize: 17, weight: .semibold)
         listTitleLabel.textColor = AppPalette.text
         listTitleLabel.translatesAutoresizingMaskIntoConstraints = false
         listHeaderView.addSubview(listTitleLabel)
-        countLabel.font = .systemFont(ofSize: 13)
+        countLabel.font = .scaledSystemFont(ofSize: 13)
         countLabel.textColor = AppPalette.metaText
         countLabel.translatesAutoresizingMaskIntoConstraints = false
         listHeaderView.addSubview(countLabel)
@@ -166,7 +166,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         // 文字＋ON 件数の印で、押すとメニューが開く丸いボタン。
         // フィルタが1つでも ON のときは Web 版と同じくアクセント色で塗る。
         filterButton.setTitle("フィルタ", for: .normal)
-        filterButton.titleLabel?.font = .systemFont(ofSize: 13)
+        filterButton.titleLabel?.font = .scaledSystemFont(ofSize: 13)
         let filterSymbol = UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
         filterButton.setImage(
             UIImage(systemName: "line.3.horizontal.decrease.circle.fill", withConfiguration: filterSymbol),
@@ -180,7 +180,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         filterButton.translatesAutoresizingMaskIntoConstraints = false
         listHeaderView.addSubview(filterButton)
         // ON 件数の印はボタンの右上に重ねる小さな丸。0件のときは出さない。
-        filterBadgeLabel.font = .systemFont(ofSize: 10, weight: .bold)
+        filterBadgeLabel.font = .scaledSystemFont(ofSize: 10, weight: .bold)
         filterBadgeLabel.textAlignment = .center
         filterBadgeLabel.backgroundColor = .white
         filterBadgeLabel.textColor = AppPalette.accent
@@ -570,7 +570,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             self?.changeSortOrder("asc")
         }
         // まとまりごとに区切りを入れるため、内側のメニューで分ける。
-        // 「保護中のみ」はうち版だけ (一般版では保護の機能自体を出さない)。
+        // 「保護中のみ」は拡張版だけ (一般版では保護の機能自体を出さない)。
         let filterActions: [UIAction] = AppEdition.isHousehold
             ? [unwatchedAction, protectedAction]
             : [unwatchedAction]
@@ -750,7 +750,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     }
 
     /// 長押しメニュー。「視聴済みにする」と「保護する／外す」を出す
-    /// (保護の項目はうち版だけ)。
+    /// (保護の項目は拡張版だけ)。
     func tableView(
         _ tableView: UITableView,
         contextMenuConfigurationForRowAt indexPath: IndexPath,
@@ -893,7 +893,7 @@ final class PaginationView: UIView {
         button.setTitle("\(page)", for: .normal)
         button.accessibilityLabel = "\(page) ページ"
         let isCurrent = page == currentPage
-        button.titleLabel?.font = .systemFont(ofSize: 14, weight: isCurrent ? .bold : .regular)
+        button.titleLabel?.font = .scaledSystemFont(ofSize: 14, weight: isCurrent ? .bold : .regular)
         button.setTitleColor(isCurrent ? .white : AppPalette.text, for: .normal)
         button.backgroundColor = isCurrent ? AppPalette.accent : AppPalette.panel
         button.layer.cornerRadius = 4
@@ -1033,7 +1033,7 @@ final class VideoCell: UITableViewCell {
         thumbnailView.translatesAutoresizingMaskIntoConstraints = false
 
         // 題名は Web 版 (スマホ縦) に合わせ 13px の太字 (600)、行間 1.4、最大2行。
-        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.font = .scaledSystemFont(ofSize: 13, weight: .semibold)
         titleLabel.textColor = AppPalette.text
         titleLabel.numberOfLines = 2
         titleLabel.lineBreakMode = .byTruncatingTail
@@ -1048,19 +1048,19 @@ final class VideoCell: UITableViewCell {
         logoView.translatesAutoresizingMaskIntoConstraints = false
 
         // 局名は Web 版 (スマホ縦) に合わせ 11.5px。
-        channelLabel.font = .systemFont(ofSize: 11.5)
+        channelLabel.font = .scaledSystemFont(ofSize: 11.5)
         channelLabel.textColor = AppPalette.metaText
         channelLabel.numberOfLines = 1
         channelLabel.lineBreakMode = .byTruncatingTail
 
         // 時刻は Web 版 (スマホ縦) に合わせ 11px。
-        timeLabel.font = .systemFont(ofSize: 11)
+        timeLabel.font = .scaledSystemFont(ofSize: 11)
         timeLabel.textColor = AppPalette.metaText
         timeLabel.numberOfLines = 1
         timeLabel.lineBreakMode = .byTruncatingTail
 
         // 説明文は Web 版 (スマホ縦) に合わせ 10px、最大2行。
-        descriptionLabel.font = .systemFont(ofSize: 10)
+        descriptionLabel.font = .scaledSystemFont(ofSize: 10)
         descriptionLabel.textColor = AppPalette.metaText
         descriptionLabel.numberOfLines = 2
         descriptionLabel.lineBreakMode = .byTruncatingTail
@@ -1148,7 +1148,7 @@ final class VideoCell: UITableViewCell {
     /// 余白は縦 4px・横 6px、角丸 2px、地は background-lighten-1 の 90%、
     /// 文字は 10.5px 太字・白の 85%。
     private func configureStatusBadge() {
-        statusBadge.font = .systemFont(ofSize: 10.5, weight: .bold)
+        statusBadge.font = .scaledSystemFont(ofSize: 10.5, weight: .bold)
         statusBadge.textColor = AppPalette.text.withAlphaComponent(0.85)
         statusBadge.backgroundColor = AppPalette.panel.withAlphaComponent(0.9)
         statusBadge.layer.cornerRadius = 2
@@ -1162,7 +1162,7 @@ final class VideoCell: UITableViewCell {
     /// 長さの表示 (サムネイル右下)。Web 版の thumbnail-duration と同じ寸法:
     /// 余白は縦 3px・横 4px、角丸 2px、地は黒の 70%、文字は 10.5px。
     private func configureDurationBadge() {
-        durationBadge.font = .systemFont(ofSize: 10.5)
+        durationBadge.font = .scaledSystemFont(ofSize: 10.5)
         durationBadge.textColor = .white
         durationBadge.backgroundColor = UIColor.black.withAlphaComponent(0.7)
         durationBadge.layer.cornerRadius = 2
@@ -1186,7 +1186,7 @@ final class VideoCell: UITableViewCell {
         protectBadge.isHidden = true
         protectBadge.translatesAutoresizingMaskIntoConstraints = false
 
-        let font = UIFont.systemFont(ofSize: 11, weight: .bold)
+        let font = UIFont.scaledSystemFont(ofSize: 11, weight: .bold)
         let attributed = NSMutableAttributedString()
         // Web 版の鍵アイコンは 14px。SF Symbol はポイント指定のため近似値。
         let symbolConfig = UIImage.SymbolConfiguration(pointSize: 11, weight: .bold)
@@ -1209,7 +1209,7 @@ final class VideoCell: UITableViewCell {
     /// 余白は縦 4px・横 6px、角丸 3px、地は primary、文字は 11px 太字・白。
     private func configureUnwatchedBadge() {
         unwatchedBadge.text = "未視聴"
-        unwatchedBadge.font = .systemFont(ofSize: 11, weight: .bold)
+        unwatchedBadge.font = .scaledSystemFont(ofSize: 11, weight: .bold)
         unwatchedBadge.textColor = .white
         unwatchedBadge.backgroundColor = AppPalette.accent
         unwatchedBadge.layer.cornerRadius = 3
@@ -1310,7 +1310,7 @@ final class VideoCell: UITableViewCell {
         let dimmed = program.isRecording || program.recorded_video.status == "AnalysisFailed"
         thumbnailView.alpha = dimmed ? 0.65 : 1
         textStackView.alpha = dimmed ? 0.65 : 1
-        // 保護中ピルはうち版だけ出す (一般版では保護の機能自体を出さない)。
+        // 保護中ピルは拡張版だけ出す (一般版では保護の機能自体を出さない)。
         let showsProtected = AppEdition.isHousehold && program.isProtected
         protectBadge.isHidden = !showsProtected
         unwatchedBadge.isHidden = !program.isUnwatched
@@ -1327,10 +1327,10 @@ final class VideoCell: UITableViewCell {
     /// 録画中の状態表示 (赤い丸 7px + 間隔 4px + 「録画中・追いかけ再生」)。
     /// 文言は本番 Web 版のカードに合わせた。
     private static let recordingStatusText: NSAttributedString = {
-        let font = UIFont.systemFont(ofSize: 10.5, weight: .bold)
+        let font = UIFont.scaledSystemFont(ofSize: 10.5, weight: .bold)
         let attributed = NSMutableAttributedString()
         attributed.append(NSAttributedString(string: "●", attributes: [
-            .font: UIFont.systemFont(ofSize: 7, weight: .bold),
+            .font: UIFont.scaledSystemFont(ofSize: 7, weight: .bold),
             .foregroundColor: AppPalette.recordingDot,
         ]))
         attributed.append(NSAttributedString(string: " 録画中・追いかけ再生", attributes: [

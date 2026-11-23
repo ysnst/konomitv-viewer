@@ -1,6 +1,13 @@
 import Foundation
 import Security
 
+extension Notification.Name {
+    /// 表示の大きさ (SettingsStore.uiScalePercent) が変わったときの通知。
+    /// タブバー (MainTabBarController) と設定画面 (SettingsViewController)
+    /// が受けて、表示を新しい大きさで組み直す。
+    static let uiScaleDidChange = Notification.Name("ViewerUIScaleDidChange")
+}
+
 /// 機密な値 (パスワード、アクセストークン) の保存先。端末のキーチェーンを使う。
 enum KeychainStore {
     private static let service = "jp.tatsuya0902.konomitv.viewer"
@@ -132,6 +139,9 @@ final class SettingsStore {
         // (dplayer-danmaku-unlimited / dplayer-danmaku-opacity に相当)。
         static let showCommentsUnlimited = "viewer_show_comments_unlimited"
         static let commentOpacity = "viewer_comment_opacity"
+        // 表示の大きさ (Web 版うち改造の ui_scale に相当)。Web 版と同じく
+        // 端末ごとに持つ設定で、デバイス間同期の対象にはしない。
+        static let uiScale = "viewer_ui_scale"
     }
 
     private enum KeychainKey {
@@ -174,6 +184,44 @@ final class SettingsStore {
     /// "-hevc" を付けて要求する (サーバー側には全画質に HEVC 版がある)。
     static let qualities = ["1080p-60fps", "1080p", "810p", "720p", "540p", "480p", "360p", "240p"]
     static let defaultQuality = "720p"
+
+    /// 画質の選択肢に出すデータ量と平均ビットレート (本家 Web 版の設定画面
+    /// (Quality.vue の QUALITY_H264 / QUALITY_H265) の固定文字列そのまま)。
+    /// 本家では計算式ではなく画質ごとに固定で持たれている値で、表示上の
+    /// Mbps から GB/h を単純計算した値とはわずかにずれるものもあるため、
+    /// ここでも文字列をそのまま写す。通信節約モード (H.265 / HEVC) の
+    /// 有無で表が切り替わり、24fps モードは本家でも表示に影響しない。
+    private static let qualityDataH264: [String: String] = [
+        "1080p-60fps": "約4.50GB/h / 平均10.0Mbps",
+        "1080p": "約4.50GB/h / 平均10.0Mbps",
+        "810p": "約2.62GB/h / 平均5.8Mbps",
+        "720p": "約2.18GB/h / 平均4.9Mbps",
+        "540p": "約1.52GB/h / 平均3.4Mbps",
+        "480p": "約1.06GB/h / 平均2.3Mbps",
+        "360p": "約0.60GB/h / 平均1.3Mbps",
+        "240p": "約0.35GB/h / 平均0.8Mbps",
+    ]
+    private static let qualityDataH265: [String: String] = [
+        "1080p-60fps": "約1.80GB/h / 平均4.0Mbps",
+        "1080p": "約1.37GB/h / 平均3.0Mbps",
+        "810p": "約1.05GB/h / 平均2.3Mbps",
+        "720p": "約0.82GB/h / 平均1.8Mbps",
+        "540p": "約0.53GB/h / 平均1.2Mbps",
+        "480p": "約0.46GB/h / 平均1.0Mbps",
+        "360p": "約0.30GB/h / 平均0.7Mbps",
+        "240p": "約0.20GB/h / 平均0.4Mbps",
+    ]
+
+    /// 画質の選択肢の表示名。本家 Web 版の設定画面と同じ
+    /// 「480p (約0.46GB/h / 平均1.0Mbps)」の形で、1080p-60fps だけは
+    /// 本家と同じく「1080p (60fps)」と出す。qualities に無い名前は
+    /// そのまま返す。
+    static func qualityDisplayName(_ base: String, dataSaverMode: Bool) -> String {
+        let table = dataSaverMode ? qualityDataH265 : qualityDataH264
+        guard let data = table[base] else { return base }
+        let name = base == "1080p-60fps" ? "1080p (60fps)" : base
+        return "\(name) (\(data))"
+    }
     /// 音声のみ再生のときに使う最小画質 (映像も一緒に来るが一番軽い)。
     static let audioOnlyQuality = "240p"
 
@@ -587,6 +635,39 @@ final class SettingsStore {
             return min(1, max(0, defaults.double(forKey: Key.commentOpacity)))
         }
         set { defaults.set(newValue, forKey: Key.commentOpacity) }
+    }
+
+    // MARK: - 表示の大きさ (端末ごとの設定)
+
+    /// 表示の大きさのプリセット (Web 版うち改造の ui_scale と同じ並び)。
+    static let uiScalePresets = [80, 90, 100, 110]
+    /// 表示の大きさの範囲 (Web 版と同じ 50% 〜 150%)。
+    static let uiScaleRange = 50...150
+
+    /// 表示の大きさ (パーセント)。画面全体の文字や共通部品の寸法に
+    /// 倍率として効く (効き方は WebControls の UIScale 側)。
+    /// Web 版の ui_scale と同じく端末ごとに持つ設定で、同期対象ではない。
+    /// 既定は 100 (従来とまったく同じ表示)。範囲外の値は範囲内に丸める。
+    /// 変更すると .uiScaleDidChange が通知され、タブバーや開き直した
+    /// 画面から順に新しい大きさで組み直される。
+    var uiScalePercent: Int {
+        get {
+            guard defaults.object(forKey: Key.uiScale) != nil else { return 100 }
+            return min(Self.uiScaleRange.upperBound,
+                       max(Self.uiScaleRange.lowerBound, defaults.integer(forKey: Key.uiScale)))
+        }
+        set {
+            let clamped = min(Self.uiScaleRange.upperBound,
+                              max(Self.uiScaleRange.lowerBound, newValue))
+            guard clamped != uiScalePercent else { return }
+            defaults.set(clamped, forKey: Key.uiScale)
+            NotificationCenter.default.post(name: .uiScaleDidChange, object: nil)
+        }
+    }
+
+    /// 表示の大きさの倍率 (100% で 1.0)。
+    var uiScaleFactor: CGFloat {
+        CGFloat(uiScalePercent) / 100
     }
 
     /// 前後の空白を取り除き、方式 (https:// 等) が無ければ https:// を補う。

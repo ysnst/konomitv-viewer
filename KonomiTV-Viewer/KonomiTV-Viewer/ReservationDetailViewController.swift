@@ -250,7 +250,7 @@ final class ReservationDetailViewController: UIViewController {
         // 題名。
         let titleLabel = UILabel()
         titleLabel.text = program.title
-        titleLabel.font = .systemFont(ofSize: 17, weight: .bold)
+        titleLabel.font = .scaledSystemFont(ofSize: 17, weight: .bold)
         titleLabel.textColor = AppPalette.text
         titleLabel.numberOfLines = 0
         contentStack.addArrangedSubview(titleLabel)
@@ -271,7 +271,7 @@ final class ReservationDetailViewController: UIViewController {
         let channelLabel = UILabel()
         let channelNumber = channel.channel_number.map { "Ch: \($0) " } ?? ""
         channelLabel.text = channelNumber + channel.name
-        channelLabel.font = .systemFont(ofSize: 13)
+        channelLabel.font = .scaledSystemFont(ofSize: 13)
         channelLabel.textColor = AppPalette.text
         channelLabel.numberOfLines = 1
         channelLabel.lineBreakMode = .byTruncatingTail
@@ -279,7 +279,7 @@ final class ReservationDetailViewController: UIViewController {
         let timeLabel = UILabel()
         timeLabel.text = TimeFormat.recordingTimeText(
             start: program.startDate, end: program.endDate, durationSeconds: program.duration)
-        timeLabel.font = .systemFont(ofSize: 12)
+        timeLabel.font = .scaledSystemFont(ofSize: 12)
         timeLabel.textColor = AppPalette.metaText
         timeLabel.numberOfLines = 0
 
@@ -296,7 +296,7 @@ final class ReservationDetailViewController: UIViewController {
         if let description = program.description, !description.isEmpty {
             let descriptionLabel = UILabel()
             descriptionLabel.text = description
-            descriptionLabel.font = .systemFont(ofSize: 13)
+            descriptionLabel.font = .scaledSystemFont(ofSize: 13)
             descriptionLabel.textColor = AppPalette.text
             descriptionLabel.numberOfLines = 0
             contentStack.addArrangedSubview(descriptionLabel)
@@ -311,7 +311,7 @@ final class ReservationDetailViewController: UIViewController {
             for genre in genres {
                 let chip = BadgeLabel()
                 chip.text = "\(genre.major) / \(genre.middle)"
-                chip.font = .systemFont(ofSize: 11)
+                chip.font = .scaledSystemFont(ofSize: 11)
                 chip.textColor = AppPalette.text
                 chip.backgroundColor = AppPalette.panel
                 chip.layer.cornerRadius = 4
@@ -343,7 +343,7 @@ final class ReservationDetailViewController: UIViewController {
         for line in statusLines {
             let label = UILabel()
             label.text = line
-            label.font = .systemFont(ofSize: 12)
+            label.font = .scaledSystemFont(ofSize: 12)
             label.textColor = AppPalette.metaText
             label.numberOfLines = 0
             contentStack.addArrangedSubview(label)
@@ -356,12 +356,12 @@ final class ReservationDetailViewController: UIViewController {
                 guard let body = detail[heading], !body.isEmpty else { continue }
                 let headingLabel = UILabel()
                 headingLabel.text = heading
-                headingLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+                headingLabel.font = .scaledSystemFont(ofSize: 13, weight: .semibold)
                 headingLabel.textColor = AppPalette.text
                 headingLabel.numberOfLines = 0
                 let bodyLabel = UILabel()
                 bodyLabel.text = body
-                bodyLabel.font = .systemFont(ofSize: 12.5)
+                bodyLabel.font = .scaledSystemFont(ofSize: 12.5)
                 bodyLabel.textColor = AppPalette.metaText
                 bodyLabel.numberOfLines = 0
                 let section = UIStackView(arrangedSubviews: [headingLabel, bodyLabel])
@@ -384,7 +384,7 @@ final class ReservationDetailViewController: UIViewController {
                 label.text = reservationLoadFailed
                     ? "予約の情報を読み込めませんでした。画面を開き直してください。"
                     : "読み込み中…"
-                label.font = .systemFont(ofSize: 13)
+                label.font = .scaledSystemFont(ofSize: 13)
                 label.textColor = AppPalette.metaText
                 label.numberOfLines = 0
                 contentStack.addArrangedSubview(label)
@@ -402,12 +402,12 @@ final class ReservationDetailViewController: UIViewController {
         statusRow.alignment = .center
         let statusTitle = UILabel()
         statusTitle.text = "予約の状態"
-        statusTitle.font = .systemFont(ofSize: 13, weight: .semibold)
+        statusTitle.font = .scaledSystemFont(ofSize: 13, weight: .semibold)
         statusTitle.textColor = AppPalette.text
         let chip = BadgeLabel()
         chip.text = ReservationStatusDisplay.text(
             isRecording: isRecording, availability: reservation.recording_availability)
-        chip.font = .systemFont(ofSize: 11, weight: .semibold)
+        chip.font = .scaledSystemFont(ofSize: 11, weight: .semibold)
         chip.textColor = .white
         chip.backgroundColor = ReservationStatusDisplay.color(
             isRecording: isRecording, availability: reservation.recording_availability)
@@ -422,7 +422,7 @@ final class ReservationDetailViewController: UIViewController {
         if !reservation.comment.isEmpty {
             let commentLabel = UILabel()
             commentLabel.text = "コメント: \(reservation.comment)"
-            commentLabel.font = .systemFont(ofSize: 12)
+            commentLabel.font = .scaledSystemFont(ofSize: 12)
             commentLabel.textColor = AppPalette.metaText
             commentLabel.numberOfLines = 0
             contentStack.addArrangedSubview(commentLabel)
@@ -430,7 +430,7 @@ final class ReservationDetailViewController: UIViewController {
         let sizeLabel = UILabel()
         sizeLabel.text = "録画予定サイズ: "
             + ReservationStatusDisplay.sizeText(bytes: reservation.estimated_recording_file_size)
-        sizeLabel.font = .systemFont(ofSize: 12)
+        sizeLabel.font = .scaledSystemFont(ofSize: 12)
         sizeLabel.textColor = AppPalette.metaText
         contentStack.addArrangedSubview(sizeLabel)
 
@@ -441,14 +441,14 @@ final class ReservationDetailViewController: UIViewController {
         toggleRow.spacing = 10
         let toggleLabel = UILabel()
         toggleLabel.text = "この予約を有効にする"
-        toggleLabel.font = .systemFont(ofSize: 14)
+        toggleLabel.font = .scaledSystemFont(ofSize: 14)
         toggleLabel.textColor = AppPalette.text
         toggleRow.addArrangedSubview(toggleLabel)
         toggleRow.addArrangedSubview(UIView())
         if isRecording {
             let recordingLabel = UILabel()
             recordingLabel.text = "録画中"
-            recordingLabel.font = .systemFont(ofSize: 13)
+            recordingLabel.font = .scaledSystemFont(ofSize: 13)
             recordingLabel.textColor = AppPalette.accent
             toggleRow.addArrangedSubview(recordingLabel)
         } else {
@@ -537,7 +537,7 @@ final class ReservationDetailViewController: UIViewController {
     ) -> RippleButton {
         let button = RippleButton()
         button.setTitle(title, for: .normal)
-        button.titleLabel?.font = .systemFont(ofSize: 14, weight: .medium)
+        button.titleLabel?.font = .scaledSystemFont(ofSize: 14, weight: .medium)
         let icon = UIImage(
             systemName: systemImage,
             withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .regular))
@@ -564,7 +564,7 @@ final class ReservationDetailViewController: UIViewController {
     private func makeBanner(text: String, color: UIColor) -> UIView {
         let label = UILabel()
         label.text = text
-        label.font = .systemFont(ofSize: 12.5)
+        label.font = .scaledSystemFont(ofSize: 12.5)
         label.textColor = AppPalette.text
         label.numberOfLines = 0
         let container = UIView()

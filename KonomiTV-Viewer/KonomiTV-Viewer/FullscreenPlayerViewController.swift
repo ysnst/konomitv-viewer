@@ -255,7 +255,7 @@ final class FullscreenPlayerViewController: UIViewController {
 
         titleLabel.text = program.title
         titleLabel.textColor = .white
-        titleLabel.font = .systemFont(ofSize: 16, weight: .bold)
+        titleLabel.font = .scaledSystemFont(ofSize: 16, weight: .bold)
         titleLabel.numberOfLines = 1
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.shadowColor = UIColor.black.withAlphaComponent(0.6)
@@ -322,18 +322,18 @@ final class FullscreenPlayerViewController: UIViewController {
         durationLabel.text = TimeFormat.hms(program.duration)
         for label in [currentTimeLabel, durationLabel] {
             label.textColor = AppPalette.text
-            label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+            label.font = .scaledMonospacedDigitSystemFont(ofSize: 12, weight: .regular)
         }
 
         qualityButton.setTitle("画質: \(quality)", for: .normal)
         qualityButton.setTitleColor(AppPalette.text, for: .normal)
-        qualityButton.titleLabel?.font = .systemFont(ofSize: 13)
+        qualityButton.titleLabel?.font = .scaledSystemFont(ofSize: 13)
         qualityButton.showsMenuAsPrimaryAction = true
         qualityButton.menu = makeQualityMenu()
 
         // 画質プロファイルの手動切り替え (再生画面の情報欄にあるのと同じ)。
         profileButton.setTitleColor(AppPalette.text, for: .normal)
-        profileButton.titleLabel?.font = .systemFont(ofSize: 13)
+        profileButton.titleLabel?.font = .scaledSystemFont(ofSize: 13)
         profileButton.addTarget(self, action: #selector(toggleProfile), for: .touchUpInside)
         updateProfileButtonTitle()
 
@@ -402,8 +402,13 @@ final class FullscreenPlayerViewController: UIViewController {
     }
 
     private func makeQualityMenu() -> UIMenu {
-        UIMenu(children: SettingsStore.qualities.map { q in
-            UIAction(title: q, state: q == quality ? .on : .off) { [weak self] _ in
+        // 選択肢の表示は設定画面と同じく、データ量と平均ビットレート付き。
+        // 数値は現在の区分 (録画=ビデオ) の通信節約モードの有無で切り替わる。
+        let dataSaver = SettingsStore.shared.dataSaverMode(
+            media: .video, profile: isCellularProfile ? .cellular : .wifi)
+        return UIMenu(children: SettingsStore.qualities.map { q in
+            UIAction(title: SettingsStore.qualityDisplayName(q, dataSaverMode: dataSaver),
+                     state: q == quality ? .on : .off) { [weak self] _ in
                 guard let self, q != self.quality else { return }
                 self.quality = q
                 self.qualityButton.setTitle("画質: \(q)", for: .normal)

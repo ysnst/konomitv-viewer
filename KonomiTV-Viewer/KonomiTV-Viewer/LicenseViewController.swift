@@ -66,11 +66,11 @@ final class LicenseViewController: SettingsDetailViewController {
 
         let nameLabel = UILabel()
         nameLabel.text = component.name
-        nameLabel.font = .systemFont(ofSize: 16)
+        nameLabel.font = .scaledSystemFont(ofSize: 16)
         nameLabel.textColor = AppPalette.text
         let licenseLabel = UILabel()
         licenseLabel.text = component.licenseName
-        licenseLabel.font = .systemFont(ofSize: 12.5)
+        licenseLabel.font = .scaledSystemFont(ofSize: 12.5)
         licenseLabel.textColor = AppPalette.secondaryText
         let textStack = UIStackView(arrangedSubviews: [nameLabel, licenseLabel])
         textStack.axis = .vertical
@@ -129,7 +129,7 @@ final class LicenseDetailViewController: SettingsDetailViewController {
         let label = UILabel()
         label.text = LicenseViewController.licenseText(resourceName: component.resourceName)
             ?? "ライセンス文書を読み込めませんでした。"
-        label.font = .systemFont(ofSize: 12.5)
+        label.font = .scaledSystemFont(ofSize: 12.5)
         label.textColor = AppPalette.metaText
         label.numberOfLines = 0
         contentStack.addArrangedSubview(label)

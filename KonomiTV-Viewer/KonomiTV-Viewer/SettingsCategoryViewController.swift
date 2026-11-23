@@ -59,7 +59,7 @@ final class SettingsCategoryViewController: UIViewController {
         headingBar.layer.shadowRadius = 7
         let headingLabel = UILabel()
         headingLabel.text = "設定"
-        headingLabel.font = .systemFont(ofSize: 22, weight: .semibold)
+        headingLabel.font = .scaledSystemFont(ofSize: 22, weight: .semibold)
         headingLabel.textColor = AppPalette.text
         // 戻るボタンは本家に合わせて矢印だけ (文字は付けない)。
         backButton.setImage(

@@ -96,7 +96,7 @@ final class LivePlayerViewController: UIViewController {
         let bar = navigationController?.navigationBar
         bar?.tintColor = AppPalette.text
         bar?.titleTextAttributes = [
-            .font: UIFont.systemFont(ofSize: 14, weight: .bold),
+            .font: UIFont.scaledSystemFont(ofSize: 14, weight: .bold),
             .foregroundColor: AppPalette.text,
         ]
     }
@@ -167,7 +167,7 @@ final class LivePlayerViewController: UIViewController {
         // (Web 版の操作帯の左側の並びに相当)。
         liveTimeLabel.text = channel.program_present.map { programTimeText($0) } ?? ""
         liveTimeLabel.textColor = AppPalette.text
-        liveTimeLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        liveTimeLabel.font = .scaledSystemFont(ofSize: 13, weight: .medium)
         let controlsRow = UIStackView(arrangedSubviews: [liveTimeLabel, UIView()])
         controlsRow.axis = .horizontal
         controlsRow.spacing = 10
@@ -189,7 +189,7 @@ final class LivePlayerViewController: UIViewController {
         view.addSubview(scrollView)
 
         messageLabel.textColor = .systemYellow
-        messageLabel.font = .systemFont(ofSize: 12.5)
+        messageLabel.font = .scaledSystemFont(ofSize: 12.5)
         messageLabel.numberOfLines = 0
         messageLabel.isHidden = true
 
@@ -200,11 +200,11 @@ final class LivePlayerViewController: UIViewController {
         logoImageView.layer.cornerRadius = 3
         channelNumberLabel.text = channel.channel_number.map { "Ch: \($0)" } ?? "Ch: --"
         channelNumberLabel.textColor = AppPalette.text
-        channelNumberLabel.font = .systemFont(ofSize: 16.5)
+        channelNumberLabel.font = .scaledSystemFont(ofSize: 16.5)
         channelNumberLabel.setContentHuggingPriority(.required, for: .horizontal)
         channelNameLabel.text = channel.name
         channelNameLabel.textColor = AppPalette.text
-        channelNameLabel.font = .systemFont(ofSize: 18)
+        channelNameLabel.font = .scaledSystemFont(ofSize: 18)
         channelNameLabel.numberOfLines = 1
         channelNameLabel.lineBreakMode = .byTruncatingTail
         let broadcasterRow = UIStackView(arrangedSubviews: [logoImageView, channelNumberLabel, channelNameLabel])
@@ -221,20 +221,20 @@ final class LivePlayerViewController: UIViewController {
         // 番組名: パネルの見出し (19pt 太字)。
         infoTitleLabel.text = channel.program_present?.title
         infoTitleLabel.textColor = AppPalette.text
-        infoTitleLabel.font = .systemFont(ofSize: 19, weight: .bold)
+        infoTitleLabel.font = .scaledSystemFont(ofSize: 19, weight: .bold)
         infoTitleLabel.numberOfLines = 0
 
         // 番組の時刻: 14pt、色は text-darken-1。
         infoTimeLabel.text = channel.program_present.map { programTimeText($0) } ?? ""
         infoTimeLabel.textColor = AppPalette.metaText
-        infoTimeLabel.font = .systemFont(ofSize: 14)
+        infoTimeLabel.font = .scaledSystemFont(ofSize: 14)
 
         // 説明: 12pt、行間 168% 相当、色は text-darken-1。
         if let description = channel.program_present?.description, !description.isEmpty {
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineSpacing = 12 * 0.68
             descriptionLabel.attributedText = NSAttributedString(string: description, attributes: [
-                .font: UIFont.systemFont(ofSize: 12),
+                .font: UIFont.scaledSystemFont(ofSize: 12),
                 .foregroundColor: AppPalette.metaText,
                 .paragraphStyle: paragraph,
             ])
@@ -247,20 +247,20 @@ final class LivePlayerViewController: UIViewController {
         statusParts.append("視聴数: \(channel.viewer_count.map(String.init) ?? "--")")
         statusLabel.text = statusParts.joined(separator: "　")
         statusLabel.textColor = AppPalette.metaText
-        statusLabel.font = .systemFont(ofSize: 12.5)
+        statusLabel.font = .scaledSystemFont(ofSize: 12.5)
         statusLabel.numberOfLines = 0
 
         // 次の番組 (NEXT): 見出し + 題名 + 時刻。
         nextHeaderLabel.text = "NEXT"
         nextHeaderLabel.textColor = AppPalette.text
-        nextHeaderLabel.font = .systemFont(ofSize: 12.5, weight: .bold)
+        nextHeaderLabel.font = .scaledSystemFont(ofSize: 12.5, weight: .bold)
         nextTitleLabel.text = channel.program_following?.title
         nextTitleLabel.textColor = AppPalette.text
-        nextTitleLabel.font = .systemFont(ofSize: 13.5)
+        nextTitleLabel.font = .scaledSystemFont(ofSize: 13.5)
         nextTitleLabel.numberOfLines = 0
         nextTimeLabel.text = channel.program_following.map { programTimeText($0) } ?? ""
         nextTimeLabel.textColor = AppPalette.metaText
-        nextTimeLabel.font = .systemFont(ofSize: 12)
+        nextTimeLabel.font = .scaledSystemFont(ofSize: 12)
         let hasNext = channel.program_following != nil
         for label in [nextHeaderLabel, nextTitleLabel, nextTimeLabel] {
             label.isHidden = !hasNext
@@ -562,8 +562,12 @@ final class LivePlayerViewController: UIViewController {
     }
 
     private func makeQualityMenu() -> UIMenu {
-        UIMenu(children: SettingsStore.qualities.map { q in
-            UIAction(title: q, state: q == quality ? .on : .off) { [weak self] _ in
+        // 選択肢の表示は設定画面と同じく、データ量と平均ビットレート付き。
+        // 数値は現在の区分の通信節約モードの有無で切り替わる。
+        let dataSaver = SettingsStore.shared.dataSaverMode(media: .tv, profile: profile)
+        return UIMenu(children: SettingsStore.qualities.map { q in
+            UIAction(title: SettingsStore.qualityDisplayName(q, dataSaverMode: dataSaver),
+                     state: q == quality ? .on : .off) { [weak self] _ in
                 self?.userSwitchQuality(q)
             }
         })
@@ -848,7 +852,7 @@ final class LiveFullscreenViewController: UIViewController {
 
         nameLabel.text = channelName
         nameLabel.textColor = .white
-        nameLabel.font = .systemFont(ofSize: 16, weight: .bold)
+        nameLabel.font = .scaledSystemFont(ofSize: 16, weight: .bold)
         nameLabel.numberOfLines = 1
         nameLabel.lineBreakMode = .byTruncatingTail
         nameLabel.shadowColor = UIColor.black.withAlphaComponent(0.6)

@@ -18,7 +18,7 @@ final class ComingSoonViewController: UIViewController {
         view.backgroundColor = AppPalette.background
         let label = UILabel()
         label.text = "準備中です"
-        label.font = .systemFont(ofSize: 16)
+        label.font = .scaledSystemFont(ofSize: 16)
         label.textColor = AppPalette.metaText
         label.textAlignment = .center
         label.translatesAutoresizingMaskIntoConstraints = false

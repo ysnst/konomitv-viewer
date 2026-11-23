@@ -76,7 +76,7 @@ final class MyPageViewController: UIViewController {
         // ブラウザの見出し既定に近い semibold で近似する (設定画面の見出し帯と同じ)。
         let heading = UILabel()
         heading.text = "マイページ"
-        heading.font = .systemFont(ofSize: 24, weight: .semibold)
+        heading.font = .scaledSystemFont(ofSize: 24, weight: .semibold)
         heading.textColor = AppPalette.text
 
         let settingsButton = makeEntryButton(
@@ -184,12 +184,12 @@ final class MyPageViewController: UIViewController {
 
         // 名前 (太字 20px、1行、はみ出たら省略) と管理者バッジ (45x24px、
         // 角丸 4px、地は secondary、文字 11.5px)。
-        nameLabel.font = .systemFont(ofSize: 20, weight: .bold)
+        nameLabel.font = .scaledSystemFont(ofSize: 20, weight: .bold)
         nameLabel.textColor = AppPalette.text
         nameLabel.numberOfLines = 1
         nameLabel.lineBreakMode = .byTruncatingTail
         adminBadge.text = "管理者"
-        adminBadge.font = .systemFont(ofSize: 11.5, weight: .medium)
+        adminBadge.font = .scaledSystemFont(ofSize: 11.5, weight: .medium)
         adminBadge.textColor = AppPalette.text
         adminBadge.textAlignment = .center
         adminBadge.backgroundColor = AppPalette.secondary
@@ -203,7 +203,7 @@ final class MyPageViewController: UIViewController {
         nameRow.spacing = 10
 
         // 「User ID: 番号」(14.5px、text-darken-1、名前の 2px 下)。
-        idLabel.font = .systemFont(ofSize: 14.5)
+        idLabel.font = .scaledSystemFont(ofSize: 14.5)
         idLabel.textColor = AppPalette.metaText
 
         let infoStack = UIStackView(arrangedSubviews: [nameRow, idLabel])
@@ -370,7 +370,7 @@ final class EntryButtonView: UIControl {
         iconView.contentMode = .scaleAspectFit
         iconView.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.text = title
-        titleLabel.font = .systemFont(ofSize: 16)
+        titleLabel.font = .scaledSystemFont(ofSize: 16)
         titleLabel.textColor = AppPalette.text
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         backgroundView.addSubview(iconView)

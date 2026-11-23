@@ -79,11 +79,17 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // (各画面の selectedIndex の指定はこの番号に合わせること)。
         // 起動時に最初に開くタブは、今までと同じ録画タブのままにする
         // (並びだけ変え、起動時の開き方は変えない)。
+        // makeRoot は、表示の大きさが変わったときに先頭画面を作り直す
+        // ための手順 (上の初期表示と同じ画面を新規に作る)。
         tabBarController.setTabs([
-            (controller: live, title: "テレビをみる", image: liveImage),
-            (controller: videos, title: "ビデオをみる", image: videosImage),
-            (controller: reservations, title: "録画予約", image: reservationsImage),
-            (controller: mypage, title: "マイページ", image: mypageImage),
+            (controller: live, title: "テレビをみる", image: liveImage,
+             makeRoot: { LiveListViewController() }),
+            (controller: videos, title: "ビデオをみる", image: videosImage,
+             makeRoot: { VideoListViewController() }),
+            (controller: reservations, title: "録画予約", image: reservationsImage,
+             makeRoot: { ReservationListViewController() }),
+            (controller: mypage, title: "マイページ", image: mypageImage,
+             makeRoot: { MyPageViewController() }),
         ], initialIndex: 1)
         return tabBarController
     }

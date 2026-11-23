@@ -172,7 +172,7 @@ final class CommentMuteSettingsViewController: SettingsDetailViewController {
                              deleteAction: Selector, index: Int) -> UIView {
         let label = UILabel()
         label.text = text
-        label.font = .systemFont(ofSize: 15)
+        label.font = .scaledSystemFont(ofSize: 15)
         label.textColor = AppPalette.text
         label.numberOfLines = 0
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -181,7 +181,7 @@ final class CommentMuteSettingsViewController: SettingsDetailViewController {
         if let subText {
             let sub = UILabel()
             sub.text = subText
-            sub.font = .systemFont(ofSize: 12)
+            sub.font = .scaledSystemFont(ofSize: 12)
             sub.textColor = AppPalette.metaText
             sub.setContentCompressionResistancePriority(.required, for: .horizontal)
             views.append(sub)
@@ -189,7 +189,7 @@ final class CommentMuteSettingsViewController: SettingsDetailViewController {
         let deleteButton = RippleButton()
         deleteButton.setTitle("削除", for: .normal)
         deleteButton.setTitleColor(AppPalette.text, for: .normal)
-        deleteButton.titleLabel?.font = .systemFont(ofSize: 14)
+        deleteButton.titleLabel?.font = .scaledSystemFont(ofSize: 14)
         deleteButton.backgroundColor = AppPalette.pressed
         deleteButton.layer.cornerRadius = 4
         deleteButton.tag = index

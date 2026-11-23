@@ -383,7 +383,7 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
     /// 中の部品はタップを受けず、ボタン自身が受ける (ジャンル色の
     /// 選択ボタンと同じ組み方)。
     private func setupSelectButtonContent(_ button: UIButton, label: UILabel) {
-        label.font = .systemFont(ofSize: 14)
+        label.font = .scaledSystemFont(ofSize: 14)
         label.textColor = AppPalette.text
         label.translatesAutoresizingMaskIntoConstraints = false
         button.addSubview(label)
@@ -728,6 +728,9 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
             let displayDate = (use28 && hour < 4)
                 ? (calendar.date(byAdding: .day, value: -1, to: hourDate) ?? hourDate) : hourDate
             // 日付の印は 4時間ごと (0/4/8/12/16/20時) に出す。
+            // なお、番組表の中の文字 (時刻の帯・局名・番組の枠) は、
+            // 升目の寸法 (番組表の表示設定の幅・密度) と一体のため、
+            // 表示の大きさ (UIScale) の対象外として元の大きさのままにする。
             if [0, 4, 8, 12, 16, 20].contains(hour) {
                 let dateLabel = UILabel(frame: CGRect(x: 1, y: labelY, width: timeScaleWidth - 2, height: 14))
                 let formatter = DateFormatter()
@@ -934,7 +937,7 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
         let doneButton = RippleButton()
         doneButton.setTitle("決定", for: .normal)
         doneButton.setTitleColor(AppPalette.accent, for: .normal)
-        doneButton.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
+        doneButton.titleLabel?.font = .scaledSystemFont(ofSize: 17, weight: .semibold)
         doneButton.translatesAutoresizingMaskIntoConstraints = false
         pickerController.view.addSubview(doneButton)
         NSLayoutConstraint.activate([

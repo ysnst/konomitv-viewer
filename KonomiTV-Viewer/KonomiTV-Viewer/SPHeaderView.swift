@@ -8,8 +8,9 @@ import UIKit
 /// Web 版では右端に検索ボタンも出るが、このアプリには検索の機能が無いため置いていない。
 /// ロゴは Web 版ではテレビ画面 (/tv/) へのリンクなので、タップで生放送タブへ移る。
 final class SPHeaderView: UIView {
-    /// Web 版の .header の高さ (48px)。
-    static let height: CGFloat = 48
+    /// Web 版の .header の高さ (48px)。表示の大きさに合わせて拡縮する
+    /// (ロゴ自体の大きさは Web 版の指定どおり 21px のまま)。
+    static var height: CGFloat { UIScale.value(48) }
 
     /// ロゴがタップされたときの動作。呼び出し側 (各一覧画面) が生放送タブへの
     /// 切り替えを入れる。

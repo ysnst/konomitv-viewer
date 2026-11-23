@@ -75,7 +75,7 @@ class SettingsDetailViewController: UIViewController {
         headingBar.layer.shadowRadius = 7
         let headingLabel = UILabel()
         headingLabel.text = headingTitle
-        headingLabel.font = .systemFont(ofSize: 22, weight: .semibold)
+        headingLabel.font = .scaledSystemFont(ofSize: 22, weight: .semibold)
         headingLabel.textColor = AppPalette.text
         backButton.setImage(
             UIImage(systemName: "chevron.left")?
@@ -129,7 +129,7 @@ class SettingsDetailViewController: UIViewController {
     func makeItemHeading(_ text: String) -> UILabel {
         let label = UILabel()
         label.text = text
-        label.font = .systemFont(ofSize: 16.5)
+        label.font = .scaledSystemFont(ofSize: 16.5)
         label.textColor = AppPalette.text
         label.numberOfLines = 0
         return label
@@ -138,7 +138,7 @@ class SettingsDetailViewController: UIViewController {
     /// 説明文 (13.5px、text-darken-1、行の高さ 1.6 倍)。
     func makeDescriptionLabel(_ text: String) -> UILabel {
         let label = UILabel()
-        label.font = .systemFont(ofSize: 13.5)
+        label.font = .scaledSystemFont(ofSize: 13.5)
         label.textColor = AppPalette.metaText
         label.numberOfLines = 0
         let style = NSMutableParagraphStyle()
@@ -165,12 +165,14 @@ class SettingsDetailViewController: UIViewController {
     }
 
     /// 「デバイス間同期無効」の印の幅 (全項目で共通)。
-    private static let syncDisabledBadgeWidth: CGFloat = {
-        let font = UIFont.systemFont(ofSize: 11)
+    /// 表示の大きさに合わせて文字の幅も変わるため、固定値にせず
+    /// その都度測り直す。
+    private static var syncDisabledBadgeWidth: CGFloat {
+        let font = UIFont.scaledSystemFont(ofSize: 11)
         let textWidth = ("デバイス間同期無効" as NSString)
             .size(withAttributes: [.font: font]).width
         return ceil(textWidth) + 8
-    }()
+    }
 
     /// 「デバイス間同期無効」の印 (Web 版 Base.vue の作り: 地は
     /// background-lighten-2、文字 11px、角丸 4px、余白は上下 2px・
@@ -179,7 +181,7 @@ class SettingsDetailViewController: UIViewController {
     func makeSyncDisabledBadge() -> UIView {
         let label = UILabel()
         label.text = "デバイス間同期無効"
-        label.font = .systemFont(ofSize: 11)
+        label.font = .scaledSystemFont(ofSize: 11)
         label.textColor = AppPalette.text
         label.textAlignment = .center
         label.translatesAutoresizingMaskIntoConstraints = false
@@ -249,7 +251,7 @@ class SettingsDetailViewController: UIViewController {
         button.layer.borderColor = AppPalette.fieldBorder.cgColor
         button.layer.cornerRadius = 4
         button.setTitleColor(AppPalette.text, for: .normal)
-        button.titleLabel?.font = .systemFont(ofSize: 16)
+        button.titleLabel?.font = .scaledSystemFont(ofSize: 16)
         // 右の余白は、右端に留める矢印の分 (12 + 12 + 8) を空ける。
         button.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 32)
         button.heightAnchor.constraint(equalToConstant: 50).isActive = true
@@ -285,7 +287,7 @@ class SettingsDetailViewController: UIViewController {
     func styleActionButton(_ button: UIButton) {
         button.backgroundColor = AppPalette.pressed
         button.setTitleColor(AppPalette.text, for: .normal)
-        button.titleLabel?.font = .systemFont(ofSize: 15.5)
+        button.titleLabel?.font = .scaledSystemFont(ofSize: 15.5)
         button.layer.cornerRadius = 4
         button.heightAnchor.constraint(equalToConstant: 45).isActive = true
     }
@@ -298,7 +300,7 @@ class SettingsDetailViewController: UIViewController {
         field.layer.borderColor = AppPalette.fieldBorder.cgColor
         field.layer.cornerRadius = 4
         field.textColor = AppPalette.text
-        field.font = .systemFont(ofSize: 16)
+        field.font = .scaledSystemFont(ofSize: 16)
         field.tintColor = AppPalette.accent
         field.attributedPlaceholder = NSAttributedString(
             string: placeholder,
@@ -315,7 +317,7 @@ class SettingsDetailViewController: UIViewController {
         slider.minimumTrackTintColor = AppPalette.accent
         slider.maximumTrackTintColor = AppPalette.pressed
         slider.thumbTintColor = AppPalette.accent
-        valueLabel.font = .systemFont(ofSize: 14)
+        valueLabel.font = .scaledSystemFont(ofSize: 14)
         valueLabel.textColor = AppPalette.text
         valueLabel.textAlignment = .right
         valueLabel.setContentCompressionResistancePriority(.required, for: .horizontal)

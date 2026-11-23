@@ -27,9 +27,9 @@ jobs:
     # 解凍したときに日本時間とずれて見えるのを防ぐため、ジョブ全体を日本時間にする。
     env:
       TZ: Asia/Tokyo
-      # 版分け (一般版 / うち版)。リポジトリ変数 APP_EDITION で切り替える。
+      # 版分け (一般版 / 拡張版)。リポジトリ変数 APP_EDITION で切り替える。
       # 公開リポでは "general" を設定し、非公開リポ (原本) では未設定のまま
-      # うち版 (household) になる。アプリ側の判定は AppEdition.swift。
+      # 拡張版 (household) になる。アプリ側の判定は AppEdition.swift。
       EDITION: ${{ vars.APP_EDITION || 'household' }}
     steps:
       - name: Checkout
@@ -113,7 +113,7 @@ jobs:
             EDITION_LABEL="一般版"
           else
             TITLE="最新の試作用IPA"
-            EDITION_LABEL="うち版 (全部入り)"
+            EDITION_LABEL="拡張版 (全部入り)"
           fi
           NOTES="版番号: 0.${{ github.run_number }}
           版の種類: $EDITION_LABEL

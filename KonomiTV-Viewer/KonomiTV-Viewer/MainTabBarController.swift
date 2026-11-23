@@ -25,13 +25,19 @@ final class MainTabBarController: UIViewController {
     /// バーの中身の高さ。Vuetify の v-bottom-navigation の標準高さ 56px を
     /// そのまま使う。バーの実高さは、これに下端のセーフエリア
     /// (ホームインジケータ分) を加えたものになる。
-    private static let barContentHeight: CGFloat = 56
+    /// 表示の大きさに合わせて拡縮するため、固定値ではなくその都度求める。
+    private static var barContentHeight: CGFloat { UIScale.value(56) }
 
-    /// タブ1つ分。中身のナビゲーション画面と、バーに出す題名・アイコン。
+    /// タブ1つ分。中身のナビゲーション画面と、バーに出す題名・アイコン、
+    /// 先頭画面を作り直すための手順。表示の大きさが変わったとき、
+    /// 先頭画面だけのタブは作り直して新しい大きさを反映する。
     private struct Tab {
         let controller: UINavigationController
         let title: String?
         let image: UIImage?
+        let makeRoot: () -> UIViewController
+        /// 現在の先頭画面が作られた時点の表示の大きさ (パーセント)。
+        var builtScalePercent: Int
     }
 
     private var tabs: [Tab] = []
@@ -39,6 +45,7 @@ final class MainTabBarController: UIViewController {
 
     private let customBar = UIView()
     private var barHeightConstraint: NSLayoutConstraint?
+    private var itemsStackHeightConstraint: NSLayoutConstraint?
     private var itemsStack: UIStackView?
     private var itemViews: [TabBarItemView] = []
 
@@ -62,11 +69,18 @@ final class MainTabBarController: UIViewController {
 
     /// タブの並びと、起動時に開くタブを設定する。view が読み込まれる前に
     /// 呼ばれる前提 (SceneDelegate から生成直後に呼ぶ)。
+    /// makeRoot は、表示の大きさが変わったときに先頭画面を作り直すための
+    /// 手順 (初期表示の先頭画面と同じものを新規に作る)。
     func setTabs(
-        _ tabs: [(controller: UINavigationController, title: String?, image: UIImage?)],
+        _ tabs: [(controller: UINavigationController, title: String?, image: UIImage?,
+                  makeRoot: () -> UIViewController)],
         initialIndex: Int
     ) {
-        self.tabs = tabs.map { Tab(controller: $0.controller, title: $0.title, image: $0.image) }
+        let currentScale = SettingsStore.shared.uiScalePercent
+        self.tabs = tabs.map {
+            Tab(controller: $0.controller, title: $0.title, image: $0.image,
+                makeRoot: $0.makeRoot, builtScalePercent: currentScale)
+        }
         selectedIndex = initialIndex
     }
 
@@ -85,6 +99,44 @@ final class MainTabBarController: UIViewController {
         showSelectedTab()
         setUpCustomBar()
         refreshBarState()
+        // 表示の大きさが変わったら、バーを作り直し、先頭画面だけのタブは
+        // 先頭画面も作り直す (画面が積まれているタブは、一番上まで
+        // 戻った時点で作り直す)。
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(uiScaleDidChange),
+            name: .uiScaleDidChange, object: nil)
+    }
+
+    /// 表示の大きさの変更を受けたときの追随。
+    /// バーの項目はその場で作り直し、各タブは作り直し可能な状態
+    /// (先頭画面だけ) のものから反映する。
+    @objc private func uiScaleDidChange() {
+        for itemView in itemViews {
+            itemView.removeFromSuperview()
+        }
+        itemViews = []
+        rebuildItemsIfNeeded()
+        refreshBarState()
+        for index in tabs.indices {
+            rebuildTabRootIfNeeded(index: index)
+        }
+        view.setNeedsLayout()
+    }
+
+    /// 表示の大きさが変わっていたら、そのタブの先頭画面を作り直す。
+    /// 画面が積まれている (再生画面などを開いている) 間は触らず、
+    /// 一番上まで戻った時点で作り直す (呼び出し側の didShow など)。
+    private func rebuildTabRootIfNeeded(index: Int) {
+        guard tabs.indices.contains(index) else { return }
+        let currentScale = SettingsStore.shared.uiScalePercent
+        guard tabs[index].builtScalePercent != currentScale else { return }
+        let navigation = tabs[index].controller
+        guard navigation.viewControllers.count == 1 else { return }
+        navigation.setViewControllers([tabs[index].makeRoot()], animated: false)
+        tabs[index].builtScalePercent = currentScale
+        if index == selectedIndex {
+            refreshBarState()
+        }
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -108,6 +160,12 @@ final class MainTabBarController: UIViewController {
         if let constraint = barHeightConstraint, abs(constraint.constant - target) > 0.5 {
             constraint.constant = target
         }
+        // 項目の並びの高さも、バーの中身の高さに合わせておく
+        // (表示の大きさが変わったときに追随させるため)。
+        if let constraint = itemsStackHeightConstraint,
+           abs(constraint.constant - Self.barContentHeight) > 0.5 {
+            constraint.constant = Self.barContentHeight
+        }
         // 子画面が後から重なっても、バーが最前面に残るようにする。
         view.bringSubviewToFront(customBar)
         rebuildItemsIfNeeded()
@@ -127,6 +185,9 @@ final class MainTabBarController: UIViewController {
     /// tabs に残るため、積まれた画面やスクロール位置は保持される
     /// (旧 UITabBarController の切り替えと同じ)。
     private func showSelectedTab() {
+        // 表示する前に、表示の大きさの変更が残っていれば先頭画面を
+        // 作り直しておく (画面が積まれているタブは戻った時点で直す)。
+        rebuildTabRootIfNeeded(index: selectedIndex)
         guard isViewLoaded,
               let next = selectedTabViewController,
               currentTabController !== next else {
@@ -183,6 +244,8 @@ final class MainTabBarController: UIViewController {
 
         barHeightConstraint = customBar.heightAnchor.constraint(
             equalToConstant: Self.barContentHeight + systemBottomSafeAreaInset)
+        itemsStackHeightConstraint = itemsStack.heightAnchor.constraint(
+            equalToConstant: Self.barContentHeight)
         NSLayoutConstraint.activate([
             customBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             customBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -195,7 +258,7 @@ final class MainTabBarController: UIViewController {
             itemsStack.topAnchor.constraint(equalTo: customBar.topAnchor),
             itemsStack.leadingAnchor.constraint(equalTo: customBar.leadingAnchor, constant: 8),
             itemsStack.trailingAnchor.constraint(equalTo: customBar.trailingAnchor, constant: -8),
-            itemsStack.heightAnchor.constraint(equalToConstant: Self.barContentHeight),
+            itemsStackHeightConstraint!,
         ])
 
         // 項目は setTabs で渡された題名とアイコンから作る。
@@ -296,6 +359,12 @@ extension MainTabBarController: UINavigationControllerDelegate {
         didShow viewController: UIViewController,
         animated: Bool
     ) {
+        // 一番上の画面まで戻ってきたら、残っていた表示の大きさの
+        // 変更をそのタブの先頭画面に反映する。
+        if navigationController.viewControllers.count == 1,
+           let index = tabs.firstIndex(where: { $0.controller === navigationController }) {
+            rebuildTabRootIfNeeded(index: index)
+        }
         refreshBarState()
     }
 }
@@ -340,7 +409,7 @@ private final class TabBarItemView: UIControl {
         iconView.translatesAutoresizingMaskIntoConstraints = false
 
         titleLabel.text = title
-        titleLabel.font = .systemFont(ofSize: 10.5, weight: .bold)
+        titleLabel.font = .scaledSystemFont(ofSize: 10.5, weight: .bold)
         titleLabel.textAlignment = .center
 
         let stack = UIStackView(arrangedSubviews: [iconView, titleLabel])
@@ -353,8 +422,8 @@ private final class TabBarItemView: UIControl {
         addSubview(stack)
 
         NSLayoutConstraint.activate([
-            iconView.widthAnchor.constraint(equalToConstant: 30),
-            iconView.heightAnchor.constraint(equalToConstant: 30),
+            iconView.widthAnchor.constraint(equalToConstant: UIScale.value(30)),
+            iconView.heightAnchor.constraint(equalToConstant: UIScale.value(30)),
             stack.centerXAnchor.constraint(equalTo: centerXAnchor),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])

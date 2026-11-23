@@ -37,18 +37,18 @@ final class ReservationListViewController: UIViewController, UITableViewDataSour
         // 見出し行: 「録画予約一覧」+「○件」、右端に並び替えボタン。
         let titleLabel = UILabel()
         titleLabel.text = "録画予約一覧"
-        titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+        titleLabel.font = .scaledSystemFont(ofSize: 17, weight: .semibold)
         titleLabel.textColor = AppPalette.text
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         listHeaderView.addSubview(titleLabel)
 
-        countLabel.font = .systemFont(ofSize: 13)
+        countLabel.font = .scaledSystemFont(ofSize: 13)
         countLabel.textColor = AppPalette.metaText
         countLabel.translatesAutoresizingMaskIntoConstraints = false
         listHeaderView.addSubview(countLabel)
 
         sortButton.setTitle("放送が近い順", for: .normal)
-        sortButton.titleLabel?.font = .systemFont(ofSize: 13)
+        sortButton.titleLabel?.font = .scaledSystemFont(ofSize: 13)
         sortButton.setTitleColor(AppPalette.text, for: .normal)
         sortButton.setImage(
             UIImage(systemName: "chevron.down")?
@@ -102,7 +102,7 @@ final class ReservationListViewController: UIViewController, UITableViewDataSour
         tableView.refreshControl = refreshControl
 
         // 中央の状態表示 (読み込み中・案内・空・失敗)。
-        statusLabel.font = .systemFont(ofSize: 14)
+        statusLabel.font = .scaledSystemFont(ofSize: 14)
         statusLabel.textColor = AppPalette.metaText
         statusLabel.textAlignment = .center
         statusLabel.numberOfLines = 0
@@ -371,14 +371,14 @@ final class ReservationCell: UITableViewCell {
         priorityBox.layer.borderWidth = 1
         priorityBox.layer.borderColor = AppPalette.outlineBorder.cgColor
         priorityBox.translatesAutoresizingMaskIntoConstraints = false
-        priorityLabel.font = .systemFont(ofSize: 15, weight: .bold)
+        priorityLabel.font = .scaledSystemFont(ofSize: 15, weight: .bold)
         priorityLabel.textColor = AppPalette.text
         priorityLabel.textAlignment = .center
         priorityLabel.translatesAutoresizingMaskIntoConstraints = false
         priorityBox.addSubview(priorityLabel)
         let priorityCaption = UILabel()
         priorityCaption.text = "優先度"
-        priorityCaption.font = .systemFont(ofSize: 9.5)
+        priorityCaption.font = .scaledSystemFont(ofSize: 9.5)
         priorityCaption.textColor = AppPalette.metaText
         priorityCaption.textAlignment = .center
         priorityCaption.translatesAutoresizingMaskIntoConstraints = false
@@ -388,7 +388,7 @@ final class ReservationCell: UITableViewCell {
         // 押している間の輪も小さい (28px)。
         toggle.haloDiameter = 28
         toggle.addTarget(self, action: #selector(toggleChanged), for: .valueChanged)
-        toggleStateLabel.font = .systemFont(ofSize: 10)
+        toggleStateLabel.font = .scaledSystemFont(ofSize: 10)
         toggleStateLabel.textColor = AppPalette.metaText
         toggleStateLabel.textAlignment = .center
         toggleStateLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -397,7 +397,7 @@ final class ReservationCell: UITableViewCell {
         recordingDot.layer.cornerRadius = 5
         recordingDot.translatesAutoresizingMaskIntoConstraints = false
         recordingLabel.text = "録画中"
-        recordingLabel.font = .systemFont(ofSize: 10)
+        recordingLabel.font = .scaledSystemFont(ofSize: 10)
         recordingLabel.textColor = AppPalette.metaText
         recordingLabel.textAlignment = .center
         recordingLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -426,12 +426,12 @@ final class ReservationCell: UITableViewCell {
         cardView.addSubview(leftColumn)
 
         // 右の本文。
-        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.font = .scaledSystemFont(ofSize: 13, weight: .semibold)
         titleLabel.textColor = AppPalette.text
         titleLabel.numberOfLines = 2
         titleLabel.lineBreakMode = .byTruncatingTail
 
-        statusChip.font = .systemFont(ofSize: 10.5, weight: .semibold)
+        statusChip.font = .scaledSystemFont(ofSize: 10.5, weight: .semibold)
         statusChip.textColor = .white
         statusChip.layer.cornerRadius = 4
         statusChip.clipsToBounds = true
@@ -447,7 +447,7 @@ final class ReservationCell: UITableViewCell {
         logoView.layer.cornerRadius = 2
         logoView.isHidden = true
         logoView.translatesAutoresizingMaskIntoConstraints = false
-        channelLabel.font = .systemFont(ofSize: 11.5)
+        channelLabel.font = .scaledSystemFont(ofSize: 11.5)
         channelLabel.textColor = AppPalette.metaText
         channelLabel.numberOfLines = 1
         channelLabel.lineBreakMode = .byTruncatingTail
@@ -457,21 +457,21 @@ final class ReservationCell: UITableViewCell {
         metaRow.spacing = 8
         metaRow.translatesAutoresizingMaskIntoConstraints = false
 
-        timeLabel.font = .systemFont(ofSize: 11)
+        timeLabel.font = .scaledSystemFont(ofSize: 11)
         timeLabel.textColor = AppPalette.metaText
         timeLabel.numberOfLines = 1
         timeLabel.lineBreakMode = .byTruncatingTail
 
-        descriptionLabel.font = .systemFont(ofSize: 10)
+        descriptionLabel.font = .scaledSystemFont(ofSize: 10)
         descriptionLabel.textColor = AppPalette.metaText
         descriptionLabel.numberOfLines = 2
         descriptionLabel.lineBreakMode = .byTruncatingTail
 
-        commentLabel.font = .systemFont(ofSize: 10.5)
+        commentLabel.font = .scaledSystemFont(ofSize: 10.5)
         commentLabel.textColor = AppPalette.metaText
         commentLabel.numberOfLines = 1
         commentLabel.lineBreakMode = .byTruncatingTail
-        sizeLabel.font = .systemFont(ofSize: 10.5)
+        sizeLabel.font = .scaledSystemFont(ofSize: 10.5)
         sizeLabel.textColor = AppPalette.metaText
         sizeLabel.textAlignment = .right
         let bottomRow = UIStackView(arrangedSubviews: [commentLabel, sizeLabel])

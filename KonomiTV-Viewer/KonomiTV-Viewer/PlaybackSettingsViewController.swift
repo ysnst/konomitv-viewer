@@ -66,7 +66,7 @@ final class PlaybackSettingsViewController: UIViewController {
     private func makeItemHeading(_ text: String) -> UILabel {
         let label = UILabel()
         label.text = text
-        label.font = .systemFont(ofSize: 16.5)
+        label.font = .scaledSystemFont(ofSize: 16.5)
         label.textColor = AppPalette.text
         label.numberOfLines = 0
         return label
@@ -75,7 +75,7 @@ final class PlaybackSettingsViewController: UIViewController {
     /// 説明文 (13.5px、text-darken-1、行の高さ 1.6 倍)。
     private func makeDescriptionLabel(_ text: String) -> UILabel {
         let label = UILabel()
-        label.font = .systemFont(ofSize: 13.5)
+        label.font = .scaledSystemFont(ofSize: 13.5)
         label.textColor = AppPalette.metaText
         label.numberOfLines = 0
         let style = NSMutableParagraphStyle()
@@ -121,7 +121,7 @@ final class PlaybackSettingsViewController: UIViewController {
     /// 固定幅にする。項目ごとに長さが変わらないようにするための決め打ちで、
     /// フォントの大きさから都度測るので、文字が切れる心配は無い。
     private static let syncDisabledBadgeWidth: CGFloat = {
-        let font = UIFont.systemFont(ofSize: 11)
+        let font = UIFont.scaledSystemFont(ofSize: 11)
         let textWidth = ("デバイス間同期無効" as NSString)
             .size(withAttributes: [.font: font]).width
         return ceil(textWidth) + 8
@@ -137,7 +137,7 @@ final class PlaybackSettingsViewController: UIViewController {
     private func makeSyncDisabledBadge() -> UIView {
         let label = UILabel()
         label.text = "デバイス間同期無効"
-        label.font = .systemFont(ofSize: 11)
+        label.font = .scaledSystemFont(ofSize: 11)
         label.textColor = AppPalette.text
         label.textAlignment = .center
         label.translatesAutoresizingMaskIntoConstraints = false
@@ -171,7 +171,7 @@ final class PlaybackSettingsViewController: UIViewController {
         iconView.heightAnchor.constraint(equalToConstant: 22).isActive = true
         let label = UILabel()
         label.text = title
-        label.font = .systemFont(ofSize: 18)
+        label.font = .scaledSystemFont(ofSize: 18)
         label.textColor = AppPalette.metaText
         let row = UIStackView(arrangedSubviews: [iconView, label])
         row.axis = .horizontal
@@ -206,7 +206,7 @@ final class PlaybackSettingsViewController: UIViewController {
         button.layer.borderColor = AppPalette.fieldBorder.cgColor
         button.layer.cornerRadius = 4
         button.setTitleColor(AppPalette.text, for: .normal)
-        button.titleLabel?.font = .systemFont(ofSize: 16)
+        button.titleLabel?.font = .scaledSystemFont(ofSize: 16)
         // 右の余白は、右端に留める矢印の分 (12 + 12 + 8) を空ける。
         button.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 32)
         button.heightAnchor.constraint(equalToConstant: 50).isActive = true
@@ -273,7 +273,7 @@ final class PlaybackSettingsViewController: UIViewController {
         headingBar.layer.shadowRadius = 7
         let headingLabel = UILabel()
         headingLabel.text = "画質"
-        headingLabel.font = .systemFont(ofSize: 22, weight: .semibold)
+        headingLabel.font = .scaledSystemFont(ofSize: 22, weight: .semibold)
         headingLabel.textColor = AppPalette.text
         // 戻るボタンは本家に合わせて矢印だけ (文字は付けない)。
         backButton.setImage(
@@ -296,7 +296,7 @@ final class PlaybackSettingsViewController: UIViewController {
         // 回線の切り替え (Web 版のタブと同じ2択)。選んだ区分の値が下に出る。
         for (button, title) in [(wifiProfileButton, "Wi-Fi回線時"), (cellularProfileButton, "モバイル回線時")] {
             button.setTitle(title, for: .normal)
-            button.titleLabel?.font = .systemFont(ofSize: 15.5)
+            button.titleLabel?.font = .scaledSystemFont(ofSize: 15.5)
             button.layer.borderWidth = 1
             button.layer.borderColor = AppPalette.fieldBorder.cgColor
             button.layer.cornerRadius = 4
@@ -401,10 +401,15 @@ final class PlaybackSettingsViewController: UIViewController {
         }
     }
 
+    /// 画質の選択ボタン。表示は本家 Web 版の設定画面と同じく、解像度に
+    /// データ量と平均ビットレートを付けた形で、通信節約モードの有無に
+    /// 応じて数値が切り替わる。保存される画質の値そのものは従来どおり。
     private func updateQualityButton(_ button: UIButton, media: PlaybackMedia, selected: String) {
-        button.setTitle(selected, for: .normal)
+        let dataSaver = SettingsStore.shared.dataSaverMode(media: media, profile: selectedProfile)
+        button.setTitle(SettingsStore.qualityDisplayName(selected, dataSaverMode: dataSaver), for: .normal)
         button.menu = UIMenu(children: SettingsStore.qualities.map { quality in
-            UIAction(title: quality, state: quality == selected ? .on : .off) { [weak self] _ in
+            UIAction(title: SettingsStore.qualityDisplayName(quality, dataSaverMode: dataSaver),
+                     state: quality == selected ? .on : .off) { [weak self] _ in
                 guard let self else { return }
                 SettingsStore.shared.setStreamingQuality(
                     quality, media: media, profile: self.selectedProfile)
@@ -426,6 +431,9 @@ final class PlaybackSettingsViewController: UIViewController {
     @objc private func tvDataSaverChanged() {
         SettingsStore.shared.setDataSaverMode(
             tvDataSaverSwitch.isOn, media: .tv, profile: selectedProfile)
+        // 本家と同じく、画質の選択肢の数値はその場で切り替わる。
+        updateQualityButton(tvQualityButton, media: .tv,
+                            selected: SettingsStore.shared.streamingQuality(media: .tv, profile: selectedProfile))
     }
 
     @objc private func tvLowLatencyChanged() {
@@ -441,6 +449,9 @@ final class PlaybackSettingsViewController: UIViewController {
     @objc private func videoDataSaverChanged() {
         SettingsStore.shared.setDataSaverMode(
             videoDataSaverSwitch.isOn, media: .video, profile: selectedProfile)
+        // 本家と同じく、画質の選択肢の数値はその場で切り替わる。
+        updateQualityButton(videoQualityButton, media: .video,
+                            selected: SettingsStore.shared.streamingQuality(media: .video, profile: selectedProfile))
     }
 
     @objc private func video24fpsChanged() {

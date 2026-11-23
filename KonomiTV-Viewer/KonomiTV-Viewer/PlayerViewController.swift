@@ -63,7 +63,7 @@ func stylePlayerSeekSlider(_ slider: UISlider) {
 /// 内側の余白は上下 5pt・左右 8pt。
 func stylePlayerChip(_ button: UIButton) {
     button.setTitleColor(AppPalette.metaText, for: .normal)
-    button.titleLabel?.font = .systemFont(ofSize: 12.7)
+    button.titleLabel?.font = .scaledSystemFont(ofSize: 12.7)
     button.backgroundColor = AppPalette.panel
     button.layer.cornerRadius = 4
     button.contentEdgeInsets = UIEdgeInsets(top: 5, left: 8, bottom: 5, right: 8)
@@ -159,6 +159,8 @@ func decoratedProgramTitle(_ title: String, font: UIFont, textColor: UIColor) ->
 private func programMarkChipImage(_ mark: String, baseFont: UIFont) -> UIImage {
     let label = BadgeLabel()
     label.text = mark
+    // baseFont は呼び出し側の題名のフォント (表示の大きさは反映済み) なので、
+    // ここで倍率を掛け直すと二重に効いてしまう。そのまま使う。
     label.font = .systemFont(ofSize: baseFont.pointSize * 0.94, weight: .bold)
     label.textColor = AppPalette.text
     label.backgroundColor = AppPalette.accent
@@ -511,7 +513,7 @@ final class PlayerViewController: UIViewController {
         let bar = navigationController?.navigationBar
         bar?.tintColor = AppPalette.text
         bar?.titleTextAttributes = [
-            .font: UIFont.systemFont(ofSize: 14, weight: .bold),
+            .font: UIFont.scaledSystemFont(ofSize: 14, weight: .bold),
             .foregroundColor: AppPalette.text,
         ]
         // フルスクリーンから戻ってきたとき用に、消えるタイマーを仕掛け直す。
@@ -628,7 +630,7 @@ final class PlayerViewController: UIViewController {
         durationLabel.text = TimeFormat.hms(program.duration)
         for label in [currentTimeLabel, durationLabel] {
             label.textColor = AppPalette.text
-            label.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+            label.font = .scaledMonospacedDigitSystemFont(ofSize: 11, weight: .regular)
         }
         currentTimeLabel.widthAnchor.constraint(equalToConstant: 52).isActive = true
         durationLabel.widthAnchor.constraint(equalToConstant: 52).isActive = true
@@ -686,7 +688,7 @@ final class PlayerViewController: UIViewController {
         seekPreviewImageView.clipsToBounds = true
         seekPreviewImageView.isHidden = true
         seekPreviewTimeLabel.textColor = .white
-        seekPreviewTimeLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        seekPreviewTimeLabel.font = .scaledMonospacedDigitSystemFont(ofSize: 11, weight: .regular)
         seekPreviewTimeLabel.textAlignment = .center
         let seekPreviewStack = UIStackView(arrangedSubviews: [seekPreviewImageView, seekPreviewTimeLabel])
         seekPreviewStack.axis = .vertical
@@ -761,19 +763,19 @@ final class PlayerViewController: UIViewController {
         view.addSubview(commentTableView)
         // 空表示 (取得中・0件・失敗で文を出し分ける)。
         commentEmptyLabel.textColor = AppPalette.metaText
-        commentEmptyLabel.font = .systemFont(ofSize: 13)
+        commentEmptyLabel.font = .scaledSystemFont(ofSize: 13)
         commentEmptyLabel.numberOfLines = 0
         commentEmptyLabel.textAlignment = .center
         updateCommentEmptyState()
 
         messageLabel.textColor = .systemYellow
-        messageLabel.font = .systemFont(ofSize: 12.5)
+        messageLabel.font = .scaledSystemFont(ofSize: 12.5)
         messageLabel.numberOfLines = 0
         messageLabel.isHidden = true
 
         // 番組名: パネルの見出し (19pt 太字)。[字] [再] などの印は、
         // Web 版と同じピンク地の印に描き分ける (題名の文字列のままにはしない)。
-        infoTitleLabel.font = .systemFont(ofSize: 19, weight: .bold)
+        infoTitleLabel.font = .scaledSystemFont(ofSize: 19, weight: .bold)
         infoTitleLabel.attributedText = decoratedProgramTitle(
             program.title, font: infoTitleLabel.font, textColor: AppPalette.text)
         infoTitleLabel.numberOfLines = 0
@@ -789,12 +791,12 @@ final class PlayerViewController: UIViewController {
             channelLabel.text = "チャンネル情報なし"
         }
         channelLabel.textColor = AppPalette.text
-        channelLabel.font = .systemFont(ofSize: 14)
+        channelLabel.font = .scaledSystemFont(ofSize: 14)
         channelLabel.numberOfLines = 1
         channelLabel.lineBreakMode = .byTruncatingTail
         programTimeLabel.text = programTimeText()
         programTimeLabel.textColor = AppPalette.metaText
-        programTimeLabel.font = .systemFont(ofSize: 12.5)
+        programTimeLabel.font = .scaledSystemFont(ofSize: 12.5)
         let channelTexts = UIStackView(arrangedSubviews: [channelLabel, programTimeLabel])
         channelTexts.axis = .vertical
         channelTexts.spacing = 2
@@ -813,7 +815,7 @@ final class PlayerViewController: UIViewController {
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineSpacing = 12 * 0.68
             descriptionLabel.attributedText = NSAttributedString(string: description, attributes: [
-                .font: UIFont.systemFont(ofSize: 12),
+                .font: UIFont.scaledSystemFont(ofSize: 12),
                 .foregroundColor: AppPalette.metaText,
                 .paragraphStyle: paragraph,
             ])
@@ -829,7 +831,7 @@ final class PlayerViewController: UIViewController {
             for genre in genres {
                 let chip = BadgeLabel()
                 chip.text = "\(genre.major) / \(genre.middle)"
-                chip.font = .systemFont(ofSize: 10.5)
+                chip.font = .scaledSystemFont(ofSize: 10.5)
                 chip.textColor = AppPalette.text
                 chip.backgroundColor = AppPalette.pressed
                 chip.layer.cornerRadius = 4
@@ -844,7 +846,7 @@ final class PlayerViewController: UIViewController {
         // 録画期間とコメント数の状態行: 12.5pt、色は text-darken-1。
         // コメント数は、過去ログコメントが取得できたときに後から足される。
         statusLabel.textColor = AppPalette.metaText
-        statusLabel.font = .systemFont(ofSize: 12.5)
+        statusLabel.font = .scaledSystemFont(ofSize: 12.5)
         statusLabel.numberOfLines = 0
         updateStatusText()
 
@@ -859,14 +861,14 @@ final class PlayerViewController: UIViewController {
                 guard let body = detail[heading], !body.isEmpty else { continue }
                 let headingLabel = UILabel()
                 headingLabel.text = heading
-                headingLabel.font = .systemFont(ofSize: 18, weight: .bold)
+                headingLabel.font = .scaledSystemFont(ofSize: 18, weight: .bold)
                 headingLabel.textColor = AppPalette.text
                 headingLabel.numberOfLines = 0
                 let bodyLabel = UILabel()
                 let paragraph = NSMutableParagraphStyle()
                 paragraph.lineSpacing = 12 * 0.68
                 bodyLabel.attributedText = NSAttributedString(string: body, attributes: [
-                    .font: UIFont.systemFont(ofSize: 12),
+                    .font: UIFont.scaledSystemFont(ofSize: 12),
                     .foregroundColor: AppPalette.metaText,
                     .paragraphStyle: paragraph,
                 ])
@@ -914,7 +916,7 @@ final class PlayerViewController: UIViewController {
         // 収まらなければ次の行へ。横の間隔 10pt、行の間隔 16pt。
         buttonsFlowView.horizontalSpacing = 10
         buttonsFlowView.verticalSpacing = 16
-        // 保護ボタンはうち版だけ並べる (一般版では保護の機能自体を出さない)。
+        // 保護ボタンは拡張版だけ並べる (一般版では保護の機能自体を出さない)。
         var infoButtons: [UIButton] = [qualityButton, audioOnlyButton, fullscreenButton, rateButton]
         if AppEdition.isHousehold { infoButtons.append(protectButton) }
         infoButtons += [watchedButton, profileButton, sleepTimerButton]
@@ -1026,7 +1028,7 @@ final class PlayerViewController: UIViewController {
         headerClockIconView.contentMode = .scaleAspectFit
         headerClockIconView.widthAnchor.constraint(equalToConstant: 14).isActive = true
         headerClockIconView.heightAnchor.constraint(equalToConstant: 14).isActive = true
-        headerClockLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        headerClockLabel.font = .scaledMonospacedDigitSystemFont(ofSize: 11, weight: .medium)
         headerClockLabel.textColor = AppPalette.text
         let stack = UIStackView(arrangedSubviews: [headerClockIconView, headerClockLabel])
         stack.axis = .horizontal
@@ -1090,8 +1092,12 @@ final class PlayerViewController: UIViewController {
     }
 
     private func makeQualityMenu() -> UIMenu {
-        UIMenu(children: SettingsStore.qualities.map { q in
-            UIAction(title: q, state: q == quality ? .on : .off) { [weak self] _ in
+        // 選択肢の表示は設定画面と同じく、データ量と平均ビットレート付き。
+        // 数値は現在の区分の通信節約モードの有無で切り替わる。
+        let dataSaver = SettingsStore.shared.dataSaverMode(media: .video, profile: profile)
+        return UIMenu(children: SettingsStore.qualities.map { q in
+            UIAction(title: SettingsStore.qualityDisplayName(q, dataSaverMode: dataSaver),
+                     state: q == quality ? .on : .off) { [weak self] _ in
                 self?.userSwitchQuality(q)
             }
         })
@@ -1384,7 +1390,7 @@ final class PlayerViewController: UIViewController {
         iconView.image = UIImage(systemName: symbol, withConfiguration: config)
         iconView.contentMode = .scaleAspectFit
         titleLabel.text = title
-        titleLabel.font = .systemFont(ofSize: 10.5)
+        titleLabel.font = .scaledSystemFont(ofSize: 10.5)
         titleLabel.textAlignment = .center
         let stack = UIStackView(arrangedSubviews: [iconView, titleLabel])
         stack.axis = .vertical
@@ -2746,10 +2752,10 @@ private final class CommentListCell: UITableViewCell {
         selectedBackground.backgroundColor = AppPalette.pressed
         selectedBackgroundView = selectedBackground
 
-        bodyLabel.font = .systemFont(ofSize: 13)
+        bodyLabel.font = .scaledSystemFont(ofSize: 13)
         bodyLabel.textColor = AppPalette.text
         bodyLabel.numberOfLines = 0
-        timeLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+        timeLabel.font = .scaledMonospacedDigitSystemFont(ofSize: 13, weight: .regular)
         timeLabel.textColor = AppPalette.metaText
         timeLabel.setContentHuggingPriority(.required, for: .horizontal)
         timeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)

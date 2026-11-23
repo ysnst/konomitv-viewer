@@ -224,7 +224,7 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
     private func setupTimetableButton() {
         timetableButton.setTitle("番組表", for: .normal)
         timetableButton.setTitleColor(AppPalette.text, for: .normal)
-        timetableButton.titleLabel?.font = .systemFont(ofSize: 16, weight: .medium)
+        timetableButton.titleLabel?.font = .scaledSystemFont(ofSize: 16, weight: .medium)
         timetableButton.tintColor = AppPalette.text
         timetableButton.setImage(Self.timetableButtonIcon(), for: .normal)
         timetableButton.backgroundColor = AppPalette.pressed
@@ -656,7 +656,7 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
             button.tag = index
             button.setTitle(Self.prettyTypeName(group.type), for: .normal)
             // Web 版のボタンは文字 15px、色は text (選択中でも同じ)。
-            button.titleLabel?.font = .systemFont(ofSize: 15, weight: .medium)
+            button.titleLabel?.font = .scaledSystemFont(ofSize: 15, weight: .medium)
             button.setTitleColor(AppPalette.text, for: .normal)
             button.addTarget(self, action: #selector(categoryButtonTapped(_:)), for: .touchUpInside)
             button.translatesAutoresizingMaskIntoConstraints = false
@@ -859,15 +859,15 @@ final class LiveChannelCell: UITableViewCell {
         logoView.translatesAutoresizingMaskIntoConstraints = false
 
         // 局名は Web 版 (スマホ縦) どおり 15.5px、色は text、1行で省略。
-        nameLabel.font = .systemFont(ofSize: 15.5)
+        nameLabel.font = .scaledSystemFont(ofSize: 15.5)
         nameLabel.textColor = AppPalette.text
         nameLabel.numberOfLines = 1
         nameLabel.lineBreakMode = .byTruncatingTail
 
         // 勢い・視聴数は Web 版 (スマホ縦) どおり 11px、色は text-darken-1。
-        forceLabel.font = .systemFont(ofSize: 11)
+        forceLabel.font = .scaledSystemFont(ofSize: 11)
         forceLabel.textColor = AppPalette.metaText
-        viewersLabel.font = .systemFont(ofSize: 11)
+        viewersLabel.font = .scaledSystemFont(ofSize: 11)
         viewersLabel.textColor = AppPalette.metaText
         // アイコンは Web 版では勢いが炎 (10.5x12px)、視聴数が目 (15.75x14px)。
         // 字形の近い SF Symbol で近似する。
@@ -902,18 +902,18 @@ final class LiveChannelCell: UITableViewCell {
 
         // 放送中番組の題名は Web 版 (スマホ縦) どおり 14px 太字、1行で省略
         // (縦画面では Web 版も display:block + nowrap で1行に制限している)。
-        presentTitleLabel.font = .systemFont(ofSize: 14, weight: .bold)
+        presentTitleLabel.font = .scaledSystemFont(ofSize: 14, weight: .bold)
         presentTitleLabel.textColor = AppPalette.text
         presentTitleLabel.numberOfLines = 1
         presentTitleLabel.lineBreakMode = .byTruncatingTail
 
         // 放送中番組の時刻は Web 版 (スマホ縦) どおり 12px、text-darken-1。
-        presentTimeLabel.font = .systemFont(ofSize: 12)
+        presentTimeLabel.font = .scaledSystemFont(ofSize: 12)
         presentTimeLabel.textColor = AppPalette.metaText
         presentTimeLabel.numberOfLines = 1
 
         // 説明文は Web 版 (スマホ縦) どおり 10px、text-darken-1、最大2行。
-        presentDescriptionLabel.font = .systemFont(ofSize: 10)
+        presentDescriptionLabel.font = .scaledSystemFont(ofSize: 10)
         presentDescriptionLabel.textColor = AppPalette.metaText
         presentDescriptionLabel.numberOfLines = 2
         presentDescriptionLabel.lineBreakMode = .byTruncatingTail
@@ -921,7 +921,7 @@ final class LiveChannelCell: UITableViewCell {
         // 次の番組は Web 版 (スマホ縦) どおり 12px。「NEXT」は太字、
         // 続く二重三角のアイコン (16x16px) は SF Symbol で近似する。
         followingNextLabel.text = "NEXT"
-        followingNextLabel.font = .systemFont(ofSize: 12, weight: .bold)
+        followingNextLabel.font = .scaledSystemFont(ofSize: 12, weight: .bold)
         followingNextLabel.textColor = AppPalette.text
         // Web 版では「NEXT」とアイコンは縮まず (flex-shrink: 0)、番組名が残りの幅を
         // 受け持って左に続き、はみ出す分は省略される。横並びのスタックでは
@@ -937,7 +937,7 @@ final class LiveChannelCell: UITableViewCell {
             systemName: "forward.fill",
             withConfiguration: UIImage.SymbolConfiguration(pointSize: 11)
         )?.withTintColor(AppPalette.text, renderingMode: .alwaysOriginal)
-        followingTitleLabel.font = .systemFont(ofSize: 12)
+        followingTitleLabel.font = .scaledSystemFont(ofSize: 12)
         followingTitleLabel.textColor = AppPalette.text
         followingTitleLabel.numberOfLines = 1
         followingTitleLabel.lineBreakMode = .byTruncatingTail
@@ -950,7 +950,7 @@ final class LiveChannelCell: UITableViewCell {
         followingRow.setCustomSpacing(2, after: followingIconView)
 
         // 次の番組の時刻は Web 版 (スマホ縦) どおり 11.5px、text-darken-1。
-        followingTimeLabel.font = .systemFont(ofSize: 11.5)
+        followingTimeLabel.font = .scaledSystemFont(ofSize: 11.5)
         followingTimeLabel.textColor = AppPalette.metaText
         followingTimeLabel.numberOfLines = 1
 

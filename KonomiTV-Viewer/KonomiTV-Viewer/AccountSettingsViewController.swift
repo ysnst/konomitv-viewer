@@ -86,10 +86,10 @@ final class AccountSettingsViewController: SettingsDetailViewController {
         userIconView.translatesAutoresizingMaskIntoConstraints = false
         userIconView.widthAnchor.constraint(equalToConstant: 40).isActive = true
         userIconView.heightAnchor.constraint(equalToConstant: 40).isActive = true
-        userNameLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+        userNameLabel.font = .scaledSystemFont(ofSize: 17, weight: .semibold)
         userNameLabel.textColor = AppPalette.text
         userAdminLabel.text = "管理者"
-        userAdminLabel.font = .systemFont(ofSize: 11)
+        userAdminLabel.font = .scaledSystemFont(ofSize: 11)
         userAdminLabel.textColor = .white
         userAdminLabel.textAlignment = .center
         userAdminLabel.backgroundColor = AppPalette.secondary
@@ -98,7 +98,7 @@ final class AccountSettingsViewController: SettingsDetailViewController {
         userAdminLabel.translatesAutoresizingMaskIntoConstraints = false
         userAdminLabel.widthAnchor.constraint(equalToConstant: 48).isActive = true
         userAdminLabel.heightAnchor.constraint(equalToConstant: 18).isActive = true
-        userIDLabel.font = .systemFont(ofSize: 12.5)
+        userIDLabel.font = .scaledSystemFont(ofSize: 12.5)
         userIDLabel.textColor = AppPalette.secondaryText
         let nameRow = UIStackView(arrangedSubviews: [userNameLabel, userAdminLabel, UIView()])
         nameRow.axis = .horizontal
@@ -117,7 +117,7 @@ final class AccountSettingsViewController: SettingsDetailViewController {
         logoutButton.addTarget(self, action: #selector(logout), for: .touchUpInside)
         logoutButton.backgroundColor = AppPalette.secondary
         logoutButton.setTitleColor(.white, for: .normal)
-        logoutButton.titleLabel?.font = .systemFont(ofSize: 14.5, weight: .medium)
+        logoutButton.titleLabel?.font = .scaledSystemFont(ofSize: 14.5, weight: .medium)
         logoutButton.layer.cornerRadius = 4
         logoutButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: 16, bottom: 0, right: 16)
         logoutButton.heightAnchor.constraint(equalToConstant: 36).isActive = true
@@ -180,7 +180,7 @@ final class AccountSettingsViewController: SettingsDetailViewController {
             text: "オンにすると、視聴履歴などの設定をサーバーに保存して Web 版など他の端末と共通にします。録画の続きから再開する位置も、Web 版と共通になります。",
             toggle: syncSettingsSwitch))
 
-        statusLabel.font = .systemFont(ofSize: 13.5)
+        statusLabel.font = .scaledSystemFont(ofSize: 13.5)
         statusLabel.textColor = AppPalette.metaText
         statusLabel.numberOfLines = 0
 

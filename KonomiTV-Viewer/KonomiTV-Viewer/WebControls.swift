@@ -1,5 +1,42 @@
 import UIKit
 
+// MARK: - 表示の大きさ
+
+/// 表示の大きさ (「このアプリの設定」の項目、Web 版うち改造の ui_scale に
+/// 相当) を、文字や共通部品の寸法に効かせるための土台。
+/// 保存は SettingsStore.uiScalePercent (端末ごと、同期対象外) で、
+/// ここは「基準の寸法 × 倍率」の換算だけを持つ。
+/// 100% のときは倍率が 1.0 になり、従来の表示と寸分も変わらない。
+/// 効く範囲は、UIFont の scaledSystemFont / scaledMonospacedDigitSystemFont
+/// 経由で作られた文字 (アプリのほぼ全画面) と、このファイルの共通部品の
+/// 寸法、下部バー (MainTabBarController)、上部のロゴ帯 (SPHeaderView)。
+/// 逆に、番組表の中の文字 (升目の寸法と一体のため)、字幕と流れる
+/// コメントの描画 (映像に重ねる文字で、それぞれ専用の設定がある)、
+/// アイコンの絵の大きさ、画面ごとの固定の余白や欄の高さには効かない。
+enum UIScale {
+    /// 現在の倍率 (100% で 1.0)。
+    static var factor: CGFloat { SettingsStore.shared.uiScaleFactor }
+
+    /// 基準の寸法に倍率を掛けた値を返す。
+    static func value(_ base: CGFloat) -> CGFloat { base * factor }
+}
+
+extension UIFont {
+    /// 表示の大きさを反映したシステムフォント。
+    /// アプリ内の文字は原則こちらで作る (100% では systemFont と同じ)。
+    static func scaledSystemFont(ofSize size: CGFloat, weight: UIFont.Weight = .regular) -> UIFont {
+        systemFont(ofSize: size * UIScale.factor, weight: weight)
+    }
+
+    /// 表示の大きさを反映した、数字の幅がそろうシステムフォント
+    /// (再生画面の時刻表示用)。
+    static func scaledMonospacedDigitSystemFont(
+        ofSize size: CGFloat, weight: UIFont.Weight = .regular
+    ) -> UIFont {
+        monospacedDigitSystemFont(ofSize: size * UIScale.factor, weight: weight)
+    }
+}
+
 /// Web 版 KonomiTV の部品の形を写した、アプリ共通の操作部品。
 /// iPhone 標準の部品 (UISwitch や UISegmentedControl) は形が大きく
 /// 丸すぎて Web 版と見た目がそろわないため、寸法と色を Web 版の
@@ -43,19 +80,24 @@ final class WebToggle: UIControl {
     private var pressStartedAt: TimeInterval = 0
 
     /// レールの幅と高さ、つまみの直径 (Web 版の実測値)。
-    private static let railSize = CGSize(width: 36, height: 14)
-    private static let knobDiameter: CGFloat = 20
+    /// 表示の大きさに合わせて拡縮するため、固定値ではなく
+    /// その都度倍率を掛けて求める。
+    private static var railSize: CGSize {
+        CGSize(width: UIScale.value(36), height: UIScale.value(14))
+    }
+    private static var knobDiameter: CGFloat { UIScale.value(20) }
     /// 押している間の輪の直径。本家では入力部分の大きさそのままで、
     /// 標準の場所では 40px、密度が詰まった場所 (予約カードの中)
     /// では 28px。置く場所に合わせて使う側で変えられる。
-    var haloDiameter: CGFloat = 40 {
+    /// 既定の 40 だけ表示の大きさに合わせ、使う側が明示した値はそのまま使う。
+    var haloDiameter: CGFloat = UIScale.value(40) {
         didSet {
             haloView.layer.cornerRadius = haloDiameter / 2
             setNeedsLayout()
         }
     }
     /// つまみの中心がレールの中心からずれる量 (Web 版の実測値)。
-    private static let knobTravel: CGFloat = 10
+    private static var knobTravel: CGFloat { UIScale.value(10) }
 
     var isOn: Bool = false {
         didSet {
@@ -73,7 +115,9 @@ final class WebToggle: UIControl {
         didSet { alpha = isEnabled ? 1 : 0.38 }
     }
 
-    override var intrinsicContentSize: CGSize { CGSize(width: 40, height: 24) }
+    override var intrinsicContentSize: CGSize {
+        CGSize(width: UIScale.value(40), height: UIScale.value(24))
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -255,7 +299,7 @@ final class WebSegmentedControl: UIControl {
     }
 
     override var intrinsicContentSize: CGSize {
-        CGSize(width: UIView.noIntrinsicMetric, height: 36)
+        CGSize(width: UIView.noIntrinsicMetric, height: UIScale.value(36))
     }
 
     init(items: [String]) {
@@ -282,7 +326,7 @@ final class WebSegmentedControl: UIControl {
             }
             let button = RippleButton()
             button.setTitle(item, for: .normal)
-            button.titleLabel?.font = .systemFont(ofSize: 14)
+            button.titleLabel?.font = .scaledSystemFont(ofSize: 14)
             button.tag = index
             button.addTarget(self, action: #selector(buttonTapped(_:)), for: .touchUpInside)
             buttons.append(button)
@@ -613,10 +657,10 @@ extension UIButton {
         layer.cornerRadius = 6
         layer.borderWidth = 1
         layer.borderColor = borderColor.cgColor
-        titleLabel?.font = .systemFont(ofSize: 14)
+        titleLabel?.font = .scaledSystemFont(ofSize: 14)
         setTitleColor(AppPalette.text, for: .normal)
         tintColor = AppPalette.text
-        heightAnchor.constraint(equalToConstant: 36).isActive = true
+        heightAnchor.constraint(equalToConstant: UIScale.value(36)).isActive = true
     }
 
     /// 番組表の操作帯の絵のボタン (現在時刻・表示設定) の形。
@@ -627,7 +671,7 @@ extension UIButton {
         layer.cornerRadius = 6
         layer.borderWidth = 0
         tintColor = AppPalette.text
-        widthAnchor.constraint(equalToConstant: 34).isActive = true
-        heightAnchor.constraint(equalToConstant: 34).isActive = true
+        widthAnchor.constraint(equalToConstant: UIScale.value(34)).isActive = true
+        heightAnchor.constraint(equalToConstant: UIScale.value(34)).isActive = true
     }
 }
