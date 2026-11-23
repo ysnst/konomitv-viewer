@@ -38,7 +38,8 @@ final class MyPageViewController: UIViewController {
     /// 解放できたら数え直す。解放の状態そのものは端末ごとに保存される。
     private var appVersionTapCount = 0
     /// 短い知らせ (解放までの残り回数・解放の完了) を出している間の保持。
-    private weak var briefNoticeAlert: UIAlertController?
+    private var briefNoticeView: UIView?
+    private var briefNoticeLabel: UILabel?
     private var briefNoticeGeneration = 0
 
     init() {
@@ -372,22 +373,63 @@ final class MyPageViewController: UIViewController {
         }
     }
 
-    /// ボタンの無い短い知らせを出し、少し経ったら自動で閉じる。
+    /// 画面の下の方 (下段バーの上あたり) に、小さい丸みのある帯の
+    /// 知らせを出し、少し経ったら自動で消す。Android の開発者向け
+    /// オプションの出し方と同じ、下に出る小さい知らせ (トースト) の形。
     /// 連続タップのときは、出ている知らせの文を差し替えて出し直さない。
     private func showBriefNotice(_ message: String) {
         briefNoticeGeneration += 1
         let generation = briefNoticeGeneration
-        if let alert = briefNoticeAlert {
-            alert.message = message
+        if let toast = briefNoticeView, let label = briefNoticeLabel {
+            label.text = message
+            // 消えかけていたら、見える状態に戻す。
+            toast.layer.removeAllAnimations()
+            toast.alpha = 1
         } else {
-            let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
-            briefNoticeAlert = alert
-            present(alert, animated: true)
+            let toast = UIView()
+            toast.backgroundColor = AppPalette.pressed
+            toast.layer.cornerRadius = 18
+            toast.layer.shadowColor = UIColor.black.cgColor
+            toast.layer.shadowOpacity = 0.3
+            toast.layer.shadowRadius = 8
+            toast.layer.shadowOffset = CGSize(width: 0, height: 2)
+            toast.isUserInteractionEnabled = false
+            toast.translatesAutoresizingMaskIntoConstraints = false
+            let label = UILabel()
+            label.text = message
+            label.font = .scaledSystemFont(ofSize: 13)
+            label.textColor = AppPalette.text
+            label.textAlignment = .center
+            label.numberOfLines = 0
+            label.translatesAutoresizingMaskIntoConstraints = false
+            toast.addSubview(label)
+            view.addSubview(toast)
+            NSLayoutConstraint.activate([
+                label.topAnchor.constraint(equalTo: toast.topAnchor, constant: 10),
+                label.bottomAnchor.constraint(equalTo: toast.bottomAnchor, constant: -10),
+                label.leadingAnchor.constraint(equalTo: toast.leadingAnchor, constant: 16),
+                label.trailingAnchor.constraint(equalTo: toast.trailingAnchor, constant: -16),
+                toast.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                toast.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 24),
+                toast.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -24),
+                toast.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
+            ])
+            briefNoticeView = toast
+            briefNoticeLabel = label
+            toast.alpha = 0
+            UIView.animate(withDuration: 0.2) { toast.alpha = 1 }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
-            guard let self, self.briefNoticeGeneration == generation else { return }
-            self.briefNoticeAlert?.dismiss(animated: true)
-            self.briefNoticeAlert = nil
+            guard let self, self.briefNoticeGeneration == generation,
+                  let toast = self.briefNoticeView else { return }
+            UIView.animate(withDuration: 0.25, animations: {
+                toast.alpha = 0
+            }) { [weak self] _ in
+                guard let self, self.briefNoticeGeneration == generation else { return }
+                toast.removeFromSuperview()
+                self.briefNoticeView = nil
+                self.briefNoticeLabel = nil
+            }
         }
     }
 }
