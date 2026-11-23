@@ -1,0 +1,133 @@
+name: Build (unsigned IPA)
+
+# 試作の本線は「署名なし IPA を作り、本人の無料 Apple ID でサイドロード時に署名する」流れ。
+# このワークフローは署名を一切しない (証明書・プロファイルは使わない)。
+
+on:
+  push:
+    branches: [main]
+    # 記録 (build-result-v1.md) だけの変更ではビルドを回さない。
+    # 変更の push で1回＋記録の push でもう1回と、版番号が2つ進んで
+    # 報告した版がリリースに残らなくなるのを防ぐ。
+    # 記録と他のファイルを一緒に送った場合は通常どおりビルドする。
+    paths-ignore:
+      - 'build-result-v1.md'
+  pull_request:
+  workflow_dispatch:
+
+# 固定タグのリリースへ IPA を置くため、リリースへの書き込み権限が要る。
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build unsigned IPA
+    runs-on: macos-latest
+    # 成果物 zip に記録される時刻がビルド機の現地時刻 (世界標準時) の壁時計になり、
+    # 解凍したときに日本時間とずれて見えるのを防ぐため、ジョブ全体を日本時間にする。
+    env:
+      TZ: Asia/Tokyo
+      # 版分け (一般版 / うち版)。リポジトリ変数 APP_EDITION で切り替える。
+      # 公開リポでは "general" を設定し、非公開リポ (原本) では未設定のまま
+      # うち版 (household) になる。アプリ側の判定は AppEdition.swift。
+      EDITION: ${{ vars.APP_EDITION || 'household' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set timezone to Asia/Tokyo
+        run: |
+          sudo systemsetup -settimezone "Asia/Tokyo"
+          systemsetup -gettimezone
+          date
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      # 再生部品 (MobileVLCKit) と字幕の文字化の部品 (libaribcaption) を
+      # CocoaPods で入れる。libaribcaption は公式の podspec が無いため、
+      # ソースを KonomiTV-Viewer/Vendor/ に置いたローカルの pod として
+      # Podfile から取り込む (この pod install の中で一緒に組み立てられる)。
+      # 以後のビルドはプロジェクト単体ではなくワークスペース経由になる。
+      - name: Install CocoaPods dependencies
+        working-directory: KonomiTV-Viewer
+        run: pod install
+
+      - name: Build (no code signing)
+        run: |
+          echo "Edition: $EDITION"
+          xcodebuild build \
+            -workspace KonomiTV-Viewer/KonomiTV-Viewer.xcworkspace \
+            -scheme KonomiTV-Viewer \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/DerivedData \
+            APP_EDITION="$EDITION" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      # 版番号はビルドのたびに自動で進める (人手で上げる段は作らない)。
+      # 元は Actions の実行番号 (github.run_number) で、表示版は「0.<実行番号>」、
+      # 内部のビルド番号も同じ実行番号。アプリ本体・リリース説明・IPA のファイル名の
+      # 3か所へ同じ番号を入れて、「何を入れたか」が見分けられるようにする。
+      - name: Package unsigned IPA
+        env:
+          APP_VERSION: "0.${{ github.run_number }}"
+          BUILD_NUMBER: "${{ github.run_number }}"
+        run: |
+          mkdir -p build/Payload
+          cp -R "build/DerivedData/Build/Products/Release-iphoneos/KonomiTV-Viewer.app" build/Payload/
+          PLIST="build/Payload/KonomiTV-Viewer.app/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PLIST"
+          echo "CFBundleShortVersionString: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")"
+          echo "CFBundleVersion: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")"
+          echo "AppEdition: $(/usr/libexec/PlistBuddy -c 'Print :AppEdition' "$PLIST")"
+          cd build
+          zip -r "KonomiTV-Viewer-unsigned-$APP_VERSION.ipa" Payload
+          ls -lh "KonomiTV-Viewer-unsigned-$APP_VERSION.ipa"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: KonomiTV-Viewer-unsigned-ipa
+          path: build/KonomiTV-Viewer-unsigned-0.${{ github.run_number }}.ipa
+          if-no-files-found: error
+
+      # 取り方の本線は「固定タグのリリースに IPA をそのまま置く」形。
+      # 毎回のビルドで同じリリースの中身 (IPA と説明) を差し替える。
+      # IPA のファイル名には版番号が入るため、--clobber では名前違いの古い IPA が
+      # 差し替わらずに残ってしまう。置く前に既存の IPA 資産をすべて消し、
+      # 常に「最新の IPA が1つだけ」になるようにする。
+      # Source code の自動資産は .ipa で終わらないので、この削除には掛からない。
+      - name: Publish IPA to fixed release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="sideload-latest"
+          IPA="build/KonomiTV-Viewer-unsigned-0.${{ github.run_number }}.ipa"
+          if [ "$EDITION" = "general" ]; then
+            TITLE="最新の IPA (一般版)"
+            EDITION_LABEL="一般版"
+          else
+            TITLE="最新の試作用IPA"
+            EDITION_LABEL="うち版 (全部入り)"
+          fi
+          NOTES="版番号: 0.${{ github.run_number }}
+          版の種類: $EDITION_LABEL
+          ビルド日時 (日本時間): $(date '+%Y/%m/%d %H:%M')
+          Actions 実行 ID: ${{ github.run_id }}
+          実行ページ: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES" --prerelease
+          else
+            gh release create "$TAG" --title "$TITLE" --notes "$NOTES" --prerelease
+          fi
+          gh release view "$TAG" --json assets --jq '.assets[].name | select(endswith(".ipa"))' | while IFS= read -r asset; do
+            echo "Deleting old IPA asset: $asset"
+            gh release delete-asset "$TAG" "$asset"
+          done
+          gh release upload "$TAG" "$IPA" --clobber
+          gh release view "$TAG"

@@ -1,0 +1,438 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		200000000000000000000030 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000010 /* AppDelegate.swift */; };
+		200000000000000000000031 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000011 /* SceneDelegate.swift */; };
+		200000000000000000000032 /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000012 /* SettingsStore.swift */; };
+		200000000000000000000033 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000013 /* APIClient.swift */; };
+		200000000000000000000034 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000014 /* Models.swift */; };
+		200000000000000000000035 /* VideoListViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000015 /* VideoListViewController.swift */; };
+		200000000000000000000036 /* PlayerViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000016 /* PlayerViewController.swift */; };
+		200000000000000000000037 /* LiveListViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000017 /* LiveListViewController.swift */; };
+		200000000000000000000038 /* LivePlayerViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000018 /* LivePlayerViewController.swift */; };
+		200000000000000000000039 /* SettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000019 /* SettingsViewController.swift */; };
+		200000000000000000000043 /* CMSectionBandView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000025 /* CMSectionBandView.swift */; };
+		200000000000000000000044 /* FullscreenPlayerViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000026 /* FullscreenPlayerViewController.swift */; };
+		200000000000000000000045 /* NowPlayingManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000027 /* NowPlayingManager.swift */; };
+		200000000000000000000046 /* MainTabBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000028 /* MainTabBarController.swift */; };
+		200000000000000000000047 /* SPHeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000029 /* SPHeaderView.swift */; };
+		200000000000000000000055 /* MyPageViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000053 /* MyPageViewController.swift */; };
+		200000000000000000000056 /* ComingSoonViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000054 /* ComingSoonViewController.swift */; };
+		200000000000000000000061 /* NetworkMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000057 /* NetworkMonitor.swift */; };
+		200000000000000000000062 /* PlaybackSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000058 /* PlaybackSettingsViewController.swift */; };
+		200000000000000000000063 /* StreamRelayServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000059 /* StreamRelayServer.swift */; };
+		200000000000000000000065 /* SettingsCategoryViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000064 /* SettingsCategoryViewController.swift */; };
+		200000000000000000000067 /* TimeTableViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000066 /* TimeTableViewController.swift */; };
+		200000000000000000000069 /* TimeTableSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000068 /* TimeTableSettings.swift */; };
+		20000000000000000000006B /* TimeTableSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000006A /* TimeTableSettingsViewController.swift */; };
+		20000000000000000000006D /* WebControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000006C /* WebControls.swift */; };
+		2000000000000000000000A1 /* SyncedSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000A0 /* SyncedSettings.swift */; };
+		2000000000000000000000A3 /* SettingsDetailViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000A2 /* SettingsDetailViewController.swift */; };
+		2000000000000000000000A5 /* GeneralSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000A4 /* GeneralSettingsViewController.swift */; };
+		2000000000000000000000A7 /* CaptionSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000A6 /* CaptionSettingsViewController.swift */; };
+		2000000000000000000000A9 /* JikkyoSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000A8 /* JikkyoSettingsViewController.swift */; };
+		2000000000000000000000AB /* CommentMuteSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000AA /* CommentMuteSettingsViewController.swift */; };
+		2000000000000000000000AD /* AccountSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000AC /* AccountSettingsViewController.swift */; };
+		2000000000000000000000AF /* LicenseViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000AE /* LicenseViewController.swift */; };
+		2000000000000000000000B2 /* MobileVLCKit.txt in Resources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000B1 /* MobileVLCKit.txt */; };
+		2000000000000000000000B4 /* libaribcaption.txt in Resources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000B3 /* libaribcaption.txt */; };
+		2000000000000000000000B6 /* FluentUISystemIcons.txt in Resources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000B5 /* FluentUISystemIcons.txt */; };
+		2000000000000000000000B8 /* MaterialIcons.txt in Resources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000B7 /* MaterialIcons.txt */; };
+		200000000000000000000091 /* ReservationListViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000090 /* ReservationListViewController.swift */; };
+		200000000000000000000093 /* ReservationDetailViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000092 /* ReservationDetailViewController.swift */; };
+		200000000000000000000095 /* JikkyoCommentOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000094 /* JikkyoCommentOverlay.swift */; };
+		200000000000000000000097 /* AribCaption.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000096 /* AribCaption.swift */; };
+		200000000000000000000099 /* TSID3Extractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000098 /* TSID3Extractor.swift */; };
+		2000000000000000000000C1 /* AppEdition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000C0 /* AppEdition.swift */; };
+		200000000000000000000040 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000021 /* Assets.xcassets */; };
+		200000000000000000000041 /* Settings.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000022 /* Settings.bundle */; };
+		200000000000000000000042 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200000000000000000000024 /* AVFoundation.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		200000000000000000000010 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		200000000000000000000011 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
+		200000000000000000000012 /* SettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
+		200000000000000000000013 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		200000000000000000000014 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		200000000000000000000015 /* VideoListViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoListViewController.swift; sourceTree = "<group>"; };
+		200000000000000000000016 /* PlayerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerViewController.swift; sourceTree = "<group>"; };
+		200000000000000000000017 /* LiveListViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveListViewController.swift; sourceTree = "<group>"; };
+		200000000000000000000018 /* LivePlayerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LivePlayerViewController.swift; sourceTree = "<group>"; };
+		200000000000000000000019 /* SettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewController.swift; sourceTree = "<group>"; };
+		200000000000000000000025 /* CMSectionBandView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CMSectionBandView.swift; sourceTree = "<group>"; };
+		200000000000000000000026 /* FullscreenPlayerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullscreenPlayerViewController.swift; sourceTree = "<group>"; };
+		200000000000000000000027 /* NowPlayingManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingManager.swift; sourceTree = "<group>"; };
+		200000000000000000000028 /* MainTabBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabBarController.swift; sourceTree = "<group>"; };
+		200000000000000000000029 /* SPHeaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SPHeaderView.swift; sourceTree = "<group>"; };
+		200000000000000000000053 /* MyPageViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyPageViewController.swift; sourceTree = "<group>"; };
+		200000000000000000000054 /* ComingSoonViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComingSoonViewController.swift; sourceTree = "<group>"; };
+		200000000000000000000057 /* NetworkMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkMonitor.swift; sourceTree = "<group>"; };
+		200000000000000000000058 /* PlaybackSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackSettingsViewController.swift; sourceTree = "<group>"; };
+		200000000000000000000059 /* StreamRelayServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamRelayServer.swift; sourceTree = "<group>"; };
+		200000000000000000000064 /* SettingsCategoryViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsCategoryViewController.swift; sourceTree = "<group>"; };
+		200000000000000000000066 /* TimeTableViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeTableViewController.swift; sourceTree = "<group>"; };
+		200000000000000000000068 /* TimeTableSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeTableSettings.swift; sourceTree = "<group>"; };
+		20000000000000000000006A /* TimeTableSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeTableSettingsViewController.swift; sourceTree = "<group>"; };
+		20000000000000000000006C /* WebControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebControls.swift; sourceTree = "<group>"; };
+		2000000000000000000000A0 /* SyncedSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncedSettings.swift; sourceTree = "<group>"; };
+		2000000000000000000000A2 /* SettingsDetailViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsDetailViewController.swift; sourceTree = "<group>"; };
+		2000000000000000000000A4 /* GeneralSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeneralSettingsViewController.swift; sourceTree = "<group>"; };
+		2000000000000000000000A6 /* CaptionSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptionSettingsViewController.swift; sourceTree = "<group>"; };
+		2000000000000000000000A8 /* JikkyoSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JikkyoSettingsViewController.swift; sourceTree = "<group>"; };
+		2000000000000000000000AA /* CommentMuteSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentMuteSettingsViewController.swift; sourceTree = "<group>"; };
+		2000000000000000000000AC /* AccountSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountSettingsViewController.swift; sourceTree = "<group>"; };
+		2000000000000000000000AE /* LicenseViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LicenseViewController.swift; sourceTree = "<group>"; };
+		2000000000000000000000B1 /* MobileVLCKit.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = MobileVLCKit.txt; sourceTree = "<group>"; };
+		2000000000000000000000B3 /* libaribcaption.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = libaribcaption.txt; sourceTree = "<group>"; };
+		2000000000000000000000B5 /* FluentUISystemIcons.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = FluentUISystemIcons.txt; sourceTree = "<group>"; };
+		2000000000000000000000B7 /* MaterialIcons.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = MaterialIcons.txt; sourceTree = "<group>"; };
+		200000000000000000000090 /* ReservationListViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReservationListViewController.swift; sourceTree = "<group>"; };
+		200000000000000000000092 /* ReservationDetailViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReservationDetailViewController.swift; sourceTree = "<group>"; };
+		200000000000000000000094 /* JikkyoCommentOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JikkyoCommentOverlay.swift; sourceTree = "<group>"; };
+		200000000000000000000096 /* AribCaption.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AribCaption.swift; sourceTree = "<group>"; };
+		200000000000000000000098 /* TSID3Extractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TSID3Extractor.swift; sourceTree = "<group>"; };
+		2000000000000000000000C0 /* AppEdition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEdition.swift; sourceTree = "<group>"; };
+		200000000000000000000020 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		200000000000000000000021 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		200000000000000000000022 /* Settings.bundle */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.plug-in"; path = Settings.bundle; sourceTree = "<group>"; };
+		200000000000000000000023 /* KonomiTV-Viewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "KonomiTV-Viewer.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		200000000000000000000024 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		200000000000000000000051 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				200000000000000000000042 /* AVFoundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		200000000000000000000002 = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000004 /* KonomiTV-Viewer */,
+				200000000000000000000003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		200000000000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000023 /* KonomiTV-Viewer.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		2000000000000000000000B0 /* Licenses */ = {
+			isa = PBXGroup;
+			children = (
+				2000000000000000000000B1 /* MobileVLCKit.txt */,
+				2000000000000000000000B3 /* libaribcaption.txt */,
+				2000000000000000000000B5 /* FluentUISystemIcons.txt */,
+				2000000000000000000000B7 /* MaterialIcons.txt */,
+			);
+			path = Licenses;
+			sourceTree = "<group>";
+		};
+		200000000000000000000004 /* KonomiTV-Viewer */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000010 /* AppDelegate.swift */,
+				200000000000000000000011 /* SceneDelegate.swift */,
+				200000000000000000000012 /* SettingsStore.swift */,
+				200000000000000000000013 /* APIClient.swift */,
+				200000000000000000000014 /* Models.swift */,
+				200000000000000000000015 /* VideoListViewController.swift */,
+				200000000000000000000016 /* PlayerViewController.swift */,
+				200000000000000000000017 /* LiveListViewController.swift */,
+				200000000000000000000018 /* LivePlayerViewController.swift */,
+				200000000000000000000019 /* SettingsViewController.swift */,
+				200000000000000000000025 /* CMSectionBandView.swift */,
+				200000000000000000000026 /* FullscreenPlayerViewController.swift */,
+				200000000000000000000027 /* NowPlayingManager.swift */,
+				200000000000000000000028 /* MainTabBarController.swift */,
+				200000000000000000000029 /* SPHeaderView.swift */,
+				200000000000000000000053 /* MyPageViewController.swift */,
+				200000000000000000000054 /* ComingSoonViewController.swift */,
+				200000000000000000000057 /* NetworkMonitor.swift */,
+				200000000000000000000058 /* PlaybackSettingsViewController.swift */,
+				200000000000000000000059 /* StreamRelayServer.swift */,
+				200000000000000000000064 /* SettingsCategoryViewController.swift */,
+				200000000000000000000066 /* TimeTableViewController.swift */,
+				200000000000000000000068 /* TimeTableSettings.swift */,
+				20000000000000000000006A /* TimeTableSettingsViewController.swift */,
+				20000000000000000000006C /* WebControls.swift */,
+				2000000000000000000000A0 /* SyncedSettings.swift */,
+				2000000000000000000000A2 /* SettingsDetailViewController.swift */,
+				2000000000000000000000A4 /* GeneralSettingsViewController.swift */,
+				2000000000000000000000A6 /* CaptionSettingsViewController.swift */,
+				2000000000000000000000A8 /* JikkyoSettingsViewController.swift */,
+				2000000000000000000000AA /* CommentMuteSettingsViewController.swift */,
+				2000000000000000000000AC /* AccountSettingsViewController.swift */,
+				2000000000000000000000AE /* LicenseViewController.swift */,
+				2000000000000000000000B0 /* Licenses */,
+				200000000000000000000090 /* ReservationListViewController.swift */,
+				200000000000000000000092 /* ReservationDetailViewController.swift */,
+				200000000000000000000094 /* JikkyoCommentOverlay.swift */,
+				200000000000000000000096 /* AribCaption.swift */,
+				200000000000000000000098 /* TSID3Extractor.swift */,
+				2000000000000000000000C0 /* AppEdition.swift */,
+				200000000000000000000021 /* Assets.xcassets */,
+				200000000000000000000022 /* Settings.bundle */,
+				200000000000000000000020 /* Info.plist */,
+			);
+			path = "KonomiTV-Viewer";
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		200000000000000000000060 /* KonomiTV-Viewer */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 200000000000000000000071 /* Build configuration list for PBXNativeTarget "KonomiTV-Viewer" */;
+			buildPhases = (
+				200000000000000000000050 /* Sources */,
+				200000000000000000000051 /* Frameworks */,
+				200000000000000000000052 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "KonomiTV-Viewer";
+			productName = "KonomiTV-Viewer";
+			productReference = 200000000000000000000023 /* KonomiTV-Viewer.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		200000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					200000000000000000000060 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = 200000000000000000000070 /* Build configuration list for PBXProject "KonomiTV-Viewer" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+				ja,
+			);
+			mainGroup = 200000000000000000000002;
+			productRefGroup = 200000000000000000000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				200000000000000000000060 /* KonomiTV-Viewer */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		200000000000000000000052 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				200000000000000000000040 /* Assets.xcassets in Resources */,
+				200000000000000000000041 /* Settings.bundle in Resources */,
+				2000000000000000000000B2 /* MobileVLCKit.txt in Resources */,
+				2000000000000000000000B4 /* libaribcaption.txt in Resources */,
+				2000000000000000000000B6 /* FluentUISystemIcons.txt in Resources */,
+				2000000000000000000000B8 /* MaterialIcons.txt in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		200000000000000000000050 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				200000000000000000000030 /* AppDelegate.swift in Sources */,
+				200000000000000000000031 /* SceneDelegate.swift in Sources */,
+				200000000000000000000032 /* SettingsStore.swift in Sources */,
+				200000000000000000000033 /* APIClient.swift in Sources */,
+				200000000000000000000034 /* Models.swift in Sources */,
+				200000000000000000000035 /* VideoListViewController.swift in Sources */,
+				200000000000000000000036 /* PlayerViewController.swift in Sources */,
+				200000000000000000000037 /* LiveListViewController.swift in Sources */,
+				200000000000000000000038 /* LivePlayerViewController.swift in Sources */,
+				200000000000000000000039 /* SettingsViewController.swift in Sources */,
+				200000000000000000000043 /* CMSectionBandView.swift in Sources */,
+				200000000000000000000044 /* FullscreenPlayerViewController.swift in Sources */,
+				200000000000000000000045 /* NowPlayingManager.swift in Sources */,
+				200000000000000000000046 /* MainTabBarController.swift in Sources */,
+				200000000000000000000047 /* SPHeaderView.swift in Sources */,
+				200000000000000000000055 /* MyPageViewController.swift in Sources */,
+				200000000000000000000056 /* ComingSoonViewController.swift in Sources */,
+				200000000000000000000061 /* NetworkMonitor.swift in Sources */,
+				200000000000000000000062 /* PlaybackSettingsViewController.swift in Sources */,
+				200000000000000000000063 /* StreamRelayServer.swift in Sources */,
+				200000000000000000000065 /* SettingsCategoryViewController.swift in Sources */,
+				200000000000000000000067 /* TimeTableViewController.swift in Sources */,
+				200000000000000000000069 /* TimeTableSettings.swift in Sources */,
+				20000000000000000000006B /* TimeTableSettingsViewController.swift in Sources */,
+				20000000000000000000006D /* WebControls.swift in Sources */,
+				2000000000000000000000A1 /* SyncedSettings.swift in Sources */,
+				2000000000000000000000A3 /* SettingsDetailViewController.swift in Sources */,
+				2000000000000000000000A5 /* GeneralSettingsViewController.swift in Sources */,
+				2000000000000000000000A7 /* CaptionSettingsViewController.swift in Sources */,
+				2000000000000000000000A9 /* JikkyoSettingsViewController.swift in Sources */,
+				2000000000000000000000AB /* CommentMuteSettingsViewController.swift in Sources */,
+				2000000000000000000000AD /* AccountSettingsViewController.swift in Sources */,
+				2000000000000000000000AF /* LicenseViewController.swift in Sources */,
+				200000000000000000000091 /* ReservationListViewController.swift in Sources */,
+				200000000000000000000093 /* ReservationDetailViewController.swift in Sources */,
+				200000000000000000000095 /* JikkyoCommentOverlay.swift in Sources */,
+				200000000000000000000097 /* AribCaption.swift in Sources */,
+				200000000000000000000099 /* TSID3Extractor.swift in Sources */,
+				2000000000000000000000C1 /* AppEdition.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		200000000000000000000080 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		200000000000000000000081 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		200000000000000000000082 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APP_EDITION = household;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = "";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "KonomiTV-Viewer/Info.plist";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = jp.tatsuya0902.konomitv.viewer;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMBED_LIBRARIES_IF_NEEDED = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		200000000000000000000083 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APP_EDITION = household;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = "";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "KonomiTV-Viewer/Info.plist";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = jp.tatsuya0902.konomitv.viewer;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMBED_LIBRARIES_IF_NEEDED = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		200000000000000000000070 /* Build configuration list for PBXProject "KonomiTV-Viewer" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				200000000000000000000080 /* Debug */,
+				200000000000000000000081 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		200000000000000000000071 /* Build configuration list for PBXNativeTarget "KonomiTV-Viewer" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				200000000000000000000082 /* Debug */,
+				200000000000000000000083 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 200000000000000000000001 /* Project object */;
+}

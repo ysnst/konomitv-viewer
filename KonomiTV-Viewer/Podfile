@@ -1,0 +1,11 @@
+# 生放送 (MPEG-TS) の再生に VLCKit (MobileVLCKit) を使う。
+# 録画再生は AVPlayer が主で、H.265 / HEVC の画質のときだけ VLCKit を使う。
+# 字幕の文字化には libaribcaption を使う (公式の podspec が無いため、
+# ソースを Vendor/ に置いたローカルの pod として取り込む)。
+platform :ios, '16.0'
+
+target 'KonomiTV-Viewer' do
+  use_frameworks!
+  pod 'MobileVLCKit'
+  pod 'libaribcaption', :path => 'Vendor/libaribcaption'
+end

@@ -1,0 +1,2778 @@
+import AVFoundation
+import UIKit
+
+#if canImport(MobileVLCKit)
+import MobileVLCKit
+#endif
+
+/// 再生画面共通の部品 (録画・生放送の両方から使う)。
+/// Web 版の再生画面は、操作類を映像に重ねて出し、しばらく触らなければ消す作り。
+/// その重ね物の土台になるグラデーションと、通知ラベル、シークバーの色付けをここに置く。
+
+/// 上端または下端に向けて黒へ抜けるグラデーションの板。
+/// Web 版のヘッダー帯・操作帯と同じく、黒 (不透明度 0.81) から透明へ抜ける。
+final class GradientView: UIView {
+    enum Direction {
+        /// 上が黒く、下へ向けて透明 (画面上部の帯用)。
+        case top
+        /// 上が透明で、下へ向けて黒く (画面下部の帯用)。
+        case bottom
+    }
+
+    private let direction: Direction
+
+    init(direction: Direction) {
+        self.direction = direction
+        super.init(frame: .zero)
+        isUserInteractionEnabled = false
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override class var layerClass: AnyClass { CAGradientLayer.self }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard let gradient = layer as? CAGradientLayer else { return }
+        let black = UIColor.black.withAlphaComponent(0.81).cgColor
+        let clear = UIColor.black.withAlphaComponent(0).cgColor
+        gradient.colors = direction == .top ? [black, clear] : [clear, black]
+        gradient.locations = [0, 1]
+    }
+}
+
+/// 通知文のラベル。文が無いときは自分を隠し、下の情報欄で場所を取らない。
+final class NoticeLabel: UILabel {
+    override var text: String? {
+        didSet { isHidden = (text ?? "").isEmpty }
+    }
+}
+
+/// シークバーの色を Web 版のプレイヤーに合わせる。
+/// 再生済みの部分はテーマのピンク (DPlayer の theme = primary #E64F97)、
+/// 残りは白の薄い色、つまみは白。
+func stylePlayerSeekSlider(_ slider: UISlider) {
+    slider.minimumTrackTintColor = AppPalette.accent
+    slider.maximumTrackTintColor = UIColor.white.withAlphaComponent(0.25)
+    slider.thumbTintColor = .white
+}
+
+/// Web 版パネルの小さな操作ボタン (program-info__button) の形にボタンを整える。
+/// 地は background-lighten-1、角丸 4pt、文字は text-darken-1 の 12.7pt、
+/// 内側の余白は上下 5pt・左右 8pt。
+func stylePlayerChip(_ button: UIButton) {
+    button.setTitleColor(AppPalette.metaText, for: .normal)
+    button.titleLabel?.font = .systemFont(ofSize: 12.7)
+    button.backgroundColor = AppPalette.panel
+    button.layer.cornerRadius = 4
+    button.contentEdgeInsets = UIEdgeInsets(top: 5, left: 8, bottom: 5, right: 8)
+}
+
+/// 小さな印やボタンを左から並べ、幅に収まらなければ次の行へ折り返す入れ物。
+/// Web 版パネルのジャンルの印とボタンの並び (横に流して折り返す) を再現する。
+/// 中身の大きさに合わせて高さが決まる (縦の並びの中では、その高さで場所を取る)。
+final class ChipFlowView: UIView {
+    /// 横の間隔 (印同士・ボタン同士)。
+    var horizontalSpacing: CGFloat = 10 { didSet { setNeedsLayout() } }
+    /// 行の間隔。
+    var verticalSpacing: CGFloat = 16 { didSet { setNeedsLayout() } }
+    /// 直近の配置で決まった中身の高さ。
+    private var contentHeight: CGFloat = 0
+
+    override var intrinsicContentSize: CGSize {
+        CGSize(width: UIView.noIntrinsicMetric, height: contentHeight)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let width = bounds.width
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        for subview in subviews where !subview.isHidden {
+            let size = subview.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+            if x > 0, x + size.width > width {
+                x = 0
+                y += rowHeight + verticalSpacing
+                rowHeight = 0
+            }
+            subview.frame = CGRect(x: x, y: y, width: size.width, height: size.height)
+            x += size.width + horizontalSpacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        let height = y + rowHeight
+        if abs(height - contentHeight) > 0.5 {
+            contentHeight = height
+            invalidateIntrinsicContentSize()
+        }
+    }
+}
+
+/// 番組名の中の [字] [再] などの印を、Web 版と同じピンク地の印に描き分けた
+/// 属性付き文字列を作る (Web 版 ProgramUtils.decorateProgramInfo の写し)。
+/// 対象の印の一覧と、通常の括弧で囲まれた (二) (字) (再) の扱いも Web 版どおり。
+func decoratedProgramTitle(_ title: String, font: UIFont, textColor: UIColor) -> NSAttributedString {
+    // 本来 ARIB 外字である記号の一覧 (Web 版の定義そのまま)。
+    let marks = ["新", "終", "再", "交", "映", "手", "声", "多", "副", "字", "文", "CC", "OP", "二", "S", "B", "SS", "無", "無料",
+                 "C", "S1", "S2", "S3", "MV", "双", "デ", "D", "N", "W", "P", "H", "HV", "SD", "天", "解", "料", "前", "後初", "生", "販", "吹", "PPV",
+                 "演", "移", "他", "収", "・", "英", "韓", "中", "字/日", "字/日英", "3D", "2ndScr", "2K", "4K", "8K", "5.1", "7.1", "22.2", "60P", "120P", "d", "HC", "HDR", "Hi-Res", "Lossless", "SHV", "UHD", "VOD", "配", "初"]
+    let alternation = marks.map { NSRegularExpression.escapedPattern(for: $0) }.joined(separator: "|")
+    let pattern = "\\[(\(alternation))\\]|\\((二|字|再)\\)"
+    let baseAttributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: textColor]
+    guard let regex = try? NSRegularExpression(pattern: pattern) else {
+        return NSAttributedString(string: title, attributes: baseAttributes)
+    }
+    let result = NSMutableAttributedString()
+    let fullRange = NSRange(title.startIndex..., in: title)
+    var cursor = title.startIndex
+    for match in regex.matches(in: title, range: fullRange) {
+        guard let matchRange = Range(match.range, in: title),
+              let markRange = Range(match.range(at: 1), in: title) ?? Range(match.range(at: 2), in: title)
+        else { continue }
+        if cursor < matchRange.lowerBound {
+            result.append(NSAttributedString(string: String(title[cursor..<matchRange.lowerBound]), attributes: baseAttributes))
+        }
+        // 印は画像として差し込む (ピンク地に文字色の字、角丸 4pt、左右に 2.5pt の余白)。
+        let mark = String(title[markRange])
+        let image = programMarkChipImage(mark, baseFont: font)
+        let attachment = NSTextAttachment()
+        attachment.image = image
+        attachment.bounds = CGRect(
+            x: 0,
+            y: (font.capHeight - image.size.height) / 2,
+            width: image.size.width,
+            height: image.size.height
+        )
+        result.append(NSAttributedString(attachment: attachment))
+        cursor = matchRange.upperBound
+    }
+    if cursor < title.endIndex {
+        result.append(NSAttributedString(string: String(title[cursor...]), attributes: baseAttributes))
+    }
+    return result
+}
+
+/// 印1つ分の画像を描く。Web 版の .decorate-symbol と同じ見た目:
+/// 地は primary (#E64F97)、字は text (#FFEAEA)、字の大きさは題名の 0.94 倍、
+/// 内側の余白は左右 3pt、角丸 4pt、両脇に 2.5pt の透明な余白。
+private func programMarkChipImage(_ mark: String, baseFont: UIFont) -> UIImage {
+    let label = BadgeLabel()
+    label.text = mark
+    label.font = .systemFont(ofSize: baseFont.pointSize * 0.94, weight: .bold)
+    label.textColor = AppPalette.text
+    label.backgroundColor = AppPalette.accent
+    label.layer.cornerRadius = 4
+    label.clipsToBounds = true
+    label.textInsets = UIEdgeInsets(top: 0, left: 3, bottom: 0, right: 3)
+    label.sizeToFit()
+    let sideMargin: CGFloat = 2.5
+    let size = CGSize(width: label.bounds.width + sideMargin * 2, height: label.bounds.height)
+    let renderer = UIGraphicsImageRenderer(size: size)
+    return renderer.image { _ in
+        label.frame = CGRect(x: sideMargin, y: 0, width: label.bounds.width, height: label.bounds.height)
+        if let context = UIGraphicsGetCurrentContext() {
+            label.layer.render(in: context)
+        }
+    }
+}
+
+/// 録画番組の再生画面。HLS を再生する。
+/// 再生の仕組みは画質で出し分ける: 通常 (H.264) は AVPlayer、
+/// H.265 / HEVC の画質のときだけ VLCKit。サーバーは録画の映像を
+/// MPEG-TS の分割ファイルで送っており、AVPlayer は HEVC を MP4 形式の
+/// 分割でしか映像として出せない (TS に入った HEVC は音だけ出て映像が
+/// 出ない) ため。VLCKit は TS に入った HEVC を読み解ける。
+/// CM チャプター移動、前後スキップ (秒数は設定値)、シークバー、画質切り替え、
+/// 音声のみ切り替え、再生速度の切り替え、CM自動スキップ、前回見た位置からの
+/// 再開 (巻き戻し付き) を持つ (どちらの仕組みでも同じに効かせる)。
+final class PlayerViewController: UIViewController {
+    private let program: RecordedProgram
+
+    private var player: AVPlayer?
+    private var playerLayer: AVPlayerLayer?
+    private var timeObserver: Any?
+    private var timeControlObservation: NSKeyValueObservation?
+    /// AVPlayer 経路で、読み込みの失敗を拾うための観測。
+    private var itemStatusObservation: NSKeyValueObservation?
+#if canImport(MobileVLCKit)
+    /// H.265 / HEVC の画質のときに使う VLCKit のプレイヤー。
+    /// H.264 のときは AVPlayer を使うので、こちらは nil のまま。
+    private var vlcPlayer: VLCMediaPlayer?
+    /// VLCKit 経路で進み具合を 0.5 秒ごとに見るためのタイマー
+    /// (AVPlayer の定期観測にあたる)。
+    private var vlcTimeTimer: Timer?
+    /// VLCKit 経路で、再生が始まってから移動する開始位置の控え。
+    /// VLC は再生が始まる前に位置を指定しても効かないため、再生開始の
+    /// 合図 (デリゲート) で一度だけ移動する。
+    private var vlcPendingStartPosition: Double?
+    /// VLCKit 経路で、開始の見張り用タイマー。一定時間たっても再生が
+    /// 始まらなければ、真っ黒のまま無言にせず、その旨を表示する。
+    private var vlcStartWatchdog: Timer?
+    /// VLCKit 経路で、一度でも再生が始まったかどうか (見張りの判定用)。
+    private var vlcDidStartPlaying = false
+#endif
+    /// 録画再生で VLCKit を使うときの受け取りの溜め (ミリ秒)。
+    /// 生放送 (低遅延オン 1000 / オフ 4000ms) と違い、録画は放送との
+    /// 遅れが問題にならず、先読みを厚くして止まりにくくする方が大事。
+    /// 標準の仕組み (AVPlayer) や YouTube は再生位置より数十秒先まで
+    /// 読み込んで溜めるので、それに合わせて 30 秒分にする。VLC では
+    /// この値が「溜めておく再生時間の長さ」にあたり、再生中も読み取り
+    /// 側がこの量を保つよう先読みを続けるため、実用上は同じ厚さになる。
+    /// HLS の分割ファイルは数秒単位で届くため、30 秒分は分割ファイル
+    /// 10 個前後の余裕になり、外回線の揺れでも止まりにくい。
+    /// これ以上大きくすると、開始直後と移動 (シーク) のたびに溜めを
+    /// 作り直す待ち時間が目立ち始めるので、30 秒で止めている。
+    private static let vlcRecordedNetworkCaching = 30000
+    private var keepAliveTimer: Timer?
+    private var sessionID = UUID().uuidString
+    /// 再生を始めるときに決めた回線の区分。この再生の間は固定する
+    /// (途中で回線が変わっても画質は変えない)。ただし、再生画面での
+    /// 手動切り替え (モバイル回線向け画質) のときだけ、その場で変える。
+    private var profile: PlaybackProfile
+    private var quality: String
+    /// 画質の切り替えが完了した時点で設定へ書き戻すための控え。
+    /// 切り替え開始時点でも書き戻すが (本番 Web 版の追加の直しに合わせた)、
+    /// 完了時点の書き戻しはこの控えを使って、再生が再開したタイミングで行う。
+    private var pendingQualityWriteBack: String?
+    private var qualityBeforeAudioOnly: String?
+    private var audioOnly = false
+    private var isScrubbing = false
+    private var wasPlayingBeforeScrub = false
+    /// CM自動スキップの判定用。前回の時刻チェックで見た再生位置。
+    /// 「CM 区間の開始を跨いだ瞬間」だけを拾うため、シークしたときは
+    /// 移動先の位置で上書きする (区間の真ん中へ移った直後は発動させない)。
+    private var lastObservedPosition: Double = 0
+    /// 視聴進捗の報告用。最後にサーバーへ報告した位置と時刻。
+    private var lastReportedPosition: Double = -1
+    private var lastReportedAt: TimeInterval = 0
+    /// 共通の視聴履歴 (利用者設定の watched_history) への書き戻し用。
+    /// 再生を始めた時刻 (履歴への登録は30秒後、Web 版と同じ)、
+    /// 最後に書き戻した時刻、書き戻し中かどうか、登録用のタイマー。
+    private var playbackOpenedAt: TimeInterval = 0
+    private var lastHistorySyncAt: TimeInterval = 0
+    private var historySyncInFlight = false
+    private var historyRegistrationTimer: Timer?
+    /// 画面を離れる処理が済んだかどうか。開始位置の取得 (非同期) が
+    /// 離れた後に返ってきた場合、再生を始め直さないための印。
+    private var didLeaveScreen = false
+
+    private let videoContainer = UIView()
+    /// 映像の描画先。操作類の重ね物と兄弟にし、タップの受け口を映像だけに分ける。
+    private let surfaceView = UIView()
+    /// 映像の枠を通常画面に固定する決まり (制約) の控え。全画面へ貸し出す
+    /// ときに外し、戻すときに付け直すために持っておく。
+    private var surfaceViewHomeConstraints: [NSLayoutConstraint] = []
+    /// 全画面へ貸し出し中に、映像の枠を全画面側へ固定する決まり (制約)。
+    private var surfaceViewBorrowConstraints: [NSLayoutConstraint] = []
+    /// 映像タップの受け口。貸し出し中は止める (全画面側のタップと二重に
+    /// 効かないようにするため)。
+    private weak var surfaceTapRecognizer: UITapGestureRecognizer?
+    /// 映像の下辺に重ねる操作帯 (グラデーション + 操作類)。
+    private let bottomGradient = GradientView(direction: .bottom)
+    /// 操作類の入れ物。グラデーションと一緒に透明度で出し入れする。
+    private let controlsContainer = UIView()
+    /// 映像の真ん中に置く操作の並び (前の場面へ・少し戻る・再生/一時停止・
+    /// 少し進む・次の場面へ)。本家 Web 版の中央の並びと同じ置き場所で、
+    /// 下の帯とは別に、操作帯と一緒に透明度で出し入れする。
+    private let centerTransport = UIStackView()
+    // 操作ボタンはすべて共通部品の波紋つきボタン (押したときの反応)。
+    private let playPauseButton = RippleButton()
+    private let skipBackButton = RippleButton()
+    private let skipForwardButton = RippleButton()
+    private let prevChapterButton = RippleButton()
+    private let nextChapterButton = RippleButton()
+    private let seekSlider = UISlider()
+    private let bandView = CMSectionBandView()
+    /// コメント (ニコニコ実況の過去ログ) を映像の上に流す重ね物。
+    private let commentOverlay = JikkyoCommentOverlayView()
+    /// コメント表示のオン/オフ (操作帯の中。Web 版プレイヤーの操作帯にある
+    /// コメント表示の切り替えと同じ置き場所)。
+    private let commentButton = RippleButton()
+    /// 取得できたコメントの件数。取れなかったときは nil で、
+    /// 情報欄の「コメント数:」の行は出さない。
+    private var commentCount: Int?
+    // MARK: 字幕
+    /// 字幕の本体 (包みの蓄え・文字化・描画)。包みの入り口は経路ごとに
+    /// 違うが、蓄えた後の扱いは共通 (AribCaption.swift)。
+    private let captionEngine = CaptionDisplayEngine()
+    /// 字幕の重ね物。映像の枠 (surfaceView) の中に入れる。
+    /// 全画面 (VLCKit 経路) では枠ごと貸し出されるため、そのまま付いて行く。
+    /// AVPlayer 経路の全画面では、映像の層と一緒にこちらも貸し出す。
+    private let captionOverlayView = CaptionOverlayView()
+    /// 字幕の重ね物を映像の枠へ固定する決まり (制約) の控え。
+    /// 全画面へ貸し出すときに外し、戻すときに付け直すために持っておく。
+    private var captionHomeConstraints: [NSLayoutConstraint] = []
+    /// 字幕表示のオン/オフ (操作帯の中。Web 版プレイヤーの操作帯にある
+    /// 字幕の切り替えと同じ置き場所で、コメント切り替えの隣に置く)。
+    private let captionButton = RippleButton()
+    /// AVPlayer 経路で、字幕データ (時刻つきデータ) の受け取り口。
+    private var captionMetadataOutput: AVPlayerItemMetadataOutput?
+    // MARK: シーク中のプレビュー (Web 版プレイヤーのシークバー上のプレビューと同じ仕組み)
+    /// サーバーが用意するタイル画像 (サムネイルを並べた1枚絵) を切り出して出す。
+    /// 映像の再生の仕組み (AVPlayer / VLCKit) には寄らないため、どちらの経路でも
+    /// 同じように出せる。絵はシークを始めたときに初めて取りに行き、
+    /// 切り出しはタイルが切り替わったときだけ行う (再生そのものには触れない)。
+    private let seekPreviewView = UIView()
+    private let seekPreviewImageView = UIImageView()
+    private let seekPreviewTimeLabel = UILabel()
+    /// プレビューの横位置 (映像の枠の中央からのずれ)。指の位置に合わせて動かす。
+    private var seekPreviewCenterConstraint: NSLayoutConstraint?
+    /// タイル画像の読み込み状態。
+    private enum SpriteLoadState {
+        case idle, loading, loaded, failed
+    }
+    private var spriteLoadState: SpriteLoadState = .idle
+    /// 読み込んだタイル画像一式。切り出しの材料に CGImage も持つ。
+    private var spriteImage: UIImage?
+    private var spriteCGImage: CGImage?
+    /// いまプレビューに出しているタイルの番号。切り替わったときだけ切り出し直す。
+    private var seekPreviewTileIndex = -1
+    // MARK: 情報欄のタブとコメント一覧 (Web 版パネルの下部ナビと同じ考え方)
+    /// 情報欄のタブ (番組情報 / コメント)。Web 版パネル下部のナビにあたる。
+    private let infoTabBar = UIView()
+    private let infoTabButton = RippleButton()
+    private let commentTabButton = RippleButton()
+    /// タブの中の絵と文字。選択状態に合わせて色を変えるため控えを持つ。
+    private let infoTabIconView = UIImageView()
+    private let infoTabTitleLabel = UILabel()
+    private let commentTabIconView = UIImageView()
+    private let commentTabTitleLabel = UILabel()
+    /// 選択中のタブ。開いたときの既定は、設定の「全般」にある
+    /// 「ビデオをみるときにデフォルトで表示されるパネルのタブ」の値。
+    private enum InfoTab {
+        case info, comment
+    }
+    private var selectedInfoTab: InfoTab =
+        SyncedSettingsStore.shared.current.videoPanelActiveTab == "Comment" ? .comment : .info
+    /// コメント一覧の表。情報欄のスクロールと場所を取り合って切り替える。
+    private let commentTableView = UITableView(frame: .zero, style: .plain)
+    private let commentEmptyLabel = UILabel()
+    /// 取得した過去ログコメント一式 (時刻の昇順)。流れる表示と一覧で共用する。
+    private var jikkyoComments: [JikkyoComment] = []
+    /// コメント取得の状態。一覧の空表示の文を出し分けるために持つ。
+    private enum JikkyoLoadState {
+        case loading
+        case loaded
+        case failed(String)
+    }
+    private var jikkyoLoadState: JikkyoLoadState = .loading
+    /// 一覧が追随しているコメントの番号 (再生位置を過ぎた最後のコメント)。
+    private var commentFollowIndex = -1
+    /// 利用者が一覧を手でスクロールした最後の時刻。しばらくは追随を止める
+    /// (Web 版も手動スクロール中は自動で動かさない)。
+    private var commentListManualScrollAt: Date?
+    private let currentTimeLabel = UILabel()
+    private let durationLabel = UILabel()
+    /// 見出し帯の右端に出す時計 (Web 版の上部帯の時計に相当)。
+    /// 設定「録画番組の再生中に元の放送時刻を表示する」が入っているときは、
+    /// 今の時刻ではなく、録画の開始時刻に再生位置を足した時刻を出す。
+    private let headerClockLabel = UILabel()
+    private let headerClockIconView = UIImageView()
+    private var headerClockTimer: Timer?
+    /// 映像の下の情報欄 (Web 版パネルに相当)。中身が長いときはスクロールする。
+    private let scrollView = UIScrollView()
+    private let infoTitleLabel = UILabel()
+    private let logoImageView = UIImageView()
+    private let channelLabel = UILabel()
+    private let programTimeLabel = UILabel()
+    private let descriptionLabel = UILabel()
+    private let statusLabel = UILabel()
+    /// 操作の小さなボタン群 (Web 版パネルのボタンの形)。
+    /// 波紋つきボタン (共通部品) で、押したときの反応もそろえる。
+    private let qualityButton = RippleButton()
+    private let profileButton = RippleButton()
+    private let rateButton = RippleButton()
+    private let audioOnlyButton = RippleButton()
+    private let fullscreenButton = RippleButton()
+    private let protectButton = RippleButton()
+    private let watchedButton = RippleButton()
+    private let sleepTimerButton = RippleButton()
+    /// ジャンルの印の並び (Web 版パネルの genre-container に相当)。材料が無いときは隠す。
+    private let genreFlowView = ChipFlowView()
+    /// ボタン群の並び (Web 版パネルのボタンの流し並べに相当)。
+    private let buttonsFlowView = ChipFlowView()
+    /// 詳細情報の節の並び (Web 版パネルの program-detail-container に相当)。
+    /// 材料が無いときは隠す。
+    private let detailStack = UIStackView()
+    /// おやすみタイマーの状態 (Web 版 SleepTimerManager の写し)。
+    /// 押すたびに オフ → 15分 → 30分 → 60分 → 番組の終わりで停止 → オフ と巡る。
+    private enum SleepTimerMode {
+        case off
+        case minutes
+        case end
+    }
+    /// 巡回の現在位置 (["off", "15", "30", "60", "end"] の添字)。
+    private var sleepTimerModeIndex = 0
+    private var sleepTimerMode: SleepTimerMode = .off
+    /// 分モードの残り秒数。分モードでないときは nil。
+    private var sleepTimerRemainingSeconds: Int?
+    /// 分モードの残り時間を1秒ごとに減らすタイマー。
+    private var sleepTimerTicker: Timer?
+    /// 保護の現在状態。切り替えたら手元の表示も追いつかせるため、番組データとは別に持つ。
+    private lazy var currentProtected: Bool = program.isProtected
+    private let messageLabel = NoticeLabel()
+    private var videoHeightConstraint: NSLayoutConstraint?
+    /// 操作帯の出し入れ (Web 版と同じく、再生中はしばらく触らなければ消える)。
+    private var controlsVisible = true
+    private var hideTimer: Timer?
+
+    init(program: RecordedProgram) {
+        self.program = program
+        // 回線の区分はこの時点で決める。手動切り替えの記憶があればそれを
+        // 優先し、無ければ現在の回線から決める (Web 版の優先順位と同じ)。
+        // 画質はビデオ側のその区分の値から始める。
+        let profile = SettingsStore.shared.initialPlaybackProfile()
+        self.profile = profile
+        self.quality = SettingsStore.shared.streamingQuality(media: .video, profile: profile)
+        super.init(nibName: nil, bundle: nil)
+        title = program.title
+        hidesBottomBarWhenPushed = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = AppPalette.background
+        buildLayout()
+        setupHeaderClock()
+        // 情報欄のタブの既定 (設定の「全般」の値) に、表示側も合わせる。
+        applyInfoTab(selectedInfoTab)
+        // コメントの重ね物に再生位置の読み取り口を渡し、見張りを始める。
+        // 過去ログコメントの取得は再生と並行して行う (取れた時点で流れ始める)。
+        commentOverlay.positionProvider = { [weak self] in self?.currentPosition() ?? 0 }
+        // 表示の濃さ・速さ・字の大きさ・無制限表示は、設定の
+        // 「ニコニコ実況」の値を開くときに読み込む。
+        commentOverlay.displayOpacity = SettingsStore.shared.commentOpacity
+        commentOverlay.unlimited = SettingsStore.shared.showCommentsUnlimited
+        commentOverlay.speedRate = SyncedSettingsStore.shared.current.commentSpeedRate
+        commentOverlay.fontSizeReference = SyncedSettingsStore.shared.current.commentFontSize
+        commentOverlay.start()
+        applyCommentDisplayState()
+        applyCaptionDisplayState()
+        loadJikkyoComments()
+        beginNowPlaying()
+        resolveInitialStartPosition { [weak self] position in
+            guard let self, !self.didLeaveScreen else { return }
+            self.startPlayback(at: position)
+        }
+    }
+
+    /// 再生を始める位置を決める。
+    /// 同期が効く状態 (ログイン中かつ「設定をデバイス間で同期する」がオン) で、
+    /// Web 版と共通の視聴履歴に前回位置が残っていれば、それを元にする
+    /// (使う直前にサーバーから取り直す)。履歴が無い・位置が取れない・
+    /// 取得に失敗した場合は、今までどおりサーバー側の視聴状態を元にする。
+    private func resolveInitialStartPosition(completion: @escaping (Double) -> Void) {
+        guard WatchedHistorySync.isEnabled else {
+            completion(initialStartPosition())
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            if let saved = await WatchedHistorySync.lastPlaybackPosition(videoID: program.id) {
+                completion(startPosition(savedPosition: saved))
+            } else {
+                completion(initialStartPosition())
+            }
+        }
+    }
+
+    /// 今までの元データ (サーバーが一元管理する視聴状態) からの開始位置。
+    /// 一覧の応答に含まれる見た割合 × 尺 が「到達した最大位置」にあたる
+    /// (ログイン不要で取れる)。
+    private func initialStartPosition() -> Double {
+        guard let ratio = program.watched_ratio, ratio > 0 else { return 0 }
+        return startPosition(savedPosition: ratio * program.duration)
+    }
+
+    /// 保存された前回位置から、再開する位置を計算する。
+    /// 前回見た位置から、設定の秒数だけ巻き戻して始める (改造側の仕様確認済み)。
+    /// - 下限は録画開始マージン + 2秒 (Web 版が履歴なしのときに始める位置と同じ)。
+    /// - 最後まで見終わっている (残り10秒以内) ものと、録画中のものは先頭から。
+    private func startPosition(savedPosition saved: Double) -> Double {
+        guard !program.isRecording else { return 0 }
+        let floor = program.recordingStartMargin + 2
+        guard saved > floor, saved < program.duration - 10 else { return 0 }
+        let target = max(saved - Double(SettingsStore.shared.resumeRewindSeconds), floor)
+        if target > floor {
+            messageLabel.text = "前回視聴した続きから再生します。"
+        }
+        return target
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // 題名の出し方だけ Web 版ヘッダー (14px 太字・テーマの文字色) に合わせる。
+        // 戻る操作と題名の置き場所は、今までのナビゲーションバーのまま
+        // (一覧側が「押し込み先ではバーを戻す」作りのため、重ね物の戻るボタンは置かない)。
+        let bar = navigationController?.navigationBar
+        bar?.tintColor = AppPalette.text
+        bar?.titleTextAttributes = [
+            .font: UIFont.systemFont(ofSize: 14, weight: .bold),
+            .foregroundColor: AppPalette.text,
+        ]
+        // フルスクリーンから戻ってきたとき用に、消えるタイマーを仕掛け直す。
+        if hasActiveEngine {
+            scheduleHideControls()
+        }
+        // 見出し帯の時計を毎秒進める。
+        headerClockTimer?.invalidate()
+        headerClockTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            self?.updateHeaderClock()
+        }
+        updateHeaderClock()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        // ナビゲーションバーの見た目を標準へ戻す (この画面の間だけ変えているため)。
+        let bar = navigationController?.navigationBar
+        bar?.tintColor = nil
+        bar?.titleTextAttributes = nil
+        hideTimer?.invalidate()
+        hideTimer = nil
+        headerClockTimer?.invalidate()
+        headerClockTimer = nil
+        // フルスクリーン表示で覆われただけのときは再生を止めない。
+        // それ以外で画面を離れるときは今までどおり止める。
+        if presentedViewController is FullscreenPlayerViewController {
+            return
+        }
+        didLeaveScreen = true
+        stopPlayback()
+    }
+
+    // MARK: - 画面構成
+
+    private func buildLayout() {
+        // MARK: 映像まわり (映像 + 下辺に重ねる操作帯)
+        videoContainer.backgroundColor = .black
+        videoContainer.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(videoContainer)
+
+        surfaceView.backgroundColor = .black
+        surfaceView.translatesAutoresizingMaskIntoConstraints = false
+        videoContainer.addSubview(surfaceView)
+        // 字幕の重ね物は映像の枠の中に入れる (映像の上・コメントより下)。
+        // 全画面 (VLCKit 経路) では枠ごと貸し出されるため、そのまま付いて行く。
+        captionOverlayView.translatesAutoresizingMaskIntoConstraints = false
+        surfaceView.addSubview(captionOverlayView)
+        // コメントの重ね物は映像の上・操作帯の下に置く (操作は受けない)。
+        commentOverlay.translatesAutoresizingMaskIntoConstraints = false
+        videoContainer.addSubview(commentOverlay)
+        // 映像をタップしたら操作帯を出し入れする (Web 版と同じ作り)。
+        let tap = UITapGestureRecognizer(target: self, action: #selector(toggleControls))
+        surfaceView.addGestureRecognizer(tap)
+        surfaceTapRecognizer = tap
+
+        // 真ん中の並びの絵の大きさは本家の比率に寄せる (再生/一時停止が
+        // 一番大きく、少し戻る/少し進む、場面移動の順に小さく)。
+        // 当たり判定は絵より広く取る (再生/一時停止 64x64、それ以外 52x52)。
+        configure(playPauseButton, symbol: "play.fill", pointSize: 40, action: #selector(togglePlayPause))
+        // スキップ秒数は設定値に合わせ、ボタンの数字もその秒数のものにする
+        // (選択肢の秒数はすべて SF Symbols に用意がある)。
+        let store = SettingsStore.shared
+        configure(skipBackButton, symbol: "gobackward.\(store.seekBackwardSeconds)", pointSize: 30, action: #selector(skipBack))
+        configure(skipForwardButton, symbol: "goforward.\(store.seekForwardSeconds)", pointSize: 30, action: #selector(skipForward))
+        configure(prevChapterButton, symbol: "backward.end.fill", pointSize: 26, action: #selector(prevChapter))
+        configure(nextChapterButton, symbol: "forward.end.fill", pointSize: 26, action: #selector(nextChapter))
+        for button in [playPauseButton, skipBackButton, skipForwardButton, prevChapterButton, nextChapterButton] {
+            button.tintColor = .white
+            let hitSize: CGFloat = button === playPauseButton ? 64 : 52
+            button.widthAnchor.constraint(equalToConstant: hitSize).isActive = true
+            button.heightAnchor.constraint(equalToConstant: hitSize).isActive = true
+        }
+        let hasChapters = !program.chapterBoundaries.isEmpty
+        prevChapterButton.isEnabled = hasChapters
+        nextChapterButton.isEnabled = hasChapters
+        prevChapterButton.alpha = hasChapters ? 1 : 0.35
+        nextChapterButton.alpha = hasChapters ? 1 : 0.35
+
+        // コメント表示の切り替え (Web 版プレイヤーの操作帯にある切り替えと同じ置き場所)。
+        commentButton.addTarget(self, action: #selector(toggleComments), for: .touchUpInside)
+        updateCommentButton()
+
+        // 字幕表示の切り替え (Web 版プレイヤーの操作帯にある字幕の切り替えと
+        // 同じ置き場所で、コメント切り替えの隣に置く)。
+        captionButton.addTarget(self, action: #selector(toggleCaptions), for: .touchUpInside)
+        updateCaptionButton()
+
+        seekSlider.addTarget(self, action: #selector(scrubBegan), for: .touchDown)
+        seekSlider.addTarget(self, action: #selector(scrubChanged), for: .valueChanged)
+        seekSlider.addTarget(self, action: #selector(scrubEnded), for: [.touchUpInside, .touchUpOutside, .touchCancel])
+        stylePlayerSeekSlider(seekSlider)
+
+        // シークバーの上に CM 区間の帯を重ねる (帯は操作を受けない)。
+        let seekContainer = UIView()
+        seekSlider.translatesAutoresizingMaskIntoConstraints = false
+        bandView.translatesAutoresizingMaskIntoConstraints = false
+        seekContainer.addSubview(seekSlider)
+        seekContainer.addSubview(bandView)
+        NSLayoutConstraint.activate([
+            seekSlider.topAnchor.constraint(equalTo: seekContainer.topAnchor),
+            seekSlider.bottomAnchor.constraint(equalTo: seekContainer.bottomAnchor),
+            seekSlider.leadingAnchor.constraint(equalTo: seekContainer.leadingAnchor),
+            seekSlider.trailingAnchor.constraint(equalTo: seekContainer.trailingAnchor),
+            bandView.topAnchor.constraint(equalTo: seekContainer.topAnchor),
+            bandView.bottomAnchor.constraint(equalTo: seekContainer.bottomAnchor),
+            bandView.leadingAnchor.constraint(equalTo: seekContainer.leadingAnchor),
+            bandView.trailingAnchor.constraint(equalTo: seekContainer.trailingAnchor),
+        ])
+        bandView.slider = seekSlider
+        bandView.sections = program.cmSections
+
+        currentTimeLabel.text = "0:00"
+        durationLabel.text = TimeFormat.hms(program.duration)
+        for label in [currentTimeLabel, durationLabel] {
+            label.textColor = AppPalette.text
+            label.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        }
+        currentTimeLabel.widthAnchor.constraint(equalToConstant: 52).isActive = true
+        durationLabel.widthAnchor.constraint(equalToConstant: 52).isActive = true
+        durationLabel.textAlignment = .right
+
+        // 真ん中の並び: [前の場面へ] [少し戻る] [再生/一時停止] [少し進む]
+        // [次の場面へ]。本家 Web 版の中央の並びと同じ顔ぶれで、映像の
+        // 真ん中に置く (下の帯には置かない)。
+        centerTransport.addArrangedSubview(prevChapterButton)
+        centerTransport.addArrangedSubview(skipBackButton)
+        centerTransport.addArrangedSubview(playPauseButton)
+        centerTransport.addArrangedSubview(skipForwardButton)
+        centerTransport.addArrangedSubview(nextChapterButton)
+        centerTransport.axis = .horizontal
+        centerTransport.spacing = 28
+        centerTransport.alignment = .center
+        centerTransport.translatesAutoresizingMaskIntoConstraints = false
+
+        // 下の帯の並び: [現在時刻] ... [全体の長さ・字幕切り替え・コメント切り替え]。
+        let rightGroup = UIStackView(arrangedSubviews: [durationLabel, captionButton, commentButton])
+        rightGroup.axis = .horizontal
+        rightGroup.spacing = 8
+        rightGroup.alignment = .center
+
+        let transportRow = UIStackView(arrangedSubviews: [currentTimeLabel, rightGroup])
+        transportRow.axis = .horizontal
+        transportRow.alignment = .center
+        transportRow.distribution = .equalSpacing
+
+        // 操作帯: グラデーションの上に、操作の並びとシークバーを載せる。
+        // シークバーは Web 版スマホ縦と同じく、映像の下辺いっぱいに置く。
+        bottomGradient.translatesAutoresizingMaskIntoConstraints = false
+        videoContainer.addSubview(bottomGradient)
+        let controlsStack = UIStackView(arrangedSubviews: [transportRow, seekContainer])
+        controlsStack.axis = .vertical
+        controlsStack.spacing = 2
+        controlsStack.translatesAutoresizingMaskIntoConstraints = false
+        controlsContainer.translatesAutoresizingMaskIntoConstraints = false
+        controlsContainer.addSubview(controlsStack)
+        videoContainer.addSubview(controlsContainer)
+        // 真ん中の並びは操作帯より上に置く (映像が低いときでも帯に
+        // 触れて押せなくならないように)。
+        videoContainer.addSubview(centerTransport)
+
+        // シーク中のプレビュー: 操作帯のすぐ上に、指の位置の時刻の映像と
+        // 時刻を出す (Web 版プレイヤーのシークバーのプレビューと同じ出方)。
+        // シーク中だけ出し、タイル画像が届くまでは時刻だけ出す。
+        seekPreviewView.backgroundColor = UIColor.black.withAlphaComponent(0.78)
+        seekPreviewView.layer.cornerRadius = 6
+        seekPreviewView.clipsToBounds = true
+        seekPreviewView.isHidden = true
+        seekPreviewView.translatesAutoresizingMaskIntoConstraints = false
+        videoContainer.addSubview(seekPreviewView)
+        seekPreviewImageView.contentMode = .scaleToFill
+        seekPreviewImageView.clipsToBounds = true
+        seekPreviewImageView.isHidden = true
+        seekPreviewTimeLabel.textColor = .white
+        seekPreviewTimeLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        seekPreviewTimeLabel.textAlignment = .center
+        let seekPreviewStack = UIStackView(arrangedSubviews: [seekPreviewImageView, seekPreviewTimeLabel])
+        seekPreviewStack.axis = .vertical
+        seekPreviewStack.spacing = 3
+        seekPreviewStack.isLayoutMarginsRelativeArrangement = true
+        seekPreviewStack.layoutMargins = UIEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
+        seekPreviewStack.translatesAutoresizingMaskIntoConstraints = false
+        seekPreviewView.addSubview(seekPreviewStack)
+        let seekPreviewCenter = seekPreviewView.centerXAnchor.constraint(equalTo: videoContainer.centerXAnchor)
+        seekPreviewCenterConstraint = seekPreviewCenter
+        NSLayoutConstraint.activate([
+            seekPreviewView.bottomAnchor.constraint(equalTo: controlsContainer.topAnchor, constant: -8),
+            seekPreviewCenter,
+            seekPreviewStack.topAnchor.constraint(equalTo: seekPreviewView.topAnchor),
+            seekPreviewStack.leadingAnchor.constraint(equalTo: seekPreviewView.leadingAnchor),
+            seekPreviewStack.trailingAnchor.constraint(equalTo: seekPreviewView.trailingAnchor),
+            seekPreviewStack.bottomAnchor.constraint(equalTo: seekPreviewView.bottomAnchor),
+            // タイル1枚は 320x180 (16:9)。表示は幅 128pt に合わせる。
+            seekPreviewImageView.widthAnchor.constraint(equalToConstant: 128),
+            seekPreviewImageView.heightAnchor.constraint(equalToConstant: 72),
+        ])
+
+        // MARK: 映像の下の情報欄 (Web 版パネル)
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.backgroundColor = AppPalette.background
+        view.addSubview(scrollView)
+
+        // 情報欄のタブ (Web 版パネルの下部ナビにあたる)。番組情報とコメント
+        // 一覧を切り替える。絵の上に文字の縦並び、選択中は primary の色、
+        // という Web 版ナビの形に合わせる (アプリでは置き場所だけ映像の下に移す)。
+        infoTabBar.backgroundColor = AppPalette.background
+        infoTabBar.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(infoTabBar)
+        buildInfoTabButton(infoTabButton, iconView: infoTabIconView, titleLabel: infoTabTitleLabel,
+                            symbol: "info.circle", title: "番組情報", action: #selector(selectInfoTab))
+        buildInfoTabButton(commentTabButton, iconView: commentTabIconView, titleLabel: commentTabTitleLabel,
+                           symbol: "text.bubble.fill", title: "コメント", action: #selector(selectCommentTab))
+        let infoTabStack = UIStackView(arrangedSubviews: [infoTabButton, commentTabButton])
+        infoTabStack.axis = .horizontal
+        infoTabStack.distribution = .fillEqually
+        infoTabStack.translatesAutoresizingMaskIntoConstraints = false
+        infoTabBar.addSubview(infoTabStack)
+        let infoTabDivider = UIView()
+        infoTabDivider.backgroundColor = AppPalette.pressed
+        infoTabDivider.translatesAutoresizingMaskIntoConstraints = false
+        infoTabBar.addSubview(infoTabDivider)
+        NSLayoutConstraint.activate([
+            infoTabStack.topAnchor.constraint(equalTo: infoTabBar.topAnchor),
+            infoTabStack.leadingAnchor.constraint(equalTo: infoTabBar.leadingAnchor),
+            infoTabStack.trailingAnchor.constraint(equalTo: infoTabBar.trailingAnchor),
+            infoTabStack.bottomAnchor.constraint(equalTo: infoTabBar.bottomAnchor),
+            infoTabDivider.leadingAnchor.constraint(equalTo: infoTabBar.leadingAnchor),
+            infoTabDivider.trailingAnchor.constraint(equalTo: infoTabBar.trailingAnchor),
+            infoTabDivider.bottomAnchor.constraint(equalTo: infoTabBar.bottomAnchor),
+            infoTabDivider.heightAnchor.constraint(equalToConstant: 1),
+        ])
+        updateInfoTabButtons()
+
+        // コメント一覧の表。情報欄のスクロールと場所を取り合う。
+        // 行は本文 (13pt) + 右端に時刻 (Web 版コメント一覧の並び)。
+        commentTableView.backgroundColor = AppPalette.background
+        commentTableView.separatorColor = AppPalette.pressed
+        commentTableView.separatorInset = UIEdgeInsets(top: 0, left: 16, bottom: 0, right: 16)
+        commentTableView.contentInset = UIEdgeInsets(top: 4, left: 0, bottom: 8, right: 0)
+        commentTableView.rowHeight = UITableView.automaticDimension
+        commentTableView.estimatedRowHeight = 34
+        commentTableView.dataSource = self
+        commentTableView.delegate = self
+        commentTableView.register(CommentListCell.self, forCellReuseIdentifier: CommentListCell.reuseIdentifier)
+        commentTableView.isHidden = true
+        commentTableView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(commentTableView)
+        // 空表示 (取得中・0件・失敗で文を出し分ける)。
+        commentEmptyLabel.textColor = AppPalette.metaText
+        commentEmptyLabel.font = .systemFont(ofSize: 13)
+        commentEmptyLabel.numberOfLines = 0
+        commentEmptyLabel.textAlignment = .center
+        updateCommentEmptyState()
+
+        messageLabel.textColor = .systemYellow
+        messageLabel.font = .systemFont(ofSize: 12.5)
+        messageLabel.numberOfLines = 0
+        messageLabel.isHidden = true
+
+        // 番組名: パネルの見出し (19pt 太字)。[字] [再] などの印は、
+        // Web 版と同じピンク地の印に描き分ける (題名の文字列のままにはしない)。
+        infoTitleLabel.font = .systemFont(ofSize: 19, weight: .bold)
+        infoTitleLabel.attributedText = decoratedProgramTitle(
+            program.title, font: infoTitleLabel.font, textColor: AppPalette.text)
+        infoTitleLabel.numberOfLines = 0
+
+        // 局の並び: ロゴ 44x36 (角丸 3pt) + 「Ch: 番号 局名」14pt + 時刻 12.5pt。
+        logoImageView.backgroundColor = AppPalette.placeholder
+        logoImageView.contentMode = .scaleAspectFill
+        logoImageView.clipsToBounds = true
+        logoImageView.layer.cornerRadius = 3
+        if let channel = program.channel {
+            channelLabel.text = channel.channel_number.map { "Ch: \($0) \(channel.name)" } ?? channel.name
+        } else {
+            channelLabel.text = "チャンネル情報なし"
+        }
+        channelLabel.textColor = AppPalette.text
+        channelLabel.font = .systemFont(ofSize: 14)
+        channelLabel.numberOfLines = 1
+        channelLabel.lineBreakMode = .byTruncatingTail
+        programTimeLabel.text = programTimeText()
+        programTimeLabel.textColor = AppPalette.metaText
+        programTimeLabel.font = .systemFont(ofSize: 12.5)
+        let channelTexts = UIStackView(arrangedSubviews: [channelLabel, programTimeLabel])
+        channelTexts.axis = .vertical
+        channelTexts.spacing = 2
+        let broadcasterRow = UIStackView(arrangedSubviews: [logoImageView, channelTexts])
+        broadcasterRow.axis = .horizontal
+        broadcasterRow.spacing = 12
+        broadcasterRow.alignment = .center
+        NSLayoutConstraint.activate([
+            logoImageView.widthAnchor.constraint(equalToConstant: 44),
+            logoImageView.heightAnchor.constraint(equalToConstant: 36),
+        ])
+        loadChannelLogo()
+
+        // 説明: 12pt、行間 168% 相当、色は text-darken-1。
+        if let description = program.description, !description.isEmpty {
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineSpacing = 12 * 0.68
+            descriptionLabel.attributedText = NSAttributedString(string: description, attributes: [
+                .font: UIFont.systemFont(ofSize: 12),
+                .foregroundColor: AppPalette.metaText,
+                .paragraphStyle: paragraph,
+            ])
+        }
+        descriptionLabel.numberOfLines = 0
+
+        // ジャンルの印: Web 版パネルと同じく「大分類 / 中分類」の印を流して並べる。
+        // 地は background-lighten-2、角丸 4pt、字は 10.5pt、内側の余白は 3pt、
+        // 印の間隔は横 4pt・行間 4pt。材料が無ければ行ごと出さない。
+        genreFlowView.horizontalSpacing = 4
+        genreFlowView.verticalSpacing = 4
+        if let genres = program.genres, !genres.isEmpty {
+            for genre in genres {
+                let chip = BadgeLabel()
+                chip.text = "\(genre.major) / \(genre.middle)"
+                chip.font = .systemFont(ofSize: 10.5)
+                chip.textColor = AppPalette.text
+                chip.backgroundColor = AppPalette.pressed
+                chip.layer.cornerRadius = 4
+                chip.clipsToBounds = true
+                chip.textInsets = UIEdgeInsets(top: 3, left: 3, bottom: 3, right: 3)
+                genreFlowView.addSubview(chip)
+            }
+        } else {
+            genreFlowView.isHidden = true
+        }
+
+        // 録画期間とコメント数の状態行: 12.5pt、色は text-darken-1。
+        // コメント数は、過去ログコメントが取得できたときに後から足される。
+        statusLabel.textColor = AppPalette.metaText
+        statusLabel.font = .systemFont(ofSize: 12.5)
+        statusLabel.numberOfLines = 0
+        updateStatusText()
+
+        // 詳細情報の節: Web 版パネルと同じく、見出し (18pt) と本文 (12pt、
+        // 行間 168% 相当、色は text-darken-1) の組を並べる。
+        // 並びは見出しの順 (材料は辞書で届くため順序を保てない。予約詳細と同じ扱い)。
+        // 材料が無い・本文が空の節は出さない。
+        detailStack.axis = .vertical
+        detailStack.spacing = 16
+        if let detail = program.detail {
+            for heading in detail.keys.sorted() {
+                guard let body = detail[heading], !body.isEmpty else { continue }
+                let headingLabel = UILabel()
+                headingLabel.text = heading
+                headingLabel.font = .systemFont(ofSize: 18, weight: .bold)
+                headingLabel.textColor = AppPalette.text
+                headingLabel.numberOfLines = 0
+                let bodyLabel = UILabel()
+                let paragraph = NSMutableParagraphStyle()
+                paragraph.lineSpacing = 12 * 0.68
+                bodyLabel.attributedText = NSAttributedString(string: body, attributes: [
+                    .font: UIFont.systemFont(ofSize: 12),
+                    .foregroundColor: AppPalette.metaText,
+                    .paragraphStyle: paragraph,
+                ])
+                bodyLabel.numberOfLines = 0
+                let section = UIStackView(arrangedSubviews: [headingLabel, bodyLabel])
+                section.axis = .vertical
+                section.spacing = 8
+                detailStack.addArrangedSubview(section)
+            }
+        }
+        detailStack.isHidden = detailStack.arrangedSubviews.isEmpty
+
+        // 操作の小さなボタン群 (旧「その他」メニューの中身も、ここへ直接並べる)。
+        qualityButton.setTitle("画質: \(quality)", for: .normal)
+        qualityButton.showsMenuAsPrimaryAction = true
+        qualityButton.menu = makeQualityMenu()
+        // 画質プロファイルの手動切り替え (Web 版プレイヤーの設定パネルにある
+        // 「モバイル回線向け画質」のトグルにあたる)。オン = モバイル回線向け。
+        profileButton.addTarget(self, action: #selector(toggleProfile), for: .touchUpInside)
+        updateProfileButtonTitle()
+        rateButton.setTitle("速度: \(SettingsStore.playbackRateText(SettingsStore.shared.playbackRate))", for: .normal)
+        rateButton.showsMenuAsPrimaryAction = true
+        rateButton.menu = makePlaybackRateMenu()
+        audioOnlyButton.setTitle("音声のみ: OFF", for: .normal)
+        audioOnlyButton.addTarget(self, action: #selector(toggleAudioOnly), for: .touchUpInside)
+        fullscreenButton.setTitle("全画面", for: .normal)
+        fullscreenButton.addTarget(self, action: #selector(showFullscreen), for: .touchUpInside)
+        protectButton.setTitle(currentProtected ? "保護を外す" : "保護する", for: .normal)
+        protectButton.addTarget(self, action: #selector(toggleProtection), for: .touchUpInside)
+        watchedButton.setTitle("視聴済みにする", for: .normal)
+        watchedButton.addTarget(self, action: #selector(markWatched), for: .touchUpInside)
+        watchedButton.isHidden = program.isRecording || (program.watched_ratio ?? 0) >= 1
+        // おやすみタイマー (Web 版パネルのボタンと同じ)。タイマーの絵つきで、
+        // 文と色は状態に合わせて updateSleepTimerButton で合わせる。
+        sleepTimerButton.setImage(
+            UIImage(systemName: "timer", withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .regular)),
+            for: .normal)
+        sleepTimerButton.imageEdgeInsets = UIEdgeInsets(top: 0, left: 0, bottom: 0, right: 6)
+        sleepTimerButton.addTarget(self, action: #selector(cycleSleepTimer), for: .touchUpInside)
+        for button in [qualityButton, profileButton, rateButton, audioOnlyButton, fullscreenButton, protectButton, watchedButton, sleepTimerButton] {
+            stylePlayerChip(button)
+        }
+        updateSleepTimerButton()
+        // ボタン群は Web 版パネルと同じ流し並べ: 中身なりの幅で左から並び、
+        // 収まらなければ次の行へ。横の間隔 10pt、行の間隔 16pt。
+        buttonsFlowView.horizontalSpacing = 10
+        buttonsFlowView.verticalSpacing = 16
+        // 保護ボタンはうち版だけ並べる (一般版では保護の機能自体を出さない)。
+        var infoButtons: [UIButton] = [qualityButton, audioOnlyButton, fullscreenButton, rateButton]
+        if AppEdition.isHousehold { infoButtons.append(protectButton) }
+        infoButtons += [watchedButton, profileButton, sleepTimerButton]
+        for button in infoButtons {
+            buttonsFlowView.addSubview(button)
+        }
+
+        let infoStack = UIStackView(arrangedSubviews: [
+            messageLabel, infoTitleLabel, broadcasterRow, descriptionLabel, genreFlowView, statusLabel, buttonsFlowView, detailStack,
+        ])
+        infoStack.axis = .vertical
+        infoStack.spacing = 12
+        infoStack.isLayoutMarginsRelativeArrangement = true
+        infoStack.layoutMargins = UIEdgeInsets(top: 16, left: 16, bottom: 24, right: 16)
+        infoStack.translatesAutoresizingMaskIntoConstraints = false
+        // Web 版パネルの余白: 局の並びは番組名から 16pt、説明は局から 12pt、
+        // ジャンルは説明から 10pt、状態行はその下、ボタン群は状態行から 16pt、
+        // 詳細の節はボタン群から 24pt。
+        infoStack.setCustomSpacing(16, after: infoTitleLabel)
+        infoStack.setCustomSpacing(12, after: broadcasterRow)
+        infoStack.setCustomSpacing(10, after: descriptionLabel)
+        infoStack.setCustomSpacing(16, after: statusLabel)
+        infoStack.setCustomSpacing(24, after: buttonsFlowView)
+        scrollView.addSubview(infoStack)
+
+        // 映像の高さは「幅なりの 16:9」と「情報欄の最低限 (120pt) を残して収まる高さ」の
+        // 小さい方にする (横向きで 16:9 のまま広げると上下が画面からはみ出して
+        // 切れて見えるため)。実際の値は viewDidLayoutSubviews で決める。
+        let heightConstraint = videoContainer.heightAnchor.constraint(equalToConstant: 200)
+        videoHeightConstraint = heightConstraint
+
+        // 映像の枠の固定は、貸し出し・返却で付け外しできるよう別に持つ。
+        surfaceViewHomeConstraints = [
+            surfaceView.topAnchor.constraint(equalTo: videoContainer.topAnchor),
+            surfaceView.bottomAnchor.constraint(equalTo: videoContainer.bottomAnchor),
+            surfaceView.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
+            surfaceView.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
+        ]
+        NSLayoutConstraint.activate(surfaceViewHomeConstraints)
+
+        // 字幕の重ね物は映像の枠いっぱいに広げる (貸し出し・返却で
+        // 付け外しできるよう、決まりは別に持つ)。
+        captionHomeConstraints = [
+            captionOverlayView.topAnchor.constraint(equalTo: surfaceView.topAnchor),
+            captionOverlayView.bottomAnchor.constraint(equalTo: surfaceView.bottomAnchor),
+            captionOverlayView.leadingAnchor.constraint(equalTo: surfaceView.leadingAnchor),
+            captionOverlayView.trailingAnchor.constraint(equalTo: surfaceView.trailingAnchor),
+        ]
+        NSLayoutConstraint.activate(captionHomeConstraints)
+
+        NSLayoutConstraint.activate([
+            videoContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            videoContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            videoContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            heightConstraint,
+            commentOverlay.topAnchor.constraint(equalTo: videoContainer.topAnchor),
+            commentOverlay.bottomAnchor.constraint(equalTo: videoContainer.bottomAnchor),
+            commentOverlay.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
+            commentOverlay.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
+            bottomGradient.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
+            bottomGradient.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
+            bottomGradient.bottomAnchor.constraint(equalTo: videoContainer.bottomAnchor),
+            bottomGradient.heightAnchor.constraint(equalToConstant: 88),
+            controlsContainer.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
+            controlsContainer.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
+            controlsContainer.bottomAnchor.constraint(equalTo: videoContainer.bottomAnchor),
+            controlsContainer.heightAnchor.constraint(equalToConstant: 88),
+            centerTransport.centerXAnchor.constraint(equalTo: videoContainer.centerXAnchor),
+            centerTransport.centerYAnchor.constraint(equalTo: videoContainer.centerYAnchor),
+            controlsStack.leadingAnchor.constraint(equalTo: controlsContainer.leadingAnchor, constant: 16),
+            controlsStack.trailingAnchor.constraint(equalTo: controlsContainer.trailingAnchor, constant: -16),
+            controlsStack.bottomAnchor.constraint(equalTo: controlsContainer.bottomAnchor, constant: -4),
+            seekContainer.heightAnchor.constraint(equalToConstant: 20),
+            infoTabBar.topAnchor.constraint(equalTo: videoContainer.bottomAnchor),
+            infoTabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            infoTabBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            infoTabBar.heightAnchor.constraint(equalToConstant: 50),
+            scrollView.topAnchor.constraint(equalTo: infoTabBar.bottomAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            commentTableView.topAnchor.constraint(equalTo: infoTabBar.bottomAnchor),
+            commentTableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            commentTableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            commentTableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            infoStack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
+            infoStack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
+            infoStack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
+            infoStack.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
+            infoStack.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor),
+        ])
+    }
+
+    /// 局ロゴを読み込む (取れなければ読み込み前の地のまま)。
+    private func loadChannelLogo() {
+        guard let channel = program.channel else { return }
+        let channelID = channel.id
+        Task { [weak self] in
+            guard let data = try? await APIClient.shared.fetchChannelLogo(channelID: channelID),
+                  let image = UIImage(data: data) else { return }
+            self?.logoImageView.image = image
+        }
+    }
+
+    /// 見出し帯の右端に時計を置く (Web 版の上部帯の時計に相当)。
+    private func setupHeaderClock() {
+        headerClockIconView.image = UIImage(systemName: "clock.arrow.circlepath")
+        headerClockIconView.tintColor = AppPalette.secondary
+        headerClockIconView.contentMode = .scaleAspectFit
+        headerClockIconView.widthAnchor.constraint(equalToConstant: 14).isActive = true
+        headerClockIconView.heightAnchor.constraint(equalToConstant: 14).isActive = true
+        headerClockLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        headerClockLabel.textColor = AppPalette.text
+        let stack = UIStackView(arrangedSubviews: [headerClockIconView, headerClockLabel])
+        stack.axis = .horizontal
+        stack.spacing = 4
+        stack.alignment = .center
+        navigationItem.rightBarButtonItem = UIBarButtonItem(customView: stack)
+        updateHeaderClock()
+    }
+
+    /// 時計の表示を更新する。元の放送時刻の表示が入っているときは
+    /// アイコンを添えて、録画開始時刻 (取れなければ番組の開始時刻) に
+    /// 再生位置を足した時刻を出す。止めている間は再生位置が動かないので
+    /// 表示もそのまま止まる (Web 版と同じ)。普段は今の時刻を出す。
+    private func updateHeaderClock() {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "M/d HH:mm:ss"
+        formatter.locale = Locale(identifier: "ja_JP")
+        if SyncedSettingsStore.shared.current.showOriginalBroadcastTimeDuringPlayback,
+           let base = program.recorded_video.recordingStartDate ?? program.startDate {
+            headerClockIconView.isHidden = false
+            let position = currentPosition()
+            let shown = base.addingTimeInterval(position.isFinite ? position : 0)
+            headerClockLabel.text = TimeFormat.apply28HourClock(formatter.string(from: shown))
+        } else {
+            headerClockIconView.isHidden = true
+            headerClockLabel.text = TimeFormat.apply28HourClock(formatter.string(from: Date()))
+        }
+    }
+
+    /// 放送時刻の表示 (Web 版パネルの局の並びの時刻と同じ形。分数まで出す)。
+    private func programTimeText() -> String {
+        guard let start = program.startDate, let end = program.endDate else { return "" }
+        let startFormatter = DateFormatter()
+        startFormatter.dateFormat = "yyyy/MM/dd (E) HH:mm"
+        startFormatter.locale = Locale(identifier: "ja_JP")
+        let endFormatter = DateFormatter()
+        endFormatter.dateFormat = "HH:mm"
+        endFormatter.locale = Locale(identifier: "ja_JP")
+        let minutes = TimeFormat.minutesText(durationSeconds: program.duration)
+        return TimeFormat.apply28HourClock("\(startFormatter.string(from: start)) ～ \(endFormatter.string(from: end)) (\(minutes)分)")
+    }
+
+    /// 「録画期間: 〜」の状態行 (Web 版パネルと同じく秒まで出す)。
+    /// 録画の開始・終了が取れないときは空 (行ごと隠す)。
+    private func recordingStatusText() -> String? {
+        guard let start = program.recorded_video.recordingStartDate else { return nil }
+        let text = TimeFormat.recordingPeriodText(
+            start: start,
+            end: program.recorded_video.recordingEndDate ?? program.endDate,
+            durationSeconds: program.recorded_video.duration
+        )
+        guard !text.isEmpty else { return nil }
+        let partial = program.isPartiallyRecorded ? "(一部のみ録画)" : ""
+        return "録画期間: \(partial)\n\(text)"
+    }
+
+    private func configure(_ button: UIButton, symbol: String, pointSize: CGFloat, action: Selector) {
+        let config = UIImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
+        button.setImage(UIImage(systemName: symbol, withConfiguration: config), for: .normal)
+        button.addTarget(self, action: action, for: .touchUpInside)
+    }
+
+    private func makeQualityMenu() -> UIMenu {
+        UIMenu(children: SettingsStore.qualities.map { q in
+            UIAction(title: q, state: q == quality ? .on : .off) { [weak self] _ in
+                self?.userSwitchQuality(q)
+            }
+        })
+    }
+
+    /// 利用者が画質を選んだときの切り替え。切り替えた画質は、現在の区分の
+    /// 既定画質として設定へ書き戻す (次回も最後に選んだ画質で始まるように
+    /// するため。Web 版 (改造) の効き方と同じ)。書き戻しは切り替え開始時点と、
+    /// 切り替えが完了して再生が再開した時点の両方で行う
+    /// (本番 Web 版の追加の直しに合わせた)。
+    /// 音声のみの切り替えのような内部の画質変更は、ここを通らないので
+    /// 書き戻しの対象にならない。
+    private func userSwitchQuality(_ newQuality: String) {
+        guard newQuality != quality else { return }
+        SettingsStore.shared.setStreamingQuality(newQuality, media: .video, profile: profile)
+        pendingQualityWriteBack = newQuality
+        // 全画面表示中に仕組みが切り替わる場合は、全画面を閉じてから作り直す。
+        dismissFullscreenIfEngineWillChange(toBaseQuality: newQuality, profile: profile)
+        switchQuality(newQuality)
+    }
+
+    /// 画質プロファイルの手動切り替えボタンの表示を、現在の区分に合わせる。
+    private func updateProfileButtonTitle() {
+        profileButton.setTitle(
+            profile == .cellular ? "モバイル回線向け画質: ON" : "モバイル回線向け画質: OFF",
+            for: .normal)
+        buttonsFlowView.setNeedsLayout()
+    }
+
+    @objc private func toggleProfile() {
+        _ = switchProfile(to: profile == .cellular ? .wifi : .cellular)
+    }
+
+    /// 画質プロファイルを手で切り替える (Web 版プレイヤーの設定パネルの
+    /// 「モバイル回線向け画質」トグルと同じ)。切り替えた瞬間に選択を
+    /// 端末へ保存し (last_quality_profile_type)、次に開くときも引き継ぐ。
+    /// 再生は、切り替え後の区分の既定画質で作り直す (再生中の画質は
+    /// 引き継がない。Web 版の should_resume_quality: false と同じ)。
+    /// 録画の位置は引き継ぐ。
+    /// 戻り値は切り替え後に実際に使う画質 (全画面側の表示を合わせるため)。
+    @discardableResult
+    private func switchProfile(to newProfile: PlaybackProfile) -> String {
+        guard newProfile != profile else { return quality }
+        // 全画面表示中に仕組みが切り替わる場合は、全画面を閉じてから作り直す
+        // (切り替え後に実際に使う画質で判定する)。
+        let effectiveBase = audioOnly
+            ? SettingsStore.audioOnlyQuality
+            : SettingsStore.shared.streamingQuality(media: .video, profile: newProfile)
+        dismissFullscreenIfEngineWillChange(toBaseQuality: effectiveBase, profile: newProfile)
+        profile = newProfile
+        SettingsStore.shared.lastQualityProfileType = newProfile
+        updateProfileButtonTitle()
+        let current = currentPosition()
+        // プロファイル切り替え自体は画質の変更ではないので、書き戻しの
+        // 控えは持たない。
+        pendingQualityWriteBack = nil
+        if audioOnly {
+            // 音声のみの最中は、映像を戻したときの画質だけ新しい区分の
+            // 既定に差し替え、流れ自体は最小画質のまま作り直す。
+            qualityBeforeAudioOnly = SettingsStore.shared.streamingQuality(media: .video, profile: newProfile)
+        } else {
+            quality = SettingsStore.shared.streamingQuality(media: .video, profile: newProfile)
+        }
+        qualityButton.setTitle("画質: \(quality)", for: .normal)
+        qualityButton.menu = makeQualityMenu()
+        buttonsFlowView.setNeedsLayout()
+        // 画質が変わるのでセッションも作り直す (画質切り替えと同じ)。
+        sessionID = UUID().uuidString
+        startPlayback(at: current.isFinite ? current : 0)
+        messageLabel.text = newProfile == .cellular
+            ? "モバイル回線向けの画質プロファイルに切り替えました。"
+            : "Wi-Fi 回線向けの画質プロファイルに切り替えました。"
+        return quality
+    }
+
+    private func makePlaybackRateMenu() -> UIMenu {
+        let current = SettingsStore.shared.playbackRate
+        return UIMenu(children: SettingsStore.playbackRateChoices.map { rate in
+            UIAction(
+                title: SettingsStore.playbackRateText(rate),
+                state: rate == current ? .on : .off
+            ) { [weak self] _ in
+                self?.setPlaybackRate(rate)
+            }
+        })
+    }
+
+    /// 再生速度を変える。再生中ならその場で効かせ、設定へ書き戻す
+    /// (次回も同じ速度で始まる。Web 版 (改造) の効き方と同じ)。
+    private func setPlaybackRate(_ rate: Double) {
+        SettingsStore.shared.playbackRate = rate
+        rateButton.setTitle("速度: \(SettingsStore.playbackRateText(rate))", for: .normal)
+        rateButton.menu = makePlaybackRateMenu()
+        buttonsFlowView.setNeedsLayout()
+#if canImport(MobileVLCKit)
+        if let vlcPlayer, vlcPlayer.isPlaying {
+            vlcPlayer.rate = Float(rate)
+        }
+#endif
+        if let player, player.rate != 0 {
+            player.rate = Float(rate)
+        }
+        updateNowPlaying()
+        scheduleHideControls()
+    }
+
+    /// 設定されている再生速度で再生を始める。
+    /// AVPlayer の play() は速度が 1倍に戻るため、再生の開始はここへ集約する
+    /// (VLCKit 経路でも、再生を始めてから速度を合わせる順番は同じにする)。
+    private func playAtCurrentRate() {
+#if canImport(MobileVLCKit)
+        if let vlcPlayer {
+            vlcPlayer.play()
+            let rate = SettingsStore.shared.playbackRate
+            if rate != 1 {
+                vlcPlayer.rate = Float(rate)
+            }
+            updatePlayPauseIcon()
+            return
+        }
+#endif
+        guard let player else { return }
+        player.play()
+        let rate = SettingsStore.shared.playbackRate
+        if rate != 1 {
+            player.rate = Float(rate)
+        }
+        updatePlayPauseIcon()
+    }
+
+    /// 再生を止める (再生の仕組みによらない)。
+    private func pauseEngine() {
+#if canImport(MobileVLCKit)
+        if let vlcPlayer {
+            vlcPlayer.pause()
+            return
+        }
+#endif
+        player?.pause()
+    }
+
+    @objc private func markWatched() {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await APIClient.shared.markWatched(videoID: program.id, duration: program.duration)
+                self.watchedButton.isHidden = true
+                self.buttonsFlowView.setNeedsLayout()
+                self.messageLabel.text = "視聴済みにしました。一覧に戻ると表示が更新されます。"
+            } catch {
+                self.messageLabel.text = "視聴済みにできませんでした。"
+            }
+        }
+    }
+
+    // MARK: - コメント (ニコニコ実況の過去ログ)
+
+    /// 過去ログコメントを取りに行く (画面を開いたときに1回だけ)。
+    /// 取れたら、件数を情報欄に出し、その時点の再生位置から流し始める。
+    /// 取れなかった録画 (チャンネル情報が無い等) では、コメントなしのまま
+    /// 再生を続ける (Web 版も取得できなければコメントなしで続ける)。
+    private func loadJikkyoComments() {
+        let videoID = program.id
+        Task { [weak self] in
+            guard let self else { return }
+            guard let result = await APIClient.shared.fetchJikkyoComments(videoID: videoID) else {
+                self.jikkyoLoadState = .failed("コメントを取得できませんでした。")
+                self.updateCommentEmptyState()
+                return
+            }
+            guard result.is_success else {
+                let detail = result.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.jikkyoLoadState = .failed(detail.isEmpty ? "コメントを取得できませんでした。" : detail)
+                self.updateCommentEmptyState()
+                return
+            }
+            // 一覧と流れる表示で共用する。時刻の昇順に並べ直しておく。
+            // 設定のミュート (キーワード・ユーザー ID・機械的な判定) に
+            // かかるコメントは、ここで取り除いてから両方へ渡す。
+            let sorted = SyncedSettingsStore.shared.filteredComments(
+                result.comments.sorted { $0.time < $1.time })
+            self.jikkyoComments = sorted
+            self.jikkyoLoadState = .loaded
+            self.commentCount = sorted.count
+            self.commentFollowIndex = -1
+            self.updateStatusText()
+            self.commentOverlay.setComments(sorted)
+            self.commentTableView.reloadData()
+            self.updateCommentEmptyState()
+        }
+    }
+
+    /// 情報欄の状態行 (録画期間・コメント数) を組み直す。
+    /// 材料が無い行は出さず、全部なければ行ごと隠す。
+    private func updateStatusText() {
+        var lines: [String] = []
+        if let recording = recordingStatusText() {
+            lines.append(recording)
+        }
+        if let count = commentCount {
+            lines.append("コメント数: \(count)")
+        }
+        statusLabel.text = lines.isEmpty ? nil : lines.joined(separator: "\n")
+        statusLabel.isHidden = statusLabel.text == nil
+    }
+
+    /// コメント表示の切り替え。設定は端末に保存し、次回も同じ状態で始める
+    /// (Web 版も端末側に保存する)。
+    @objc private func toggleComments() {
+        SettingsStore.shared.showComments.toggle()
+        updateCommentButton()
+        applyCommentDisplayState()
+        scheduleHideControls()
+    }
+
+    /// コメント切り替えボタンの見た目を、現在の設定に合わせる。
+    /// オンは吹き出しが塗られた絵で明るく、オフは輪郭だけの絵で薄く出す。
+    private func updateCommentButton() {
+        let on = SettingsStore.shared.showComments
+        let config = UIImage.SymbolConfiguration(pointSize: 20, weight: .regular)
+        commentButton.setImage(
+            UIImage(systemName: on ? "text.bubble.fill" : "text.bubble", withConfiguration: config),
+            for: .normal)
+        commentButton.tintColor = .white
+        commentButton.alpha = on ? 1 : 0.4
+        commentButton.accessibilityLabel = on ? "コメント表示オン" : "コメント表示オフ"
+    }
+
+    /// コメントを流すかどうかを、重ね物へ反映する。
+    /// 音声のみの間は映像が出ていないので、コメントも流さない。
+    private func applyCommentDisplayState() {
+        commentOverlay.setDisplayEnabled(SettingsStore.shared.showComments && !audioOnly)
+    }
+
+    // MARK: - 字幕
+
+    /// 字幕表示の切り替え。設定は端末に保存し、次回も同じ状態で始める
+    /// (コメント表示の切り替えと同じ考え方)。
+    @objc private func toggleCaptions() {
+        SettingsStore.shared.showCaptions.toggle()
+        updateCaptionButton()
+        applyCaptionDisplayState()
+        scheduleHideControls()
+    }
+
+    /// 字幕切り替えボタンの見た目を、現在の設定に合わせる。
+    /// オンは吹き出しが塗られた絵で明るく、オフは輪郭だけの絵で薄く出す
+    /// (コメント切り替えと同じ出し分け)。
+    private func updateCaptionButton() {
+        let on = SettingsStore.shared.showCaptions
+        let config = UIImage.SymbolConfiguration(pointSize: 20, weight: .regular)
+        captionButton.setImage(
+            UIImage(systemName: on ? "captions.bubble.fill" : "captions.bubble", withConfiguration: config),
+            for: .normal)
+        captionButton.tintColor = .white
+        captionButton.alpha = on ? 1 : 0.4
+        captionButton.accessibilityLabel = on ? "字幕表示オン" : "字幕表示オフ"
+    }
+
+    /// 字幕を出すかどうかを、重ね物へ反映する。
+    /// 音声のみの間は映像が出ていないので、字幕も出さない。
+    private func applyCaptionDisplayState() {
+        captionOverlayView.isHidden = !(SettingsStore.shared.showCaptions && !audioOnly)
+        if !captionOverlayView.isHidden {
+            refreshCaptions()
+        }
+    }
+
+    /// 字幕の絵を、いまの再生位置に合わせて更新する。
+    /// 進み具合の更新 (0.5秒ごと) と、字幕の包みが届いたときに呼ばれる。
+    private func refreshCaptions() {
+        guard !captionOverlayView.isHidden else { return }
+        if captionEngine.update(position: currentPosition()) {
+            captionOverlayView.setImage(captionEngine.currentImage)
+        }
+        // 映像の描画側が字幕より上に重なることがあるため、通常画面では
+        // 字幕を映像の枠の中で一番上に保つ。
+        if captionOverlayView.superview === surfaceView {
+            surfaceView.bringSubviewToFront(captionOverlayView)
+        }
+    }
+
+    // MARK: - 情報欄のタブとコメント一覧
+
+    /// 情報欄のタブボタンの中身 (絵の上に文字の縦並び、Web 版パネル下部の
+    /// ナビと同じ形) を作る。
+    private func buildInfoTabButton(_ button: RippleButton, iconView: UIImageView, titleLabel: UILabel,
+                                    symbol: String, title: String, action: Selector) {
+        let config = UIImage.SymbolConfiguration(pointSize: 19, weight: .regular)
+        iconView.image = UIImage(systemName: symbol, withConfiguration: config)
+        iconView.contentMode = .scaleAspectFit
+        titleLabel.text = title
+        titleLabel.font = .systemFont(ofSize: 10.5)
+        titleLabel.textAlignment = .center
+        let stack = UIStackView(arrangedSubviews: [iconView, titleLabel])
+        stack.axis = .vertical
+        stack.spacing = 2
+        stack.alignment = .center
+        stack.isUserInteractionEnabled = false
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        button.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+        ])
+        button.addTarget(self, action: action, for: .touchUpInside)
+    }
+
+    /// タブの色を選択状態に合わせる (選択中は primary、他は通常の文字色。
+    /// Web 版パネルのナビと同じ)。
+    private func updateInfoTabButtons() {
+        infoTabIconView.tintColor = selectedInfoTab == .info ? AppPalette.accent : AppPalette.text
+        infoTabTitleLabel.textColor = selectedInfoTab == .info ? AppPalette.accent : AppPalette.text
+        commentTabIconView.tintColor = selectedInfoTab == .comment ? AppPalette.accent : AppPalette.text
+        commentTabTitleLabel.textColor = selectedInfoTab == .comment ? AppPalette.accent : AppPalette.text
+    }
+
+    @objc private func selectInfoTab() { applyInfoTab(.info) }
+
+    @objc private func selectCommentTab() { applyInfoTab(.comment) }
+
+    /// 情報欄のタブを切り替える。コメントを開いたときは、その時点の
+    /// 再生位置のコメントが見えるよう追随し直す。
+    private func applyInfoTab(_ tab: InfoTab) {
+        selectedInfoTab = tab
+        scrollView.isHidden = tab != .info
+        commentTableView.isHidden = tab != .comment
+        updateInfoTabButtons()
+        if tab == .comment {
+            commentFollowIndex = -1
+            commentListManualScrollAt = nil
+            // 表のレイアウトが確定してから追随させる (確定前だと位置が合わない)。
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.selectedInfoTab == .comment else { return }
+                self.updateCommentListFollow(current: self.currentPosition(), force: true)
+            }
+        }
+    }
+
+    /// コメント一覧の空表示を、取得の状態に合わせて出し分ける
+    /// (Web 版コメントパネルの案内の文に合わせる)。
+    private func updateCommentEmptyState() {
+        guard jikkyoComments.isEmpty else {
+            commentTableView.backgroundView = nil
+            return
+        }
+        switch jikkyoLoadState {
+        case .loading:
+            commentEmptyLabel.text = "まだコメントがありません。\nこの録画番組に対応する、ニコニコ実況の過去ログコメントを取得しています..."
+        case .failed(let message):
+            commentEmptyLabel.text = "コメントがありません。\n\(message)"
+        case .loaded:
+            commentEmptyLabel.text = "まだコメントがありません。\nこの録画番組に対応する、ニコニコ実況の過去ログコメントはありませんでした。"
+        }
+        if commentTableView.backgroundView == nil {
+            let container = UIView()
+            commentEmptyLabel.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(commentEmptyLabel)
+            NSLayoutConstraint.activate([
+                commentEmptyLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+                commentEmptyLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 32),
+                commentEmptyLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -32),
+            ])
+            commentTableView.backgroundView = container
+        }
+    }
+
+    /// コメント一覧の追随 (Web 版コメントパネルと同じ考え方: 再生位置を
+    /// 過ぎた最後のコメントが一覧の下端に来るよう、自動でスクロールする)。
+    /// 利用者が手でスクロールしている間と、その後しばらくは動かさない。
+    private func updateCommentListFollow(current: Double, force: Bool = false) {
+        guard selectedInfoTab == .comment, !jikkyoComments.isEmpty,
+              commentTableView.bounds.height > 0,
+              !commentTableView.isDragging, !commentTableView.isDecelerating else { return }
+        if !force, let manualAt = commentListManualScrollAt,
+           Date().timeIntervalSince(manualAt) < 4 { return }
+        guard current.isFinite else { return }
+        var target = -1
+        for (index, comment) in jikkyoComments.enumerated() {
+            if comment.time <= current { target = index } else { break }
+        }
+        guard target >= 0, target != commentFollowIndex else { return }
+        let isJump = commentFollowIndex < 0 || abs(target - commentFollowIndex) > 20
+        commentFollowIndex = target
+        commentTableView.scrollToRow(
+            at: IndexPath(row: target, section: 0), at: .bottom, animated: !isJump)
+    }
+
+    // MARK: - おやすみタイマー
+
+    /// おやすみタイマーの切り替え (Web 版 SleepTimerManager の写し)。
+    /// 押すたびに オフ → 15分 → 30分 → 60分 → 番組の終わりで停止 → オフ と巡り、
+    /// 切り替えるたびに知らせを出す。分モードは残り時間を1秒ごとに減らし、
+    /// 0 になったら再生を止める (Web 版と同じく、止めている間も減り続ける)。
+    /// 「番組の終わりで停止」は Web 版では次の話の自動再生を止めるための印で、
+    /// アプリには自動再生が無いため、番組の終わりで止まる通常の終わり方と
+    /// 結果は同じになる (印と表示だけが Web 版どおりに働く)。
+    @objc private func cycleSleepTimer() {
+        let modes = ["off", "15", "30", "60", "end"]
+        sleepTimerModeIndex = (sleepTimerModeIndex + 1) % modes.count
+        let mode = modes[sleepTimerModeIndex]
+        stopSleepTimerTicker()
+        sleepTimerRemainingSeconds = nil
+        switch mode {
+        case "15", "30", "60":
+            sleepTimerMode = .minutes
+            sleepTimerRemainingSeconds = Int(mode)! * 60
+            sleepTimerTicker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                self?.tickSleepTimer()
+            }
+            messageLabel.text = "おやすみタイマー: \(mode) 分後に停止します"
+        case "end":
+            sleepTimerMode = .end
+            messageLabel.text = "おやすみタイマー: この番組の終わりで停止します"
+        default:
+            sleepTimerMode = .off
+            messageLabel.text = "おやすみタイマーをオフにしました"
+        }
+        updateSleepTimerButton()
+        buttonsFlowView.setNeedsLayout()
+    }
+
+    /// 分モードの1秒ごとの処理。残り時間を減らし、0 になったら再生を止めて
+    /// オフに戻す (Web 版の onTick と同じ)。
+    private func tickSleepTimer() {
+        guard var remaining = sleepTimerRemainingSeconds else { return }
+        remaining -= 1
+        if remaining <= 0 {
+            sleepTimerRemainingSeconds = nil
+            sleepTimerMode = .off
+            sleepTimerModeIndex = 0
+            stopSleepTimerTicker()
+            pauseEngine()
+            updatePlayPauseIcon()
+            messageLabel.text = "おやすみタイマーで停止しました"
+        } else {
+            sleepTimerRemainingSeconds = remaining
+        }
+        updateSleepTimerButton()
+        buttonsFlowView.setNeedsLayout()
+    }
+
+    private func stopSleepTimerTicker() {
+        sleepTimerTicker?.invalidate()
+        sleepTimerTicker = nil
+    }
+
+    /// おやすみタイマーのボタンの文と色を、現在の状態に合わせる。
+    /// 文は Web 版パネルと同じ: オフは「おやすみタイマー」、分モードは
+    /// 「おやすみ (残り M:SS)」、終わりで停止は「おやすみ (番組の終わりで停止)」。
+    /// 有効な間は Web 版と同じく primary の地に白い文字にする。
+    private func updateSleepTimerButton() {
+        switch sleepTimerMode {
+        case .off:
+            sleepTimerButton.setTitle("おやすみタイマー", for: .normal)
+        case .minutes:
+            let remaining = sleepTimerRemainingSeconds ?? 0
+            sleepTimerButton.setTitle(
+                String(format: "おやすみ (残り %d:%02d)", remaining / 60, remaining % 60),
+                for: .normal)
+        case .end:
+            sleepTimerButton.setTitle("おやすみ (番組の終わりで停止)", for: .normal)
+        }
+        if sleepTimerMode == .off {
+            sleepTimerButton.backgroundColor = AppPalette.panel
+            sleepTimerButton.setTitleColor(AppPalette.metaText, for: .normal)
+            sleepTimerButton.tintColor = AppPalette.metaText
+        } else {
+            sleepTimerButton.backgroundColor = AppPalette.accent
+            sleepTimerButton.setTitleColor(.white, for: .normal)
+            sleepTimerButton.tintColor = .white
+        }
+    }
+
+    @objc private func toggleProtection() {
+        guard SettingsStore.shared.isLoggedIn else {
+            // 未ログインなら、切り替えはせずログインへ案内する。
+            let alert = UIAlertController(
+                title: "ログインが必要です",
+                message: "保護の切り替えには、設定タブで KonomiTV へのログインが必要です。",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "キャンセル", style: .cancel))
+            alert.addAction(UIAlertAction(title: "設定を開く", style: .default) { [weak self] _ in
+                self?.mainTabBarController?.selectedIndex = 3
+            })
+            present(alert, animated: true)
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let next = try await APIClient.shared.toggleProtection(videoID: program.id)
+                self.currentProtected = next
+                self.protectButton.setTitle(next ? "保護を外す" : "保護する", for: .normal)
+                self.buttonsFlowView.setNeedsLayout()
+                self.messageLabel.text = next ? "保護しました。" : "保護を外しました。"
+            } catch let error as APIError {
+                self.messageLabel.text = error.protectionFailureMessage
+            } catch {
+                self.messageLabel.text = "保護を切り替えられませんでした。"
+            }
+        }
+    }
+
+    // MARK: - 再生
+
+    /// 再生を始める (作り直す)。いま効いている画質が H.265 / HEVC かどうかで
+    /// 再生の仕組みを出し分ける。画質の切り替えで H.264 ⇄ HEVC が切り替わったら、
+    /// 仕組みごと作り直す (呼び出し側が位置を引き継いで渡す)。
+    private func startPlayback(at seconds: Double) {
+        guard let url = APIClient.shared.playlistURL(videoID: program.id, quality: quality, profile: profile, sessionID: sessionID) else {
+            messageLabel.text = "接続先が設定されていません。"
+            return
+        }
+#if canImport(MobileVLCKit)
+        if isHEVCQuality(quality, profile: profile) {
+            startVLCPlayback(url: url, at: seconds)
+            finishStartPlayback(at: seconds)
+            return
+        }
+        teardownVLCPlayback()
+#else
+        if isHEVCQuality(quality, profile: profile) {
+            // VLCKit が組み込まれていないビルドでは HEVC を映像として
+            // 出せない (AVPlayer では音だけになる)。その旨だけ知らせる。
+            messageLabel.text = "このビルドには H.265 / HEVC 再生の部品が組み込まれていません。"
+        }
+#endif
+        startAVPlayback(url: url, at: seconds)
+        finishStartPlayback(at: seconds)
+    }
+
+    /// 開始の締め (どちらの仕組みでも共通)。
+    /// CM自動スキップの判定はこの開始位置から見張り、再生を始めて、
+    /// ロック画面の表示とセッション維持を仕掛ける。
+    private func finishStartPlayback(at seconds: Double) {
+        lastObservedPosition = seconds
+        // コメントの表示も開始位置に合わせる (その位置より前のコメントは流さない)。
+        commentOverlay.reset(to: seconds)
+        // 共通の視聴履歴への書き戻しの起点を、この開始に合わせる
+        // (Web 版もプレイヤーを作るたびに30秒の数え直しになる)。
+        let now = Date().timeIntervalSince1970
+        playbackOpenedAt = now
+        lastHistorySyncAt = now
+        scheduleHistoryRegistration()
+        playAtCurrentRate()
+        updatePlayPauseIcon()
+        updateNowPlaying()
+        startKeepAlive()
+        scheduleHideControls()
+    }
+
+    /// 視聴履歴への登録用タイマー。Web 版と同じく、視聴画面を開いて
+    /// 30秒経ったら履歴に登録する (登録自体は WatchedHistorySync 側で、
+    /// 既に項目があれば位置の更新として処理される)。
+    private func scheduleHistoryRegistration() {
+        historyRegistrationTimer?.invalidate()
+        historyRegistrationTimer = nil
+        guard WatchedHistorySync.isEnabled, !program.isRecording else { return }
+        historyRegistrationTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            let current = currentPosition()
+            guard current.isFinite else { return }
+            runHistorySync(current: current, registerIfNeeded: true)
+        }
+    }
+
+    /// 指定した画質・区分の組み合わせが H.265 / HEVC かどうか。
+    /// 判定は、サーバーへ実際に渡す画質名の組み立て (SettingsStore.apiQuality)
+    /// を正本にし、"-hevc" が付く経路かどうかで見る (通信節約がオンのとき)。
+    private func isHEVCQuality(_ base: String, profile: PlaybackProfile) -> Bool {
+        SettingsStore.shared.apiQuality(base: base, media: .video, profile: profile)
+            .contains("-hevc")
+    }
+
+    /// 指定した画質・区分で作り直すと、再生の仕組み (AVPlayer / VLCKit) が
+    /// 切り替わるかどうか。
+    private func engineWillChange(toBaseQuality base: String, profile newProfile: PlaybackProfile) -> Bool {
+#if canImport(MobileVLCKit)
+        return isHEVCQuality(base, profile: newProfile) != (vlcPlayer != nil)
+#else
+        return false
+#endif
+    }
+
+    /// 全画面表示中に再生の仕組みが切り替わる作り直しをすると、全画面側は
+    /// 追随できない (映像の描き先も操作の向き先も、仕組みにひも付いている
+    /// ため)。その場合は全画面を閉じ、通常画面で作り直す。
+    /// 呼び出し側は、作り直しの前にこれを呼ぶ。
+    private func dismissFullscreenIfEngineWillChange(toBaseQuality base: String, profile newProfile: PlaybackProfile) {
+        guard presentedViewController is FullscreenPlayerViewController else { return }
+        if engineWillChange(toBaseQuality: base, profile: newProfile) {
+            dismiss(animated: true)
+        }
+    }
+
+    /// AVPlayer 経路の開始 (従来どおり)。
+    private func startAVPlayback(url: URL, at seconds: Double) {
+        let asset = APIClient.shared.playerAsset(url: url)
+        let item = AVPlayerItem(asset: asset)
+        // 字幕データの受け取り口を、この再生項目へ付ける。
+        attachCaptionMetadataOutput(to: item)
+        // 読み込みに失敗したら、真っ黒のまま無言にせず、その旨を表示する。
+        itemStatusObservation?.invalidate()
+        itemStatusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+            guard item.status == .failed else { return }
+            DispatchQueue.main.async {
+                self?.messageLabel.text = "再生を開始できませんでした。"
+            }
+        }
+        if let player {
+            player.replaceCurrentItem(with: item)
+        } else {
+            let newPlayer = AVPlayer(playerItem: item)
+            newPlayer.actionAtItemEnd = .pause
+            player = newPlayer
+            let layer = AVPlayerLayer(player: newPlayer)
+            layer.videoGravity = .resizeAspect
+            layer.frame = surfaceView.bounds
+            // 音声のみの最中に仕組みが切り替わって作り直された場合も、
+            // 映像を出したままにしない (切り替え側が隠すのは既存の層だけのため)。
+            layer.isHidden = audioOnly
+            surfaceView.layer.addSublayer(layer)
+            playerLayer = layer
+            // 字幕の重ね物は、後から足した映像の層より上に保つ。
+            surfaceView.bringSubviewToFront(captionOverlayView)
+            timeObserver = newPlayer.addPeriodicTimeObserver(
+                forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
+                queue: .main
+            ) { [weak self] _ in
+                self?.updateProgress()
+            }
+            // 一時停止中は上の定期観測が進まないため、再生状態の変化はこちらでも拾い、
+            // 画面内のボタンとロック画面の表示を追随させる。
+            timeControlObservation = newPlayer.observe(\.timeControlStatus, options: [.new]) { [weak self] _, _ in
+                guard let self else { return }
+                self.updatePlayPauseIcon()
+                self.updateNowPlaying()
+                // 画質の切り替え後に再生が再開したら、切り替え完了時点の
+                // 書き戻しを行う (開始時点で書き戻したのと同じ値を、
+                // 完了の合図としてもう一度保存する)。
+                if newPlayer.timeControlStatus == .playing,
+                   let pending = self.pendingQualityWriteBack,
+                   pending == self.quality {
+                    SettingsStore.shared.setStreamingQuality(pending, media: .video, profile: self.profile)
+                    self.pendingQualityWriteBack = nil
+                }
+            }
+        }
+        if seconds > 0 {
+            player?.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
+        }
+    }
+
+#if canImport(MobileVLCKit)
+    /// VLCKit 経路の開始。プレイリストを VLC に渡す
+    /// (TS に入った HEVC を読み解けるのはこちら)。
+    /// 描き先は常に通常画面の映像の枠 (surfaceView)。全画面のときは
+    /// 描き先を変えず、枠ごと全画面側へ貸し出す (生放送と同じ作り)。
+    ///
+    /// 渡す URL は、アプリ内の中継 (StreamRelayServer) 経由にする。
+    /// VLCKit には再生の取りに行く処理へ任意のヘッダーを付ける公式の
+    /// 入口が無く、Cloudflare Access の合言葉が HLS の分割ファイルに
+    /// 付かないため、外回線では開始すらできない (0.24 で実機確認済み)。
+    /// 中継が合言葉付きで取りに行き、プレイリスト内の URL も中継経由に
+    /// 書き換える。中継が使えないときは元の URL に落ちる。
+    /// メディアオプションの ":http-header" は、中継を使わない場合の
+    /// 補いとして残す (効くかどうかは libVLC 側の実装次第で、単独では
+    /// 分割ファイルまで届かないことが分かっている)。
+    private func startVLCPlayback(url: URL, at seconds: Double) {
+        teardownAVPlayback()
+        vlcPlayer?.stop()
+        vlcTimeTimer?.invalidate()
+        vlcStartWatchdog?.invalidate()
+        vlcStartWatchdog = nil
+        vlcDidStartPlaying = false
+        let vlc = VLCMediaPlayer()
+        vlc.delegate = self
+        // 描き先は常に surfaceView。全画面表示中は surfaceView ごと
+        // 全画面側へ貸し出されているため、そのままで全画面に出る。
+        vlc.drawable = surfaceView
+        let media = VLCMedia(url: StreamRelayServer.shared.relayURL(for: url) ?? url)
+        // 受け取りの溜めは録画用の多めの値にする (先読みを厚くして
+        // 止まりにくくするため。値の根拠は vlcRecordedNetworkCaching の定義側)。
+        media.addOption(":network-caching=\(Self.vlcRecordedNetworkCaching)")
+        if audioOnly {
+            media.addOption(":no-video")
+        }
+        // Cloudflare Access のサービストークンをヘッダーとして付ける
+        // (中継を使わない場合の補い。上のコメント参照)。
+        for (key, value) in SettingsStore.shared.cfAccessHeaders {
+            media.addOption(":http-header=\(key): \(value)")
+        }
+        vlc.media = media
+        vlcPlayer = vlc
+        // 字幕: 蓄えを空にし直し、アプリ内の中継へ抜き取り口を登録する。
+        // 中継は、プレイリストを通すときに区切りの長さを、区切りファイルを
+        // 通すときに中身から取り出した字幕の包みを、こちらへ渡してくれる
+        // (再生そのものには触れない)。渡し先ではメイン側で受ける。
+        captionEngine.resetForNewPlayback()
+        let captionVideoID = program.id
+        StreamRelayServer.shared.setCaptionTap(StreamRelayServer.CaptionTap(
+            pathMarker: "/api/streams/video/\(captionVideoID)/",
+            onPlaylist: { [weak self] durations in
+                DispatchQueue.main.async {
+                    self?.captionEngine.ingestRelayPlaylist(durations: durations)
+                }
+            },
+            onSegment: { [weak self] sequence, packets, videoFirstPTS in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.captionEngine.ingestRelaySegment(
+                        sequence: sequence, packets: packets, videoFirstPTS: videoFirstPTS)
+                    self.refreshCaptions()
+                }
+            }))
+        // 開始の見張り: 30秒たっても再生が始まらなければ、その旨を表示する
+        // (エラー状態になった場合はデリゲート側でもっと早く表示する)。
+        // サーバーが混んでいて最初の分割ファイルが遅いことがあるため、
+        // 短すぎる見張りは誤って表示してしまう。30秒はその境目。
+        vlcStartWatchdog = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
+            guard let self, let vlcPlayer = self.vlcPlayer, !self.vlcDidStartPlaying else { return }
+            if vlcPlayer.state != .playing && vlcPlayer.state != .paused {
+                self.messageLabel.text = "再生を開始できませんでした。"
+            }
+        }
+        // 開始位置は、再生が始まった合図で一度だけ移動する (デリゲート側)。
+        vlcPendingStartPosition = seconds > 0 ? seconds : nil
+        // 進み具合の見張りは 0.5 秒ごとのタイマーで行う
+        // (AVPlayer の定期観測にあたる)。
+        vlcTimeTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.updateProgress()
+        }
+    }
+
+    /// VLCKit 経路の後片付け。
+    private func teardownVLCPlayback() {
+        // 字幕の抜き取り口も解除する (中継は他の再生と共用ため、
+        // 残しておくと関係ない経路でも読み取りが続いてしまう)。
+        StreamRelayServer.shared.setCaptionTap(nil)
+        vlcTimeTimer?.invalidate()
+        vlcTimeTimer = nil
+        vlcStartWatchdog?.invalidate()
+        vlcStartWatchdog = nil
+        vlcPendingStartPosition = nil
+        vlcPlayer?.stop()
+        vlcPlayer = nil
+    }
+
+    /// VLCKit 経路の移動。VLC の位置は全体に対する割合で指定する。
+    /// 全体の長さは VLC が読み取った長さを優先し、取れないときは
+    /// 番組の長さで代用する。
+    private func vlcSeek(to seconds: Double) {
+        guard let vlcPlayer else { return }
+        let length = vlcLengthSeconds
+        let denom = (length.isFinite && length > 0) ? length : effectiveDuration
+        guard denom > 0 else { return }
+        let clamped = max(0, min(seconds, denom))
+        vlcPlayer.position = Float(clamped / denom)
+    }
+
+    /// VLC が読み取った全体の長さ (秒)。取れないときは NaN。
+    private var vlcLengthSeconds: Double {
+        guard let vlcPlayer, let media = vlcPlayer.media else { return .nan }
+        let ms = media.length.intValue
+        return ms > 0 ? Double(ms) / 1000 : .nan
+    }
+#endif
+
+    /// 字幕データの受け取り口を、AVPlayer の再生項目へ付ける。
+    /// 届いた包みはファイル末尾の受け取り側で字幕の本体へ渡す。
+    /// 再生を作り直すたびに、字幕の蓄えも空にし直す。
+    private func attachCaptionMetadataOutput(to item: AVPlayerItem) {
+        captionEngine.resetForNewPlayback()
+        let output = AVPlayerItemMetadataOutput(identifiers: nil)
+        output.setDelegate(self, queue: .main)
+        item.add(output)
+        captionMetadataOutput = output
+    }
+
+    /// AVPlayer 経路の後片付け。
+    private func teardownAVPlayback() {
+        if let player, let timeObserver {
+            player.removeTimeObserver(timeObserver)
+        }
+        timeObserver = nil
+        itemStatusObservation?.invalidate()
+        itemStatusObservation = nil
+        timeControlObservation?.invalidate()
+        timeControlObservation = nil
+        player?.pause()
+        player = nil
+        playerLayer?.removeFromSuperlayer()
+        playerLayer = nil
+        // 字幕データの受け取り口も外す (蓄えは次の再生の開始で空にする)。
+        captionMetadataOutput = nil
+    }
+
+    private func stopPlayback() {
+        commentOverlay.stop()
+        stopSleepTimerTicker()
+        keepAliveTimer?.invalidate()
+        keepAliveTimer = nil
+        historyRegistrationTimer?.invalidate()
+        historyRegistrationTimer = nil
+        // 離れるときは最後の再生位置を報告する (Web 版が破棄時に報告するのと同じ)。
+        if hasActiveEngine {
+            let current = currentPosition()
+            if current.isFinite, current > lastReportedPosition {
+                lastReportedPosition = current
+                let videoID = program.id
+                Task {
+                    try? await APIClient.shared.reportWatched(videoID: videoID, position: current)
+                }
+            }
+            // 共通の視聴履歴にも最後の位置を書き戻す (Web 版が破棄時に
+            // 履歴の位置を更新するのと同じ)。視聴状態への報告とは別系統。
+            if current.isFinite, WatchedHistorySync.isEnabled, !program.isRecording {
+                let videoID = program.id
+                let registerIfNeeded = Date().timeIntervalSince1970 - playbackOpenedAt >= 30
+                Task {
+                    await WatchedHistorySync.syncPosition(
+                        videoID: videoID, position: current, registerIfNeeded: registerIfNeeded)
+                }
+            }
+        }
+#if canImport(MobileVLCKit)
+        teardownVLCPlayback()
+#endif
+        teardownAVPlayback()
+        NowPlayingManager.shared.end(owner: self)
+    }
+
+    /// 再生中は10秒ごとに keep-alive を送り、サーバー側のセッションを維持する。
+    private func startKeepAlive() {
+        keepAliveTimer?.invalidate()
+        sendKeepAlive()
+        keepAliveTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            self?.sendKeepAlive()
+        }
+    }
+
+    private func sendKeepAlive() {
+        let videoID = program.id
+        let quality = quality
+        let profile = profile
+        let sessionID = sessionID
+        Task {
+            await APIClient.shared.keepAlive(videoID: videoID, quality: quality, profile: profile, sessionID: sessionID)
+        }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // 映像の高さ: 幅なりの 16:9 が情報欄の最低限 (120pt) を残して収まるならそのまま、
+        // 収まらない (主に横向き) なら収まる高さまで縮める。
+        // 映像自体は resizeAspect で全体が収まるため、切れることはない。
+        if let heightConstraint = videoHeightConstraint {
+            let ideal = view.bounds.width * 9.0 / 16.0
+            let available = view.bounds.height
+                - view.safeAreaInsets.top
+                - view.safeAreaInsets.bottom
+                - 120
+            let target = max(120, min(ideal, available))
+            if abs(heightConstraint.constant - target) > 0.5 {
+                heightConstraint.constant = target
+            }
+        }
+        // 全画面へ貸し出し中の層の枠は、全画面側が決める
+        // (通常画面の枠で上書きしない)。
+        if playerLayer?.superlayer === surfaceView.layer {
+            playerLayer?.frame = surfaceView.bounds
+        }
+        bandView.setNeedsDisplay()
+    }
+
+    // MARK: - 再生の仕組みによらない読み取り口
+
+    /// どちらかの仕組みで再生の用意ができているか。
+    private var hasActiveEngine: Bool {
+        if player != nil { return true }
+#if canImport(MobileVLCKit)
+        if vlcPlayer != nil { return true }
+#endif
+        return false
+    }
+
+    /// 現在の再生位置 (秒)。
+    private func currentPosition() -> Double {
+#if canImport(MobileVLCKit)
+        if let vlcPlayer {
+            let ms = vlcPlayer.time.intValue
+            return ms > 0 ? Double(ms) / 1000 : 0
+        }
+#endif
+        return player?.currentTime().seconds ?? 0
+    }
+
+    /// いま再生中かどうか。
+    private func isCurrentlyPlaying() -> Bool {
+#if canImport(MobileVLCKit)
+        if let vlcPlayer { return vlcPlayer.isPlaying }
+#endif
+        return (player?.rate ?? 0) != 0
+    }
+
+    /// ロック画面の表示に渡す再生速度 (止まっているときは 0)。
+    private func currentRateValue() -> Double {
+#if canImport(MobileVLCKit)
+        if let vlcPlayer {
+            return vlcPlayer.isPlaying ? Double(vlcPlayer.rate) : 0
+        }
+#endif
+        return Double(player?.rate ?? 0)
+    }
+
+    /// 再生側が読み取った全体の長さ (秒)。定まらないときは NaN
+    /// (録画中の追いかけ再生では HLS 側の長さが定まらないため)。
+    private var currentItemDurationSeconds: Double {
+#if canImport(MobileVLCKit)
+        if vlcPlayer != nil { return vlcLengthSeconds }
+#endif
+        return player?.currentItem?.duration.seconds ?? .nan
+    }
+
+    // MARK: - 進み具合の表示
+
+    /// シークバーの最大値。HLS 側の長さが取れればそれ、取れなければ番組の長さを使う
+    /// (録画中の追いかけ再生では HLS 側の長さが定まらないため)。
+    private var effectiveDuration: Double {
+        let d = currentItemDurationSeconds
+        if d.isFinite, d > 0 {
+            return d
+        }
+        return program.duration
+    }
+
+    private func updateProgress() {
+        guard hasActiveEngine else { return }
+        let current = currentPosition()
+        if current.isFinite {
+            currentTimeLabel.text = TimeFormat.hms(current)
+            if !isScrubbing {
+                let duration = effectiveDuration
+                seekSlider.value = duration > 0 ? Float(current / duration) : 0
+            }
+            applyCMAutoSkipIfNeeded(current: current)
+            updateCommentListFollow(current: current)
+            reportWatchedPositionIfNeeded(current: current)
+            syncWatchedHistoryIfNeeded(current: current)
+            refreshCaptions()
+        }
+        let duration = effectiveDuration
+        let itemDuration = currentItemDurationSeconds
+        durationLabel.text = program.isRecording && !itemDuration.isFinite
+            ? "録画中"
+            : TimeFormat.hms(duration)
+        bandView.duration = duration
+        bandView.setNeedsDisplay()
+        updatePlayPauseIcon()
+        updateNowPlaying()
+    }
+
+    /// CM自動スキップ。再生中に CM 区間の開始を跨いだ瞬間だけ、区間の終わりへ飛ばす
+    /// (改造側の仕様確認済み)。シークで区間の真ん中へ入った直後や、区間の中から
+    /// 再開した場合は発動しない。番組最後の区間への特別扱いもしない。
+    private func applyCMAutoSkipIfNeeded(current: Double) {
+        let previous = lastObservedPosition
+        lastObservedPosition = current
+        guard SettingsStore.shared.cmAutoSkip,
+              isCurrentlyPlaying(), !isScrubbing else { return }
+        for section in program.cmSections {
+            // 開始を跨いでいて、区間の中にいて、位置の進みが連続している
+            // (シークの飛びではない) ときだけ発動する。0.5秒間隔のチェックで
+            // 速度2倍でも進みは約1秒なので、2秒を上限にしている。
+            if previous < section.start_time,
+               current >= section.start_time,
+               current < section.end_time,
+               current - previous <= 2.0 {
+                seek(to: section.end_time)
+                break
+            }
+        }
+    }
+
+    /// 共通の視聴履歴への定期的な書き戻し。Web 版のリズムに合わせ、
+    /// 再生中は10秒間隔で位置を更新する (登録は30秒後のタイマー側)。
+    /// 30秒より前は、履歴に項目がある場合だけ更新し、無い場合は
+    /// 手順側で送らずに終わる。失敗しても再生は続ける (利用者には見せない)。
+    private func syncWatchedHistoryIfNeeded(current: Double) {
+        guard WatchedHistorySync.isEnabled, !program.isRecording else { return }
+        guard isCurrentlyPlaying() else { return }
+        let now = Date().timeIntervalSince1970
+        guard now - lastHistorySyncAt >= 10 else { return }
+        runHistorySync(current: current, registerIfNeeded: now - playbackOpenedAt >= 30)
+    }
+
+    /// 書き戻しを1回分動かす。動いている間は重ねて動かさない
+    /// (次の間隔で、その時点の位置で送り直される)。
+    /// lastHistorySyncAt は、動かした時点で進める。
+    private func runHistorySync(current: Double, registerIfNeeded: Bool) {
+        guard !historySyncInFlight else { return }
+        historySyncInFlight = true
+        lastHistorySyncAt = Date().timeIntervalSince1970
+        let videoID = program.id
+        Task { [weak self] in
+            await WatchedHistorySync.syncPosition(
+                videoID: videoID, position: current, registerIfNeeded: registerIfNeeded)
+            self?.historySyncInFlight = false
+        }
+    }
+
+    /// 視聴進捗の定期報告。Web 版の報告の間隔に合わせる
+    /// (10秒以上進んだら最大5秒に1回、それ以外も20秒に1回は送る)。
+    /// サーバーは到達した最大位置だけを残すので、戻し見をしても状態は後退しない。
+    private func reportWatchedPositionIfNeeded(current: Double) {
+        let now = Date().timeIntervalSince1970
+        let advanced = current - lastReportedPosition
+        let elapsed = now - lastReportedAt
+        guard (advanced >= 10 && elapsed >= 5) || (advanced > 0 && elapsed >= 20) else { return }
+        lastReportedPosition = current
+        lastReportedAt = now
+        let videoID = program.id
+        Task {
+            // 報告の失敗は無視する (次回の報告で送り直される)。
+            try? await APIClient.shared.reportWatched(videoID: videoID, position: current)
+        }
+    }
+
+    private func updatePlayPauseIcon() {
+        let playing = isCurrentlyPlaying()
+        let config = UIImage.SymbolConfiguration(pointSize: 40, weight: .regular)
+        playPauseButton.setImage(
+            UIImage(systemName: playing ? "pause.fill" : "play.fill", withConfiguration: config),
+            for: .normal
+        )
+        // 止まっている間は操作帯を出したままにする (Web 版も停止中は消えない)。
+        if !playing {
+            setControlsVisible(true)
+        }
+    }
+
+    // MARK: - 操作帯の出し入れ
+
+    @objc private func toggleControls() {
+        setControlsVisible(!controlsVisible)
+        if controlsVisible {
+            scheduleHideControls()
+        }
+    }
+
+    private func setControlsVisible(_ visible: Bool) {
+        // 進み具合の更新のたびに呼ばれるため、状態が変わるときだけ動かす。
+        guard visible != controlsVisible else { return }
+        controlsVisible = visible
+        UIView.animate(withDuration: 0.25) {
+            self.bottomGradient.alpha = visible ? 1 : 0
+            self.controlsContainer.alpha = visible ? 1 : 0
+            self.centerTransport.alpha = visible ? 1 : 0
+        }
+        controlsContainer.isUserInteractionEnabled = visible
+        centerTransport.isUserInteractionEnabled = visible
+        if !visible {
+            hideTimer?.invalidate()
+            hideTimer = nil
+        }
+    }
+
+    /// 再生中だけ、しばらく触らなければ操作帯を消すタイマーを仕掛け直す。
+    private func scheduleHideControls() {
+        hideTimer?.invalidate()
+        hideTimer = nil
+        guard isCurrentlyPlaying(), !isScrubbing else { return }
+        hideTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in
+            self?.setControlsVisible(false)
+        }
+    }
+
+    // MARK: - ロック画面の「再生中」表示
+
+    /// ロック画面やコントロールセンターへの表示と、そちらからの操作の受け付けを始める。
+    /// 操作は画面内のボタンと同じ処理へつなぐので、状態がずれない。
+    private func beginNowPlaying() {
+        NowPlayingManager.shared.begin(owner: self, handlers: .init(
+            play: { [weak self] in
+                self?.playAtCurrentRate()
+            },
+            pause: { [weak self] in
+                self?.pauseEngine()
+                self?.updatePlayPauseIcon()
+            },
+            togglePlayPause: { [weak self] in
+                self?.togglePlayPause()
+            },
+            skipForward: { [weak self] in
+                self?.skipForward()
+            },
+            skipBackward: { [weak self] in
+                self?.skipBack()
+            },
+            seekTo: { [weak self] position in
+                self?.seek(to: position)
+            }
+        ))
+        updateNowPlaying()
+        // サムネイルをアートワークとして取りに行く (取れなければ無しで出す)。
+        let videoID = program.id
+        Task { [weak self] in
+            guard let self,
+                  let data = try? await APIClient.shared.fetchThumbnail(videoID: videoID),
+                  let image = UIImage(data: data) else { return }
+            NowPlayingManager.shared.setArtwork(owner: self, image: image)
+        }
+    }
+
+    private func updateNowPlaying() {
+        guard hasActiveEngine else { return }
+        let current = currentPosition()
+        NowPlayingManager.shared.updateRecorded(
+            owner: self,
+            title: program.title,
+            subtitle: program.channel?.name,
+            elapsed: current.isFinite ? max(0, current) : 0,
+            duration: effectiveDuration,
+            rate: currentRateValue()
+        )
+    }
+
+    // MARK: - 操作
+
+    @objc private func togglePlayPause() {
+        guard hasActiveEngine else { return }
+        if isCurrentlyPlaying() {
+            pauseEngine()
+        } else {
+            playAtCurrentRate()
+        }
+        updatePlayPauseIcon()
+        scheduleHideControls()
+    }
+
+    private func seek(to seconds: Double) {
+        let clamped = max(0, min(seconds, effectiveDuration))
+        // CM自動スキップの判定は移動先から見張る
+        // (シークで CM 区間の真ん中へ入った直後は発動させないため)。
+        lastObservedPosition = clamped
+        // コメントの表示も移動先に合わせる (移動先より前のコメントは流さない)。
+        commentOverlay.reset(to: clamped)
+        // 字幕も移動先に合わせる。移動が完了して位置が定まってから
+        // 合わせるため、少し置いてから更新する (進み具合の更新でも
+        // 位置の飛びとして拾われ、そちらでも合わせ直される)。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            self?.refreshCaptions()
+        }
+#if canImport(MobileVLCKit)
+        if vlcPlayer != nil {
+            vlcSeek(to: clamped)
+            return
+        }
+#endif
+        player?.seek(
+            to: CMTime(seconds: clamped, preferredTimescale: 600),
+            toleranceBefore: CMTime(seconds: 0.5, preferredTimescale: 600),
+            toleranceAfter: CMTime(seconds: 0.5, preferredTimescale: 600)
+        )
+    }
+
+    @objc private func skipBack() {
+        guard hasActiveEngine else { return }
+        seek(to: currentPosition() - Double(SettingsStore.shared.seekBackwardSeconds))
+        scheduleHideControls()
+    }
+
+    @objc private func skipForward() {
+        guard hasActiveEngine else { return }
+        seek(to: currentPosition() + Double(SettingsStore.shared.seekForwardSeconds))
+        scheduleHideControls()
+    }
+
+    @objc private func prevChapter() {
+        guard hasActiveEngine else { return }
+        let current = currentPosition()
+        // 現在位置より手前にある一番近い境目へ。無ければ先頭へ。
+        let target = program.chapterBoundaries.filter { $0 < current - 1.0 }.last ?? 0
+        seek(to: target)
+        scheduleHideControls()
+    }
+
+    @objc private func nextChapter() {
+        guard hasActiveEngine else { return }
+        let current = currentPosition()
+        if let target = program.chapterBoundaries.first(where: { $0 > current + 0.5 }) {
+            seek(to: target)
+        }
+        scheduleHideControls()
+    }
+
+    @objc private func scrubBegan() {
+        isScrubbing = true
+        wasPlayingBeforeScrub = isCurrentlyPlaying()
+        pauseEngine()
+        hideTimer?.invalidate()
+        hideTimer = nil
+        // プレビューを出し、タイル画像がまだなら取りに行く (初回だけ)。
+        showSeekPreview()
+        ensureSpriteLoading()
+    }
+
+    @objc private func scrubChanged() {
+        let target = Double(seekSlider.value) * effectiveDuration
+        currentTimeLabel.text = TimeFormat.hms(target)
+        updateSeekPreview(target: target)
+    }
+
+    @objc private func scrubEnded() {
+        isScrubbing = false
+        seekPreviewView.isHidden = true
+        let target = Double(seekSlider.value) * effectiveDuration
+        seek(to: target)
+        if wasPlayingBeforeScrub {
+            playAtCurrentRate()
+        }
+        scheduleHideControls()
+    }
+
+    // MARK: - シーク中のプレビュー
+
+    /// 番組データにタイル情報があるかどうか。無い録画 (解析前・録画中など)
+    /// ではプレビューの映像は出さず、時刻だけ出す。
+    private var seekTileInfo: ThumbnailTileInfo? {
+        guard let tile = program.recorded_video.thumbnail_info?.tile,
+              tile.total_tiles > 0, tile.column_count > 0,
+              tile.tile_width > 0, tile.tile_height > 0, tile.interval_sec > 0
+        else { return nil }
+        return tile
+    }
+
+    /// プレビューを出し、いまの指の位置で中身を合わせる。
+    private func showSeekPreview() {
+        seekPreviewView.isHidden = false
+        // 横位置の計算に使う幅を先に確定させる。
+        videoContainer.layoutIfNeeded()
+        updateSeekPreview(target: Double(seekSlider.value) * effectiveDuration)
+    }
+
+    /// プレビューの時刻・横位置・映像を、指の位置に合わせて直す。
+    /// 映像の切り出しはタイルが切り替わったときだけ (指の動きのたびには
+    /// 行わない)。タイル画像が届いていなければ時刻だけ出す。
+    private func updateSeekPreview(target: Double) {
+        seekPreviewTimeLabel.text = TimeFormat.hms(target)
+        // 横位置: つまみの中心に合わせ、映像の枠からはみ出さない範囲に収める。
+        let track = seekSlider.trackRect(forBounds: seekSlider.bounds)
+        let thumb = seekSlider.thumbRect(forBounds: seekSlider.bounds, trackRect: track, value: seekSlider.value)
+        let thumbCenter = seekSlider.convert(CGPoint(x: thumb.midX, y: 0), to: videoContainer).x
+        let halfWidth = videoContainer.bounds.width / 2
+        if halfWidth > 0 {
+            let limit = max(0, halfWidth - seekPreviewView.bounds.width / 2 - 4)
+            seekPreviewCenterConstraint?.constant = min(max(thumbCenter - halfWidth, -limit), limit)
+        }
+        // 映像: 対象のタイルが前回と違えば切り出し直す。
+        guard let tile = seekTileInfo, let sprite = spriteCGImage else {
+            seekPreviewImageView.isHidden = true
+            return
+        }
+        let index = min(Int(target / tile.interval_sec), tile.total_tiles - 1)
+        guard index >= 0 else { return }
+        if index != seekPreviewTileIndex {
+            seekPreviewTileIndex = index
+            let column = index % tile.column_count
+            let row = index / tile.column_count
+            let rect = CGRect(
+                x: column * tile.tile_width, y: row * tile.tile_height,
+                width: tile.tile_width, height: tile.tile_height)
+            if let cropped = sprite.cropping(to: rect) {
+                seekPreviewImageView.image = UIImage(
+                    cgImage: cropped, scale: spriteImage?.scale ?? 1, orientation: .up)
+            }
+        }
+        seekPreviewImageView.isHidden = seekPreviewImageView.image == nil
+    }
+
+    /// タイル画像を取りに行く (シークを始めたときに1回だけ)。
+    /// 取得と読み解きは裏で行い、再生そのものは止めない。
+    /// 届いた絵の寸法がタイル情報と合わない場合 (サーバーが既定の画像を
+    /// 返した場合など) は、プレビューの映像は出さない。
+    private func ensureSpriteLoading() {
+        guard let tile = seekTileInfo, spriteLoadState == .idle else { return }
+        spriteLoadState = .loading
+        let videoID = program.id
+        Task { [weak self] in
+            guard let self else { return }
+            guard let data = await APIClient.shared.fetchTiledThumbnail(videoID: videoID) else {
+                self.spriteLoadState = .failed
+                return
+            }
+            let image = await Task.detached(priority: .userInitiated) {
+                UIImage(data: data)
+            }.value
+            guard let image, let cgImage = image.cgImage,
+                  cgImage.width == tile.image_width, cgImage.height == tile.image_height
+            else {
+                self.spriteLoadState = .failed
+                return
+            }
+            self.spriteImage = image
+            self.spriteCGImage = cgImage
+            self.spriteLoadState = .loaded
+            self.seekPreviewTileIndex = -1
+            // シークが続いていれば、その位置の映像をすぐ出す。
+            if self.isScrubbing {
+                self.updateSeekPreview(target: Double(self.seekSlider.value) * self.effectiveDuration)
+            }
+        }
+    }
+
+    private func switchQuality(_ newQuality: String) {
+        guard newQuality != quality else { return }
+        let current = currentPosition()
+        quality = newQuality
+        // 画質が変わるとサーバー側のストリームが別物になるため、セッションも作り直す。
+        sessionID = UUID().uuidString
+        qualityButton.setTitle("画質: \(quality)", for: .normal)
+        qualityButton.menu = makeQualityMenu()
+        buttonsFlowView.setNeedsLayout()
+        startPlayback(at: current.isFinite ? current : 0)
+    }
+
+    /// フルスクリーン表示へ移る。AVPlayer 経路は同じプレイヤーを共有し、
+    /// 映像の層も通常画面のものをそのまま貸すので再生は途切れない。
+    /// VLCKit 経路は、映像の枠ごと全画面側へ貸し出す
+    /// (生放送の全画面と同じ作り) ので、こちらも受信は止まらない。
+    @objc private func showFullscreen() {
+#if canImport(MobileVLCKit)
+        if vlcPlayer != nil {
+            let fullscreen = FullscreenPlayerViewController(
+                program: program, quality: quality,
+                isCellularProfile: profile == .cellular,
+                hooks: makeFullscreenHooks())
+            fullscreen.onQualitySelected = { [weak self] newQuality in
+                self?.userSwitchQuality(newQuality)
+            }
+            fullscreen.onProfileSelected = { [weak self] isCellular in
+                self?.switchProfile(to: isCellular ? .cellular : .wifi) ?? ""
+            }
+            present(fullscreen, animated: true)
+            return
+        }
+#endif
+        guard let player else { return }
+        let fullscreen = FullscreenPlayerViewController(
+            player: player, program: program, quality: quality,
+            isCellularProfile: profile == .cellular,
+            sharedPlayerLayer: playerLayer,
+            onReturnPlayerLayer: { [weak self] layer in
+                // 全画面から戻るときに、層を通常画面の枠へ戻す。
+                guard let self else { return }
+                self.surfaceView.layer.addSublayer(layer)
+                layer.frame = self.surfaceView.bounds
+            })
+        // 字幕の重ね物も、映像の層と一緒に全画面側へ貸し出す
+        // (全画面を閉じるときに、通常画面の映像の枠へ戻してもらう)。
+        NSLayoutConstraint.deactivate(captionHomeConstraints)
+        fullscreen.borrowedCaptionView = captionOverlayView
+        fullscreen.onReturnCaptionView = { [weak self] in
+            guard let self else { return }
+            self.surfaceView.addSubview(self.captionOverlayView)
+            NSLayoutConstraint.activate(self.captionHomeConstraints)
+            self.surfaceView.bringSubviewToFront(self.captionOverlayView)
+        }
+        fullscreen.onQualitySelected = { [weak self] newQuality in
+            self?.userSwitchQuality(newQuality)
+        }
+        fullscreen.onProfileSelected = { [weak self] isCellular in
+            self?.switchProfile(to: isCellular ? .cellular : .wifi) ?? ""
+        }
+        present(fullscreen, animated: true)
+    }
+
+#if canImport(MobileVLCKit)
+    /// VLCKit 経路で全画面へ渡す操作の受け口。
+    /// 映像の枠の貸し出しと、位置・長さ・再生状態の読み取り、
+    /// 再生・停止・移動の委譲をまとめたもの (生放送の全画面が枠を
+    /// 貸し出す作りと同じ考え方で、録画の全画面にも操作を足した形)。
+    private func makeFullscreenHooks() -> FullscreenPlayerViewController.PlaybackHooks {
+        .init(
+            attachVideo: { [weak self] videoView in
+                guard let self else { return }
+                self.borrowSurfaceView(into: videoView)
+            },
+            detachVideo: { [weak self] in
+                guard let self else { return }
+                self.returnSurfaceView()
+            },
+            currentTime: { [weak self] in
+                self?.currentPosition() ?? 0
+            },
+            itemDuration: { [weak self] in
+                self?.currentItemDurationSeconds ?? .nan
+            },
+            isPlaying: { [weak self] in
+                self?.isCurrentlyPlaying() ?? false
+            },
+            play: { [weak self] in
+                self?.playAtCurrentRate()
+            },
+            pause: { [weak self] in
+                self?.pauseEngine()
+            },
+            seek: { [weak self] seconds in
+                self?.seek(to: seconds)
+            }
+        )
+    }
+
+    /// 全画面表示の間、映像の枠 (surfaceView) そのものを全画面側へ貸し出す。
+    /// VLC の描き先は surfaceView のまま変えず、枠の置き場所だけを移す。
+    /// 再生中に描き先を別のビューへ差し替えると、全画面で音だけ出て映像が
+    /// 出なくなる (実機確認済み) ため、この形にしている。枠の中の描画は
+    /// 枠と一緒にそのまま付いてくるので、再生は途切れない。
+    private func borrowSurfaceView(into container: UIView) {
+        guard surfaceView.superview !== container else { return }
+        NSLayoutConstraint.deactivate(surfaceViewHomeConstraints)
+        surfaceView.removeFromSuperview()
+        container.addSubview(surfaceView)
+        surfaceViewBorrowConstraints = [
+            surfaceView.topAnchor.constraint(equalTo: container.topAnchor),
+            surfaceView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            surfaceView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            surfaceView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ]
+        NSLayoutConstraint.activate(surfaceViewBorrowConstraints)
+        // 字幕の重ね物は枠の中にあるため一緒に付いて行く。映像の描画が
+        // 字幕より上に来ないよう、枠の中で一番上に保つ。
+        surfaceView.bringSubviewToFront(captionOverlayView)
+        // 貸し出し中は、通常画面側のタップ (操作帯の出し入れ) を止める
+        // (全画面側のタップと二重に効かないように)。
+        surfaceTapRecognizer?.isEnabled = false
+    }
+
+    /// 貸し出した映像の枠を通常画面へ戻す。
+    private func returnSurfaceView() {
+        guard surfaceView.superview !== videoContainer else { return }
+        NSLayoutConstraint.deactivate(surfaceViewBorrowConstraints)
+        surfaceViewBorrowConstraints = []
+        surfaceView.removeFromSuperview()
+        videoContainer.addSubview(surfaceView)
+        // 重ね物 (操作帯など) より後ろへ戻す。
+        videoContainer.sendSubviewToBack(surfaceView)
+        NSLayoutConstraint.activate(surfaceViewHomeConstraints)
+        surfaceTapRecognizer?.isEnabled = true
+    }
+#endif
+
+    /// 音声のみ: 映像だけを隠し、最小画質に切り替えて通信量を抑える。切ると元の画質に戻す。
+    /// 操作帯は映像の上に重なっているため、隠すのは映像の描画だけにする
+    /// (帯ごと隠すと、止める操作もできなくなる)。
+    /// VLCKit 経路では、画質切り替えで作り直すときに映像なし (:no-video) で
+    /// つなぎ直すので、描画自体が出ない (生放送の音声のみと同じ)。
+    @objc private func toggleAudioOnly() {
+        audioOnly.toggle()
+        audioOnlyButton.setTitle(audioOnly ? "音声のみ: ON" : "音声のみ: OFF", for: .normal)
+        buttonsFlowView.setNeedsLayout()
+        playerLayer?.isHidden = audioOnly
+        if audioOnly {
+            qualityBeforeAudioOnly = quality
+            switchQuality(SettingsStore.audioOnlyQuality)
+        } else {
+            switchQuality(qualityBeforeAudioOnly
+                ?? SettingsStore.shared.streamingQuality(media: .video, profile: profile))
+            qualityBeforeAudioOnly = nil
+        }
+        // 音声のみの間はコメントを流さず、戻したら再開する。
+        applyCommentDisplayState()
+        // 字幕も同じく、音声のみの間は出さず、戻したら再開する。
+        applyCaptionDisplayState()
+    }
+}
+
+#if canImport(MobileVLCKit)
+extension PlayerViewController: VLCMediaPlayerDelegate {
+    /// VLC 側の状態変化に、画面内のボタンとロック画面の表示を追随させる
+    /// (生放送と同じ作り)。再生が始まった合図では、控えておいた開始位置への
+    /// 移動と、画質の切り替え完了時点の書き戻しも行う
+    /// (AVPlayer 経路の再生状態の観測にあたる)。
+    func mediaPlayerStateChanged(_ aNotification: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let vlcPlayer = self.vlcPlayer else { return }
+            if vlcPlayer.state == .playing {
+                self.vlcDidStartPlaying = true
+                self.vlcStartWatchdog?.invalidate()
+                self.vlcStartWatchdog = nil
+                // 見張りが先に失敗を表示していた場合は、始まったので消す。
+                if self.messageLabel.text == "再生を開始できませんでした。" {
+                    self.messageLabel.text = nil
+                }
+                if let start = self.vlcPendingStartPosition {
+                    self.vlcPendingStartPosition = nil
+                    if start > 0 {
+                        self.seek(to: start)
+                    }
+                }
+                if let pending = self.pendingQualityWriteBack,
+                   pending == self.quality {
+                    SettingsStore.shared.setStreamingQuality(pending, media: .video, profile: self.profile)
+                    self.pendingQualityWriteBack = nil
+                }
+            } else if vlcPlayer.state == .error {
+                // 開始に失敗した (合言葉が通らない・サーバーに届かない等)。
+                // 真っ黒のまま無言にせず、その旨を表示する。
+                self.vlcStartWatchdog?.invalidate()
+                self.vlcStartWatchdog = nil
+                if !self.vlcDidStartPlaying {
+                    self.messageLabel.text = "再生を開始できませんでした。"
+                }
+            }
+            self.updatePlayPauseIcon()
+            self.updateNowPlaying()
+        }
+    }
+}
+#endif
+
+// MARK: - 字幕データの受け取り (通常画質)
+
+extension PlayerViewController: AVPlayerItemMetadataOutputPushDelegate {
+    /// AVPlayer から時刻つきデータが届いたときに呼ばれる (メイン側で受ける)。
+    /// 配信の字幕データは ID3 の PRIV フレームで届き、再生部品が渡す値は
+    /// 宛先名を含まない「字幕の中身」そのもの (識別子は id3/PRIV) という
+    /// 届き方を実機で確認済み (2026-11-23、版0.41 で受信34件すべて一致)。
+    /// 包みの位置は、届いた組の開始時刻をそのまま使う。
+    /// 取り出した包みは字幕の本体へ渡し、その場で表示にも反映する。
+    func metadataOutput(_ output: AVPlayerItemMetadataOutput,
+                        didOutputTimedMetadataGroups groups: [AVTimedMetadataGroup],
+                        from track: AVPlayerItemTrack?) {
+        guard captionMetadataOutput != nil, !groups.isEmpty else { return }
+        var ingested = false
+        for group in groups {
+            let start = group.timeRange.start.seconds
+            let position = start.isFinite ? start : currentPosition()
+            for item in group.items {
+                if let payload = captionPayload(from: item) {
+                    captionEngine.ingest(position: position, payload: payload)
+                    ingested = true
+                }
+            }
+        }
+        if ingested {
+            refreshCaptions()
+        }
+    }
+
+    /// 受け取った項目から、字幕の中身を取り出す。
+    /// 値は中身そのものが入っている形が実機で確定しているが、
+    /// 宛先名が付いた形で届く場合に備え、先頭の宛先名は取り除く。
+    /// 中身の形 (先頭 0x80/0x81 + 0xFF 0xF0) に合わないものは、
+    /// 字幕ではないとして捨てる。
+    private func captionPayload(from item: AVMetadataItem) -> Data? {
+        guard let bytes = metadataItemBytes(item) else { return nil }
+        var payload = bytes
+        var ownerPrefix = Data()
+        ownerPrefix.append(contentsOf: "aribb24.js".utf8)
+        ownerPrefix.append(0)
+        if payload.starts(with: ownerPrefix) {
+            payload = Data(payload.dropFirst(ownerPrefix.count))
+        }
+        guard payload.count >= 3 else { return nil }
+        let head = [UInt8](payload.prefix(3))
+        guard (head[0] == 0x80 || head[0] == 0x81), head[1] == 0xFF, head[2] == 0xF0 else {
+            return nil
+        }
+        return payload
+    }
+
+    /// 受け取った項目からバイト列を取り出す。
+    /// データ値があればそれを、無ければ値そのもの (データとして入っている
+    /// 場合) や文字列値を使う。
+    private func metadataItemBytes(_ item: AVMetadataItem) -> Data? {
+        if let dataValue = item.dataValue {
+            return dataValue
+        }
+        if let valueData = item.value as? NSData {
+            return valueData as Data
+        }
+        if let stringValue = item.stringValue {
+            return stringValue.data(using: .utf8)
+        }
+        return nil
+    }
+}
+
+// MARK: - コメント一覧の表の受け口
+
+extension PlayerViewController: UITableViewDataSource, UITableViewDelegate {
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        jikkyoComments.count
+    }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(
+            withIdentifier: CommentListCell.reuseIdentifier, for: indexPath) as! CommentListCell
+        let comment = jikkyoComments[indexPath.row]
+        cell.configure(text: comment.text, timeText: TimeFormat.hms(comment.time))
+        return cell
+    }
+
+    /// 行を押したら、そのコメントの時刻へ移動する (Web 版コメント一覧と
+    /// 同じ)。移動後は、その行から追随を続ける。
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard jikkyoComments.indices.contains(indexPath.row) else { return }
+        commentFollowIndex = indexPath.row
+        commentListManualScrollAt = nil
+        seek(to: jikkyoComments[indexPath.row].time)
+    }
+
+    /// 利用者が一覧を手でスクロールしたら、しばらく追随を止める
+    /// (Web 版も手動スクロール中は自動で動かさない)。
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        if scrollView === commentTableView {
+            commentListManualScrollAt = Date()
+        }
+    }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if scrollView === commentTableView {
+            commentListManualScrollAt = Date()
+        }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        if scrollView === commentTableView {
+            commentListManualScrollAt = Date()
+        }
+    }
+}
+
+/// コメント一覧の1行 (Web 版コメント一覧と同じ: 本文 13pt の左寄せ +
+/// 右端に時刻 13pt の薄い色)。本文は折り返して全部出す。
+private final class CommentListCell: UITableViewCell {
+    static let reuseIdentifier = "CommentListCell"
+
+    private let bodyLabel = UILabel()
+    private let timeLabel = UILabel()
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        backgroundColor = AppPalette.background
+        // 押したときの地は Web 版の hover に相当する一段明るい面にする。
+        let selectedBackground = UIView()
+        selectedBackground.backgroundColor = AppPalette.pressed
+        selectedBackgroundView = selectedBackground
+
+        bodyLabel.font = .systemFont(ofSize: 13)
+        bodyLabel.textColor = AppPalette.text
+        bodyLabel.numberOfLines = 0
+        timeLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+        timeLabel.textColor = AppPalette.metaText
+        timeLabel.setContentHuggingPriority(.required, for: .horizontal)
+        timeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let stack = UIStackView(arrangedSubviews: [bodyLabel, timeLabel])
+        stack.axis = .horizontal
+        stack.spacing = 8
+        stack.alignment = .top
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 7),
+            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -7),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(text: String, timeText: String) {
+        bodyLabel.text = text
+        timeLabel.text = timeText
+    }
+}
