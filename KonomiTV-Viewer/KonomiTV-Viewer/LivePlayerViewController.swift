@@ -123,6 +123,9 @@ final class LivePlayerViewController: UIViewController {
     private var channelResponse: LiveChannelsResponse?
     private var selectedChannelGroupIndex = 0
     private var channelPanelLoaded = false
+    /// 一覧の左右スワイプで分類を切り替えるためのしぐさ (生放送一覧と
+    /// 同じ考え方で、横の動きだけを拾う)。
+    private let channelGroupSwipePan = UIPanGestureRecognizer()
 
     // コメントパネルと実況コメント
     private let commentPanel = UIView()
@@ -799,6 +802,15 @@ final class LivePlayerViewController: UIViewController {
         channelTableView.separatorStyle = .none
         channelTableView.translatesAutoresizingMaskIntoConstraints = false
 
+        // 一覧の左右スワイプでも分類を切り替えられるようにする
+        // (生放送一覧と揃える)。しぐさは一覧に付け、縦スクロールは
+        // このしぐさが不成立になるまで待つ (横のときだけ成立する
+        // 判定は gestureRecognizerShouldBegin 側)。
+        channelGroupSwipePan.addTarget(self, action: #selector(handleChannelGroupSwipe(_:)))
+        channelGroupSwipePan.delegate = self
+        channelTableView.addGestureRecognizer(channelGroupSwipePan)
+        channelTableView.panGestureRecognizer.require(toFail: channelGroupSwipePan)
+
         let stack = UIStackView(arrangedSubviews: [
             channelCategoryScrollView, statusWrap, channelTableView,
         ])
@@ -923,10 +935,52 @@ final class LivePlayerViewController: UIViewController {
     }
 
     @objc private func selectChannelGroup(_ sender: RippleButton) {
-        guard channelGroups.indices.contains(sender.tag) else { return }
-        selectedChannelGroupIndex = sender.tag
+        applyChannelGroupSelection(sender.tag)
+    }
+
+    /// 分類の切り替えを反映する (タップとスワイプで共用)。
+    /// 帯を作り直して一覧を読み直し、先頭から出す (生放送一覧で
+    /// ページを移ったときと同じ)。
+    private func applyChannelGroupSelection(_ index: Int) {
+        guard channelGroups.indices.contains(index) else { return }
+        selectedChannelGroupIndex = index
         rebuildChannelCategoryChips()
         channelTableView.reloadData()
+        channelTableView.contentOffset = CGPoint(
+            x: 0, y: -channelTableView.adjustedContentInset.top)
+        // 帯の中で、選んだ分類が見える位置まで寄せる。
+        if channelCategoryStack.arrangedSubviews.indices.contains(index) {
+            let chip = channelCategoryStack.arrangedSubviews[index]
+            channelCategoryScrollView.scrollRectToVisible(
+                chip.frame.insetBy(dx: -12, dy: 0), animated: true)
+        }
+    }
+
+    /// 一覧の左右スワイプ。左へ払えば次の分類、右へ払えば前の分類で、
+    /// 端ではそれ以上進まない (生放送一覧と同じ)。切り替えは、指を
+    /// 離したときに移動量と勢いで決める。
+    @objc private func handleChannelGroupSwipe(_ pan: UIPanGestureRecognizer) {
+        guard pan.state == .ended else { return }
+        let translation = pan.translation(in: channelTableView)
+        let velocity = pan.velocity(in: channelTableView)
+        // ある程度の移動か勢いがあるときだけ切り替える
+        // (触れただけで切り替わらないように)。
+        guard abs(translation.x) > 40 || abs(velocity.x) > 300 else { return }
+        // 向きは移動量を優先し、読み取れないときは速度で決める。
+        let directionX = abs(translation.x) > 2 ? translation.x : velocity.x
+        let step = directionX < 0 ? 1 : -1
+        let target = selectedChannelGroupIndex + step
+        guard channelGroups.indices.contains(target) else { return }
+        applyChannelGroupSelection(target)
+        // 新しい分類の一覧が、進む向きから滑り込んでくるように見せる
+        // (生放送一覧のページ送りに寄せた動き)。
+        channelTableView.transform = CGAffineTransform(
+            translationX: CGFloat(step) * 40, y: 0)
+        channelTableView.alpha = 0.35
+        UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseOut]) {
+            self.channelTableView.transform = .identity
+            self.channelTableView.alpha = 1
+        }
     }
 
     /// API の種別名を表示用の名前にする (生放送一覧と同じ)。
@@ -2844,6 +2898,26 @@ extension LivePlayerViewController: UITableViewDataSource, UITableViewDelegate {
             commentFollow = atBottom
             commentJumpButton.isHidden = atBottom
         }
+    }
+}
+
+extension LivePlayerViewController: UIGestureRecognizerDelegate {
+    /// チャンネルパネルの左右スワイプのしぐさが成立するかどうか。
+    /// 横方向の動きのときだけ true を返し、縦方向のときは false で
+    /// 即座に不成立にすることで、縦スクロールが遅れずに始まるように
+    /// する (生放送一覧と同じ判定の仕方)。向きの判定は、速度が出て
+    /// いれば速度、無ければ移動量という具合に、1つのベクトルで
+    /// そろえて行う。
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
+              pan === channelGroupSwipePan else { return true }
+        guard selectedPanelTab == .channel, channelGroups.count > 1 else { return false }
+        let velocity = pan.velocity(in: channelTableView)
+        let translation = pan.translation(in: channelTableView)
+        let useVelocity = abs(velocity.x) > 1 || abs(velocity.y) > 1
+        let dx = useVelocity ? velocity.x : translation.x
+        let dy = useVelocity ? velocity.y : translation.y
+        return abs(dx) > abs(dy)
     }
 }
 
