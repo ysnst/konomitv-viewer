@@ -1198,8 +1198,13 @@ final class SettingsStore {
             return nil
         }
         let identity = rawIdentity as! SecIdentity
+        // 証明書の連なりは、型の印を見てから取り出す (CoreFoundation の
+        // 型への条件付きの変換は、そのままでは通らないため)。
         let chain = (first[kSecImportItemCertChain as String] as? [Any])?
-            .compactMap { $0 as? SecCertificate } ?? []
+            .compactMap { value -> SecCertificate? in
+                guard CFGetTypeID(value as CFTypeRef) == SecCertificateGetTypeID() else { return nil }
+                return (value as! SecCertificate)
+            } ?? []
         var label = ""
         if let leaf = chain.first,
            let summary = SecCertificateCopySubjectSummary(leaf) {
