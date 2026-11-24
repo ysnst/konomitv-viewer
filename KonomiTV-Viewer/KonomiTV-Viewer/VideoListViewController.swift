@@ -97,17 +97,17 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     private var showsTrashLink: Bool { AppEdition.trashEnabled && isAdminUser }
     /// ゴミ箱の入口の行の高さ (出すときだけ)。
     private static let trashLinkRowHeight: CGFloat = 26
-    /// 複数選択の入り口のピルの行 (見出し行の下、右寄せ。ゴミ箱の
-    /// 「選択する」のピルと同じ置き方)。
-    private let selectRowView = UIView()
+    /// 複数選択の入り口のピル (見出し行の中、フィルタボタンの左隣。
+    /// ゴミ箱の「選択する」のピルと同じ見た目)。
     private let selectButton = RippleButton()
-    /// ピルの行の高さ (出すときだけ)。
-    private static let selectRowHeight: CGFloat = 38
+    /// ピルを隠すときに幅を 0 に潰すための制約 (見出し行の並びの中で
+    /// 場所を取らないようにする)。組み立て時に作る。
+    private var selectButtonZeroWidthConstraint: NSLayoutConstraint?
     /// 「選択する」のピルを出すかどうか。複数選択で使える操作が
     /// 1つでもあるとき (保護のトグルがオン、またはゴミ箱のトグルが
     /// オンで管理者) に、一覧が空でないときだけ出す。選択中は、
     /// 終えるためのピルが要るため常に出す。
-    private var showsSelectRow: Bool {
+    private var showsSelectButton: Bool {
         isSelectionMode
             || ((AppEdition.protectionEnabled || (AppEdition.trashEnabled && isAdminUser))
                 && !programs.isEmpty)
@@ -305,7 +305,8 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         trashLinkRowView.addSubview(trashLinkButton)
         trashLinkRowView.isHidden = true
         // 複数選択の入り口。ゴミ箱の「選択する」のピルと同じ見た目で、
-        // 見出し行の下の行に右寄せで置く (行の組み立ては refreshHeadContainer)。
+        // 見出し行の中にフィルタボタンの左隣で置く (並びの制約は下の
+        // NSLayoutConstraint.activate、出し分けは refreshHeadContainer)。
         selectButton.setTitle("選択する", for: .normal)
         selectButton.setTitleColor(AppPalette.text, for: .normal)
         selectButton.titleLabel?.font = .scaledSystemFont(ofSize: 13, weight: .semibold)
@@ -314,8 +315,11 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         selectButton.layer.borderWidth = 1
         selectButton.layer.borderColor = AppPalette.fieldBorder.cgColor
         selectButton.addTarget(self, action: #selector(toggleSelectionMode), for: .touchUpInside)
-        selectRowView.addSubview(selectButton)
-        selectRowView.isHidden = true
+        selectButton.translatesAutoresizingMaskIntoConstraints = false
+        selectButton.isHidden = true
+        selectButtonZeroWidthConstraint = selectButton.widthAnchor.constraint(equalToConstant: 0)
+        selectButtonZeroWidthConstraint?.isActive = true
+        listHeaderView.addSubview(selectButton)
         // 前回保存した表示状態 (ページ・並び順・両フィルタ) を復元する。
         restoreViewState()
         updateFilterButtonAppearance()
@@ -375,6 +379,9 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             filterButton.trailingAnchor.constraint(equalTo: listHeaderView.trailingAnchor, constant: -12),
             filterButton.centerYAnchor.constraint(equalTo: listHeaderView.centerYAnchor),
             filterButton.leadingAnchor.constraint(greaterThanOrEqualTo: countLabel.trailingAnchor, constant: 8),
+            selectButton.trailingAnchor.constraint(equalTo: filterButton.leadingAnchor, constant: -8),
+            selectButton.centerYAnchor.constraint(equalTo: listHeaderView.centerYAnchor),
+            selectButton.leadingAnchor.constraint(greaterThanOrEqualTo: countLabel.trailingAnchor, constant: 8),
             filterBadgeLabel.widthAnchor.constraint(equalToConstant: 16),
             filterBadgeLabel.heightAnchor.constraint(equalToConstant: 16),
             filterBadgeLabel.centerXAnchor.constraint(equalTo: filterButton.trailingAnchor, constant: -2),
@@ -468,11 +475,12 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     }
 
     /// 先頭まわり一式の高さ。容量行は取得できたときだけ 22 (文字の行 18 + 下の余白 4)、
-    /// ゴミ箱の入口の行は出すときだけ 26、複数選択のピルの行は出すときだけ 38。
+    /// ゴミ箱の入口の行は出すときだけ 26。複数選択のピルは見出し行の中に
+    /// 入っているため、高さには加えない。
     private var headContainerHeight: CGFloat {
         SPHeaderView.height + (showsStorageRow ? 22 : 0)
             + (showsTrashLink ? Self.trashLinkRowHeight : 0) + 44
-            + (showsSelectRow ? Self.selectRowHeight : 0) + PaginationView.preferredHeight
+            + PaginationView.preferredHeight
     }
 
     /// 先頭まわり一式をテーブルの先頭に付ける。テーブルの先頭に付けたビューは
@@ -482,15 +490,14 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         headContainerView.addSubview(headerView)
         headContainerView.addSubview(storageRowView)
         headContainerView.addSubview(trashLinkRowView)
-        headContainerView.addSubview(selectRowView)
         refreshHeadContainer()
     }
 
     /// 先頭まわり一式の並びと大きさを決め直して、テーブルへ付け直す。
     /// 並びは Web 版と同じ ロゴ帯 → 容量行 → 見出し行 → 上のページ送りで、
     /// ゴミ箱の入口の行は Web 版の置き場所 (一覧の見出しの上、右寄せ) に
-    /// 合わせて容量行と見出し行の間に入れる。複数選択のピルの行は
-    /// 見出し行と上のページ送りの間に入れる。
+    /// 合わせて容量行と見出し行の間に入れる。複数選択のピルは見出し行の
+    /// 中 (フィルタボタンの左隣) に入れてあり、ここでは出し分けだけ合わせる。
     private func refreshHeadContainer() {
         let width = tableView.bounds.width
         let storageHeight: CGFloat = showsStorageRow ? 22 : 0
@@ -526,22 +533,12 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         storageRowView.isHidden = !showsStorageRow
         let listHeaderY = SPHeaderView.height + storageHeight + trashHeight
         listHeaderView.frame = CGRect(x: 0, y: listHeaderY, width: width, height: 44)
-        // 複数選択のピルの行は見出し行の下 (ゴミ箱で見出し帯の下に
-        // 置くのと同じ置き方)。ピルは右寄せで、右端は他の行に合わせる。
-        let selectHeight: CGFloat = showsSelectRow ? Self.selectRowHeight : 0
-        selectRowView.frame = CGRect(
-            x: 0, y: listHeaderY + 44, width: width, height: selectHeight)
-        selectRowView.isHidden = !showsSelectRow
-        if showsSelectRow {
-            selectButton.sizeToFit()
-            let buttonWidth = selectButton.frame.width
-            let buttonHeight = selectButton.frame.height
-            selectButton.frame = CGRect(
-                x: width - 16 - buttonWidth, y: (selectHeight - buttonHeight) / 2,
-                width: buttonWidth, height: buttonHeight)
-        }
+        // 複数選択のピルは見出し行の中 (フィルタボタンの左隣)。隠すときは
+        // 幅を 0 に潰して、見出し行の並びで場所を取らないようにする。
+        selectButton.isHidden = !showsSelectButton
+        selectButtonZeroWidthConstraint?.isActive = !showsSelectButton
         topPaginationView.frame = CGRect(
-            x: 0, y: listHeaderY + 44 + selectHeight, width: width, height: PaginationView.preferredHeight)
+            x: 0, y: listHeaderY + 44, width: width, height: PaginationView.preferredHeight)
         headContainerView.frame = CGRect(x: 0, y: 0, width: width, height: headContainerHeight)
         tableView.tableHeaderView = headContainerView
     }
@@ -1383,7 +1380,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     }
 
     /// 選択まわりの出し分け (操作帯と一覧下の余白) を現在の状態に合わせる。
-    /// ピルの行の出し分けは先頭まわりの組み直しで反映する。
+    /// ピルの出し分けは先頭まわりの組み直しで反映する。
     private func updateSelectionChrome() {
         refreshHeadContainer()
         bulkBar.isHidden = !isSelectionMode
