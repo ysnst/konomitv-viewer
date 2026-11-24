@@ -20,6 +20,13 @@ on:
 permissions:
   contents: write
 
+# 同じブランチの実行は重ねず、順番に1つずつ回す。重なると、
+# 遅れて終わった古い実行が、新しい IPA を固定リリースから
+# 消してしまうことがあるため。
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     uses: ./.github/workflows/build-ipa.yml

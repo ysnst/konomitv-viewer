@@ -509,6 +509,12 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        // 拡張オプションが切られたら、この画面は開いたままにしない
+        // (別のタブに残っていた画面が、そのまま使えてしまうため)。
+        guard AppEdition.trashEnabled else {
+            navigationController?.popViewController(animated: false)
+            return
+        }
         // 見出し帯を自前で出すため、ナビゲーションバーは隠す
         // (設定まわりの画面・視聴履歴と同じ扱い)。
         navigationController?.setNavigationBarHidden(true, animated: animated)

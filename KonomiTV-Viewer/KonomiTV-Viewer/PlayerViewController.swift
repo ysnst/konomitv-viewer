@@ -505,6 +505,10 @@ final class PlayerViewController: UIViewController {
     private let reelBadgeLabel = UILabel()
     /// この再生画面がハイライト横断再生の対象になっているか。
     private var reelActive = false
+    /// 横断再生で別の録画を取りに行っている最中かどうか。見張りが
+    /// 0.5秒ごとに呼ばれるため、印が無いと取り込みが終わるまでの間に
+    /// 同じ区間の取得が重なって走ってしまう。
+    private var reelFetchInFlight = false
     /// 横断再生の見張りの間引き用 (Web 版と同じ 500ミリ秒間隔)。
     private var lastReelCheckAt: TimeInterval = 0
     /// 次の話の自動再生の数え下げカードと、その材料。
@@ -517,6 +521,9 @@ final class PlayerViewController: UIViewController {
     /// 長押しの高速シーク (送り・戻し)。
     private let fastSeekBackController = FastSeekController(direction: -1)
     private let fastSeekForwardController = FastSeekController(direction: 1)
+    /// 高速シーク中の消音の持ち主 (送り・戻しで共有し、同時に
+    /// 長押ししても消音が残らないようにする)。
+    private let fastSeekMuteKeeper = FastSeekMuteKeeper()
     /// VLCKit 経路で高速シークのために音を消す前の音量の控え。
     private var savedVLCVolume: Int32?
     /// AVPlayer 経路で、再生が終わったことを知るための見張りの控え。
@@ -2996,7 +3003,12 @@ final class PlayerViewController: UIViewController {
     private func setupFastSeek() {
         fastSeekBackController.attach(to: skipBackButton)
         fastSeekForwardController.attach(to: skipForwardButton)
+        // 消音は持ち主へ一元化する (送り・戻しが同時に進んでも、
+        // 最後の1つが終わるまで音は戻らない)。
+        fastSeekMuteKeeper.isMutedProvider = { [weak self] in self?.isEngineMuted ?? false }
+        fastSeekMuteKeeper.setMutedHandler = { [weak self] muted in self?.setEngineMuted(muted) }
         for controller in [fastSeekBackController, fastSeekForwardController] {
+            controller.muteKeeper = fastSeekMuteKeeper
             controller.positionProvider = { [weak self] in self?.currentPosition() ?? 0 }
             controller.seekHandler = { [weak self] position in self?.seek(to: position) }
             controller.isMutedProvider = { [weak self] in self?.isEngineMuted ?? false }
@@ -3220,21 +3232,33 @@ final class PlayerViewController: UIViewController {
             updateReelBadge()
             return
         }
+        // 取得中は重ねない。見張りは0.5秒ごとに呼ばれるため、
+        // 印が無いと同じ区間の取得が繰り返し走り、遅れて返った
+        // 応答が別の区間まで進めてしまうことがある。
+        guard !reelFetchInFlight else { return }
+        reelFetchInFlight = true
         let nextID = next.videoID
+        // 照合は録画の ID だけでなく、キューの中での区間の番号まで
+        // 含める (同じ録画の区間が続く場合、ID だけでは別の区間と
+        // 見分けが付かないため)。
+        let nextIndex = store.index + 1
         let generation = playbackGeneration
         Task { [weak self] in
             guard let self else { return }
-            if let nextProgram = await APIClient.shared.fetchVideo(videoID: nextID) {
-                // 取得の間に画面を離れたり、横断再生が取り消されたり
-                // していたら、古い画面からは次の録画を開かない。
-                guard !self.didLeaveScreen, self.playbackGeneration == generation,
-                      self.reelActive,
-                      HighlightReelStore.shared.nextItem?.videoID == nextID else { return }
+            let nextProgram = await APIClient.shared.fetchVideo(videoID: nextID)
+            self.reelFetchInFlight = false
+            // 取得の間に画面を離れたり、世代が変わったり、横断再生が
+            // 取り消されたり、キューの次の区間が別のものに変わって
+            // いたら、この取得の結果では進めない (成功・失敗とも)。
+            guard !self.didLeaveScreen, self.playbackGeneration == generation,
+                  self.reelActive,
+                  HighlightReelStore.shared.index + 1 == nextIndex,
+                  HighlightReelStore.shared.nextItem?.videoID == nextID else { return }
+            if let nextProgram {
                 HighlightReelStore.shared.advance()
                 self.navigationController?.pushViewController(
                     PlayerViewController(program: nextProgram), animated: true)
-            } else if !self.didLeaveScreen, self.reelActive,
-                      HighlightReelStore.shared.nextItem?.videoID == nextID {
+            } else {
                 // 取り込めなかった区間は飛ばして、次へ進む。
                 HighlightReelStore.shared.advance()
                 self.showPlayerNotice("次の録画を取り込めなかったため、その区間を飛ばしました")

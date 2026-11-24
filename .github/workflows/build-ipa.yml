@@ -100,6 +100,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: sideload-latest
         run: |
+          # この実行のコミットが main の先端でなくなっていたら、
+          # 固定リリースへの公開は省く (遅れて終わった古い実行が、
+          # 新しい IPA を消したり説明を巻き戻したりしないため)。
+          LATEST_SHA=$(gh api "repos/${{ github.repository }}/commits/main" --jq '.sha')
+          if [ "$LATEST_SHA" != "${{ github.sha }}" ]; then
+            echo "この実行のコミット (${{ github.sha }}) は main の先端 ($LATEST_SHA) ではないため、公開を省きます。"
+            exit 0
+          fi
           IPA="build/$IPA_NAME"
           TITLE="最新の IPA"
           NOTES="版番号: $APP_VERSION

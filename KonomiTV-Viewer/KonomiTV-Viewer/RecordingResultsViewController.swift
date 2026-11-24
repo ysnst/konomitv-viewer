@@ -19,6 +19,11 @@ final class RecordingResultsViewController: UIViewController, UITableViewDataSou
 
     private var results: [RecordingResult] = []
     private var isLoading = false
+    /// 再生画面への移動の処理中か (行の連打で取得と移動が重ならないため)。
+    private var isOpeningPlayer = false
+    /// 画面の世代。離れた時点で進め、取得の完了時に照合する
+    /// (離れたあとに遅れて届いた結果で画面が開かないため)。
+    private var screenGeneration = 0
 
     init() {
         super.init(nibName: nil, bundle: nil)
@@ -108,13 +113,22 @@ final class RecordingResultsViewController: UIViewController, UITableViewDataSou
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        // 拡張オプションが切られたら、この画面は開いたままにしない
+        // (別のタブに残っていた画面が、そのまま使えてしまうため)。
+        guard AppEdition.recordingResultsEnabled else {
+            navigationController?.popViewController(animated: false)
+            return
+        }
         navigationController?.setNavigationBarHidden(true, animated: animated)
         navigationController?.interactivePopGestureRecognizer?.isEnabled = true
+        isOpeningPlayer = false
         reloadResults()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        screenGeneration += 1
+        isOpeningPlayer = false
         navigationController?.setNavigationBarHidden(false, animated: animated)
     }
 
@@ -173,9 +187,18 @@ final class RecordingResultsViewController: UIViewController, UITableViewDataSou
         tableView.deselectRow(at: indexPath, animated: true)
         guard results.indices.contains(indexPath.row),
               let recordedID = results[indexPath.row].recorded_id else { return }
+        // 取得中は次の選択を受けない (連打で取得と移動が重ならないため)。
+        guard !isOpeningPlayer else { return }
+        isOpeningPlayer = true
+        let generation = screenGeneration
         Task { [weak self] in
             guard let self else { return }
-            if let program = await APIClient.shared.fetchVideo(videoID: recordedID) {
+            let program = await APIClient.shared.fetchVideo(videoID: recordedID)
+            self.isOpeningPlayer = false
+            // 取得の間に画面を離れていたら、移動も案内もしない。
+            guard generation == self.screenGeneration,
+                  self.navigationController?.topViewController === self else { return }
+            if let program {
                 self.navigationController?.pushViewController(
                     PlayerViewController(program: program), animated: true)
             } else {

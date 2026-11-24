@@ -19,6 +19,8 @@ final class HighlightsViewController: UIViewController {
     private var items: [HighlightReelStore.Item] = []
     private var programsByID: [Int: RecordedProgram] = [:]
     private var isLoading = false
+    /// 対象の範囲や部分的な失敗の注記 (概要の文に続けて出す)。
+    private var scopeNote = ""
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -140,6 +142,7 @@ final class HighlightsViewController: UIViewController {
             // 無かった」と取り違えないよう、表示を分けるため)。
             var todaysPrograms: [RecordedProgram] = []
             var listLoadFailed = false
+            var sawOlder = false
             var page = 1
             var total = Int.max
             while todaysPrograms.count < total, page <= 10 {
@@ -159,9 +162,15 @@ final class HighlightsViewController: UIViewController {
                         todaysPrograms.append(program)
                     }
                 }
-                if reachedOlder { break }
+                if reachedOlder {
+                    sawOlder = true
+                    break
+                }
                 page += 1
             }
+            // 一覧の取得を途中で打ち切ったかどうか (ページ数の上限に
+            // 達し、今日の録画を最後まで見ていない可能性がある)。
+            let listTruncated = !listLoadFailed && !sawOlder && todaysPrograms.count < total
             // 古い順に、各録画から盛り上がりの強い区間を最大3つまで拾う
             // (コメント取得の負荷を抑えるため対象は12件まで)。
             var found: [HighlightReelStore.Item] = []
@@ -205,6 +214,19 @@ final class HighlightsViewController: UIViewController {
             // した場合は、失敗と分かる文にする。
             let loadFailed = listLoadFailed
                 || (commentFetchAttempts > 0 && commentFetchFailures == commentFetchAttempts)
+            // 対象の範囲と部分的な失敗を、利用者に分かる形で残す
+            // (打ち切りや一部の失敗が、完全な結果と見分けがつくよう)。
+            var notes: [String] = []
+            if todaysPrograms.count > commentFetchAttempts {
+                notes.append("今日の録画 \(todaysPrograms.count) 件のうち、古い方から \(commentFetchAttempts) 件が対象です")
+            }
+            if listTruncated {
+                notes.append("録画が多いため、一覧の途中までしか確認できていません")
+            }
+            if commentFetchFailures > 0, commentFetchFailures < commentFetchAttempts {
+                notes.append("\(commentFetchFailures) 件の録画はコメントを取得できず、対象から外れています")
+            }
+            self.scopeNote = notes.joined(separator: "。")
             self.applyResults(loadFailed: loadFailed)
         }
     }
@@ -215,14 +237,15 @@ final class HighlightsViewController: UIViewController {
             listStack.removeArrangedSubview(arranged)
             arranged.removeFromSuperview()
         }
+        let noteSuffix = scopeNote.isEmpty ? "" : "\n（\(scopeNote)）"
         if items.isEmpty {
-            summaryLabel.text = loadFailed
+            summaryLabel.text = (loadFailed
                 ? "読み込めませんでした。\n接続先とネットワークを確認してください。"
-                : "今日の録画に、コメントの盛り上がり区間は見つかりませんでした"
+                : "今日の録画に、コメントの盛り上がり区間は見つかりませんでした") + noteSuffix
         } else {
             let totalSeconds = items.reduce(0.0) { $0 + ($1.end - $1.start) }
             summaryLabel.text = "\(items.count) 区間・合計 \(Self.playbackTime(totalSeconds)) "
-                + "(実況コメントの盛り上がりから自動抽出)"
+                + "(実況コメントの盛り上がりから自動抽出)" + noteSuffix
             for item in items {
                 listStack.addArrangedSubview(makeRow(item: item))
             }

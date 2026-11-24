@@ -79,6 +79,9 @@ final class FullscreenPlayerViewController: UIViewController {
     /// 長押しの高速シーク (送り・戻し)。
     private let fastSeekBackController = FastSeekController(direction: -1)
     private let fastSeekForwardController = FastSeekController(direction: 1)
+    /// 高速シーク中の消音の持ち主 (送り・戻しで共有し、同時に
+    /// 長押ししても消音が残らないようにする)。
+    private let fastSeekMuteKeeper = FastSeekMuteKeeper()
 
     private let videoView = UIView()
     /// 上部・下部の帯のグラデーション (Web 版のヘッダー帯・操作帯と同じ、黒から透明へ)。
@@ -589,7 +592,12 @@ final class FullscreenPlayerViewController: UIViewController {
     private func setupFastSeek() {
         fastSeekBackController.attach(to: skipBackButton)
         fastSeekForwardController.attach(to: skipForwardButton)
+        // 消音は持ち主へ一元化する (送り・戻しが同時に進んでも、
+        // 最後の1つが終わるまで音は戻らない)。
+        fastSeekMuteKeeper.isMutedProvider = { [weak self] in self?.isMutedNow ?? false }
+        fastSeekMuteKeeper.setMutedHandler = { [weak self] muted in self?.setMutedNow(muted) }
         for controller in [fastSeekBackController, fastSeekForwardController] {
+            controller.muteKeeper = fastSeekMuteKeeper
             controller.positionProvider = { [weak self] in self?.currentSeconds ?? 0 }
             controller.seekHandler = { [weak self] position in self?.seek(to: position) }
             controller.isMutedProvider = { [weak self] in self?.isMutedNow ?? false }

@@ -169,8 +169,12 @@ final class TimeTableSettingsStore {
     /// 送信待ちの変更も取り下げる。
     func reloadFromLocalAfterLogout() {
         pendingSave = nil
+        consecutiveSaveFailures = 0
         current = TimeTableDisplaySettings.defaults
     }
+
+    /// 連続で保存に失敗した回数 (自動の送り直しの上限の判定に使う)。
+    private var consecutiveSaveFailures = 0
 
     /// 値を差し替える。端末内の控えへはその場で書き、同期が効いている
     /// ときはサーバーへも送る (送信は裏で行い、失敗したら通知で知らせる)。
@@ -179,16 +183,58 @@ final class TimeTableSettingsStore {
         saveToLocal(settings)
         guard Self.isSyncEnabled else { return }
         pendingSave = settings
+        consecutiveSaveFailures = 0
         guard !isSaving else { return }
         isSaving = true
         Task { await self.drainSaveQueue() }
     }
 
-    /// 送信待ちの値を、古い順に1つずつ送る。
+    /// 送信待ちの値を、古い順に1つずつ送る。失敗した分は捨てずに
+    /// 戻し、間を置いて送り直す (上限あり)。送り直しを諦めたときに
+    /// だけ、失敗の通知を出す。
     private func drainSaveQueue() async {
+        let generationAtStart = SettingsStore.shared.authGeneration
         while let settings = pendingSave {
             pendingSave = nil
-            await saveToServer(settings)
+            if await saveToServer(settings) {
+                consecutiveSaveFailures = 0
+                continue
+            }
+            // 認証の世代が変わっていたら、前のログインの変更なので
+            // 戻さない (新しいログインへ送ってしまうため)。
+            guard SettingsStore.shared.authGeneration == generationAtStart else {
+                isSaving = false
+                return
+            }
+            // その間に新しい変更が来ていたら、そちらが最新なので
+            // 古い分は戻さない。
+            if pendingSave == nil {
+                pendingSave = settings
+            }
+            consecutiveSaveFailures += 1
+            guard consecutiveSaveFailures <= 3 else {
+                // 送り直しの上限。失敗したことは画面側へ知らせる
+                // (端末内には保存されているため、黙っていると他の
+                // 端末で変わっていないことに気づけない)。
+                pendingSave = nil
+                isSaving = false
+                await MainActor.run {
+                    NotificationCenter.default.post(
+                        name: .timeTableSettingsSaveFailed, object: nil)
+                }
+                return
+            }
+            // 少し間を置いてから送り直す (通信が戻るのを待つ)。
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            // 待っている間にログアウトされていたら、送信待ちを取り下げる。
+            // ログインし直していた場合も、前のログインの変更なので
+            // 取り下げる。
+            guard Self.isSyncEnabled,
+                  SettingsStore.shared.authGeneration == generationAtStart else {
+                pendingSave = nil
+                isSaving = false
+                return
+            }
         }
         isSaving = false
     }
@@ -196,9 +242,19 @@ final class TimeTableSettingsStore {
     /// サーバー側の値を取り込んで、現在の値と違えば差し替える。
     /// 差し替えたかどうかを返す (呼び出し側は true のときだけ組み直す)。
     /// 同期が効いていない・取得に失敗したときは何もせず false を返す。
+    /// 送信待ちの変更があるとき・取り込みの最中に利用者が変更した
+    /// とき・認証の世代が変わったときは取り込まない (送る前の変更や
+    /// 別のログインの値を、古いサーバー値で上書きしないため)。
     func refreshFromServer() async -> Bool {
         guard Self.isSyncEnabled else { return false }
+        guard pendingSave == nil, !isSaving else { return false }
+        let currentAtStart = current
+        let generationAtStart = SettingsStore.shared.authGeneration
         guard let settings = try? await APIClient.shared.fetchClientSettings() else {
+            return false
+        }
+        guard pendingSave == nil, !isSaving, current == currentAtStart,
+              SettingsStore.shared.authGeneration == generationAtStart else {
             return false
         }
         let server = Self.settings(fromClientSettings: settings, fallback: current)
@@ -223,18 +279,26 @@ final class TimeTableSettingsStore {
     /// 更新した) が返ったら、1回だけ取り直してやり直す。
     /// ジャンル色は、サーバー側にある分を土台にアプリが知っている
     /// ジャンルだけを上書きする (知らないジャンルがあっても落とさない)。
-    private func saveToServer(_ settings: TimeTableDisplaySettings) async {
+    private func saveToServer(_ settings: TimeTableDisplaySettings) async -> Bool {
         // 他の保存 (視聴履歴・各種設定) と重なって互いを上書きしないよう、
         // 保存の順番待ちに並んでから本体を行う。
+        let box = BoolResultBox()
         await ClientSettingsSaveQueue.shared.run {
-            await self.saveToServerSerial(settings)
+            box.value = await self.saveToServerSerial(settings)
         }
+        return box.value
     }
 
-    private func saveToServerSerial(_ settings: TimeTableDisplaySettings) async {
+    private func saveToServerSerial(_ settings: TimeTableDisplaySettings) async -> Bool {
+        // 開始時点の認証の世代を控え、取得のあと・送信の直前に
+        // 照合する (途中でログインし直していたら、この回の保存は
+        // 打ち切る)。
+        let generation = SettingsStore.shared.authGeneration
         for _ in 0..<2 {
             do {
                 var clientSettings = try await APIClient.shared.fetchClientSettings()
+                guard SettingsStore.shared.authGeneration == generation,
+                      SettingsStore.shared.isLoggedIn else { return false }
                 clientSettings["timetable_channel_width"] = settings.channelWidth
                 clientSettings["timetable_hour_height"] = settings.hourHeight
                 clientSettings["timetable_dim_shopping_programs"] = settings.dimShoppingPrograms
@@ -244,21 +308,16 @@ final class TimeTableSettingsStore {
                 }
                 clientSettings["timetable_genre_colors"] = genreColors
                 clientSettings["last_synced_at"] = Date().timeIntervalSince1970
-                try await APIClient.shared.updateClientSettings(clientSettings)
-                return
+                try await APIClient.shared.updateClientSettings(
+                    clientSettings, expectedAuthGeneration: generation)
+                return true
             } catch let APIError.badStatus(code) where code == 422 {
                 continue  // 取り直して1回だけやり直す。
             } catch {
-                break  // それ以外の失敗は、この回の送信を諦める。
+                return false  // それ以外の失敗は、この回の送信を諦める。
             }
         }
-        // 保存できなかったことを、画面側が知らせられるよう通知する
-        // (端末内には保存されているため、黙っていると他の端末で
-        // 変わっていないことに気づけない)。
-        await MainActor.run {
-            NotificationCenter.default.post(
-                name: .timeTableSettingsSaveFailed, object: nil)
-        }
+        return false
     }
 
     /// 利用者設定の辞書から表示設定を組み立てる。項目が無い・形が違う

@@ -769,6 +769,7 @@ final class SettingsViewController: UIViewController {
         // 接続先を対象にする。同時に URL を変えても古い接続先の
         // Cookie が画面側に残らないようにするため。
         let previousHost = store.baseURL?.host
+        let previousBaseURL = store.baseURL
         store.rawURLString = urlField.text ?? ""
         store.authMethod = selectedAuthMethod
         store.cfClientID = cfIDField.text ?? ""
@@ -781,6 +782,23 @@ final class SettingsViewController: UIViewController {
         store.urlParameterValue = urlParameterValueField.text ?? ""
         if previousMethod == .browserLogin, selectedAuthMethod != .browserLogin {
             clearBrowserLoginCookies(forHost: previousHost)
+        }
+        // 接続先が変わったら、前の接続先のログインは失効させる。
+        // 失効させないと、新しい接続先への通信に、前のサーバーの
+        // ログイン情報 (Bearer) がそのまま付いて送られてしまう。
+        // あわせて、前の接続先のブラウザでログインの Cookie も消す
+        // (こちらも前の接続先のセッションのため)。
+        if store.baseURL != previousBaseURL {
+            if store.isLoggedIn {
+                store.clearLogin()
+                // 入力欄に残っているパスワードも消す (保存時の
+                // キーチェーン照合で、消えたはずの値と食い違わないため)。
+                passwordField.text = ""
+            }
+            if previousHost != nil {
+                clearBrowserLoginCookies(forHost: previousHost)
+                refreshBrowserLoginStatus()
+            }
         }
     }
 

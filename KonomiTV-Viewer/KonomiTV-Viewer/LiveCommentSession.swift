@@ -143,8 +143,17 @@ final class LiveCommentSession {
     private var initialBuffer: [LiveJikkyoComment] = []
     /// 遅らせて渡す待ち行列 (流れる表示の遅れ待ち)。
     private var deliveryQueue: [LiveJikkyoComment] = []
-    /// 送信の結果待ち (送った順)。
-    private var pendingPosts: [PendingPost] = []
+    /// 送信済みで結果待ちの投稿。結果の応答には投稿を識別する
+    /// 材料が無いため、同時に結果待ちにできるのは1件だけにする
+    /// (複数を待ち行列で対応付けると、遅れて届いた結果が別の
+    /// 投稿のものとして扱われてしまうため)。
+    private var pendingPost: PendingPost?
+    /// まだ送っていない投稿の待ち行列。結果待ちが空いた順に送る。
+    private var queuedPosts: [PendingPost] = []
+    /// 投稿の結果が時間切れになった後、その接続では投稿しない印。
+    /// 遅れて届く結果が残っている可能性のある接続では、それ以上
+    /// 送らない。接続を張り直して、新しい接続が開けた時点で外す。
+    private var postBlockedUntilReconnect = false
     /// 自分のニコニコユーザー ID とプレミアムかどうか (ユーザー情報から)。
     private var myNiconicoUserID: Int?
     private var myNiconicoPremium: Bool?
@@ -153,6 +162,9 @@ final class LiveCommentSession {
     private var started = false
     private var destroyed = false
     private var reconnecting = false
+    /// 張り直しの途中で接続先情報の取得に失敗した回数
+    /// (やり直しの間隔を広げるために数える)。
+    private var reconnectFetchFailures = 0
     /// 接続の組み立ての世代。組み立てを始めるたびと止めるたびに進める。
     /// 接続先情報の取得中に画面を離れて戻ると、古い組み立てが後から
     /// 進んで接続が二重に張られてしまうため、古い世代の組み立ては
@@ -165,6 +177,10 @@ final class LiveCommentSession {
         /// 投稿ごとの印 (結果が来ない投稿の時間切れの判定に使う)。
         let id = UUID()
         let text: String
+        /// 送信の材料 (待ち行列に入れてから実際に送るため、送る
+        /// ための形のまま持つ)。
+        let colorName: String
+        let position: String
         /// 送信時に選んだ表示 (自分のコメントを一覧と流れる表示へ
         /// 足すときに使う)。
         let colorHex: String
@@ -195,6 +211,8 @@ final class LiveCommentSession {
         destroyed = true
         started = false
         reconnecting = false
+        reconnectFetchFailures = 0
+        postBlockedUntilReconnect = false
         // 進んでいる組み立てがあれば無効にする (後から接続が
         // 張られてしまわないため)。
         connectGeneration += 1
@@ -228,6 +246,17 @@ final class LiveCommentSession {
             info = try await APIClient.shared.fetchJikkyoWebSocketInfo(channelID: channelID)
         } catch {
             guard generation == connectGeneration, !destroyed else { return }
+            if reconnecting {
+                // 張り直しの途中の取得失敗は、一時的な通信の失敗と
+                // して、間を広げながら自動でやり直す。ここで諦めると、
+                // 窓口は既に片付けられていて次の切断の合図も来ないため、
+                // 復旧の機会自体が無くなってしまう。
+                reconnectFetchFailures += 1
+                let delay = min(30.0, 3.0 * pow(2.0, Double(min(reconnectFetchFailures - 1, 3))))
+                reconnecting = false
+                scheduleReconnect(after: delay)
+                return
+            }
             setInitFailure("コメント受信用 WebSocket API の情報を取得できませんでした。")
             reconnecting = false
             return
@@ -267,6 +296,14 @@ final class LiveCommentSession {
     private func setInitFailure(_ message: String) {
         initFailureMessage = message
         onInitFailure?(message)
+        // 接続が組み立てられなかったので、待ち行列に残っている
+        // 投稿は送れる見込みが無い。失敗として片付ける
+        // (結果待ちの分は、片付けの側で扱われる)。
+        let posts = queuedPosts
+        queuedPosts = []
+        for post in posts {
+            post.completion("コメントの送信に失敗しました。WebSocket 接続が確立されていません。")
+        }
     }
 
     private func clearInitFailure() {
@@ -284,6 +321,7 @@ final class LiveCommentSession {
         // 消さないままだと、成功したあとの切断では「すでに予約済み」と
         // 誤判定されて、二度と張り直されなくなる。
         reconnecting = false
+        reconnectFetchFailures = 0
         let task = urlSession.webSocketTask(with: url)
         watchTask = task
         task.resume()
@@ -292,6 +330,10 @@ final class LiveCommentSession {
         // 「開けた」の合図が無いため、resume の直後に送る
         // (送信は接続が確立してから実際に行われる)。
         sendWatchJSON(["type": "startWatching", "data": ["reconnect": false]])
+        // 新しい接続が開けたので、時間切れによる投稿の停止を外し、
+        // 待ち行列に残っている投稿の続きを送る。
+        postBlockedUntilReconnect = false
+        pumpPostQueue()
     }
 
     private func sendWatchJSON(_ object: [String: Any]) {
@@ -302,8 +344,12 @@ final class LiveCommentSession {
     }
 
     private func receiveWatchMessage() {
-        watchTask?.receive { [weak self] result in
-            guard let self, !self.destroyed else { return }
+        guard let task = watchTask else { return }
+        task.receive { [weak self] result in
+            // 張り直した後の古い接続からの応答は無視する (受け口を
+            // 持つ窓口そのもので照合する)。古い接続の結果が、新しい
+            // 接続の投稿のものとして扱われてしまうのを防ぐため。
+            guard let self, !self.destroyed, self.watchTask === task else { return }
             switch result {
             case .failure:
                 self.handleWatchClosed()
@@ -368,12 +414,12 @@ final class LiveCommentSession {
                     postKey: hashed.map { "nicolive:\($0)" })
             }
         case "postCommentResult":
-            resolveOldestPost(error: nil)
+            resolvePendingPost(error: nil)
         case "error":
             let code = payload["code"] as? String ?? ""
             if code == "COMMENT_POST_NOT_ALLOWED" || code == "INVALID_MESSAGE" {
                 // 投稿の失敗は投稿側で扱う (ここでは張り直さない)。
-                resolveOldestPost(error: code == "COMMENT_POST_NOT_ALLOWED"
+                resolvePendingPost(error: code == "COMMENT_POST_NOT_ALLOWED"
                     ? "コメントが許可されていません。"
                     : "コメント内容が無効です。")
                 return
@@ -427,8 +473,10 @@ final class LiveCommentSession {
     }
 
     private func receiveCommentMessage() {
-        commentTask?.receive { [weak self] result in
-            guard let self, !self.destroyed else { return }
+        guard let task = commentTask else { return }
+        task.receive { [weak self] result in
+            // 視聴セッションと同じく、古い接続からの応答は無視する。
+            guard let self, !self.destroyed, self.commentTask === task else { return }
             switch result {
             case .failure:
                 let code = self.commentTask.map { String($0.closeCode.rawValue) } ?? "Error"
@@ -595,67 +643,93 @@ final class LiveCommentSession {
                 return
             }
         }
-        guard let watchTask, watchTask.state == .running else {
-            completion("コメントの送信に失敗しました。WebSocket 接続が確立されていません。")
-            return
+        // 結果が時間切れになった接続では、張り直しが済むまで送らず
+        // 待ち行列に留める (遅れて届く結果が、別の投稿のものとして
+        // 扱われてしまうのを防ぐため)。接続そのものが無いときは、
+        // 今までどおりその場で失敗を返す。
+        if !postBlockedUntilReconnect {
+            guard let watchTask, watchTask.state == .running else {
+                completion("コメントの送信に失敗しました。WebSocket 接続が確立されていません。")
+                return
+            }
         }
-        // vpos: 番組開始時刻からの累計 (10ミリ秒単位、Web 版と同じ計算)。
-        let vpos: Int = {
-            guard let base = vposBaseTime else { return 0 }
-            return Int((Date().timeIntervalSince(base) * 100).rounded())
-        }()
         let pending = PendingPost(
             text: text,
+            colorName: colorName,
+            position: position,
             colorHex: NicoCommentCommand.colorTable[colorName] ?? "#FFEAEA",
             type: position == "ue" ? "top" : (position == "shita" ? "bottom" : "right"),
             size: size,
             completion: completion)
-        pendingPosts.append(pending)
-        // 結果が返ってこない投稿があると、その投稿の完了知らせが
-        // 永遠に呼ばれず、後から届いた結果の対応づけもずれ続ける。
-        // 15秒たっても結果が来なければ、その投稿だけを時間切れとして
-        // 片付ける (対応づけ自体はサーバー側に投稿を識別する材料が
-        // 無いため、被害をこの範囲に留める部分的な対応)。
-        let pendingID = pending.id
-        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
-            guard let self, !self.destroyed,
-                  let index = self.pendingPosts.firstIndex(where: { $0.id == pendingID })
-            else { return }
-            let expired = self.pendingPosts.remove(at: index)
-            expired.completion("コメントの送信結果が返ってきませんでした。")
-        }
+        queuedPosts.append(pending)
+        pumpPostQueue()
+    }
+
+    /// 待ち行列の先頭を送る。結果待ちが空いていて、接続が生きて
+    /// いて、時間切れによる停止中でないときだけ送る (結果待ちは
+    /// 常に最大1件)。
+    private func pumpPostQueue() {
+        guard pendingPost == nil, !postBlockedUntilReconnect,
+              let watchTask, watchTask.state == .running,
+              !queuedPosts.isEmpty else { return }
+        let post = queuedPosts.removeFirst()
+        pendingPost = post
+        // vpos: 番組開始時刻からの累計 (10ミリ秒単位、Web 版と同じ計算)。
+        // 実際に送る時点で数える。
+        let vpos: Int = {
+            guard let base = vposBaseTime else { return 0 }
+            return Int((Date().timeIntervalSince(base) * 100).rounded())
+        }()
         sendWatchJSON([
             "type": "postComment",
             "data": [
-                "text": text,
-                "color": colorName,
-                "position": position,
-                "size": size,
+                "text": post.text,
+                "color": post.colorName,
+                "position": post.position,
+                "size": post.size,
                 "vpos": vpos,
                 "isAnonymous": true,
             ],
         ])
+        // 15秒たっても結果が来なければ、その投稿は結果不明として
+        // 片付ける。すでに投稿されている可能性があるため、自動では
+        // 送り直さない。さらに、その接続には遅れて届く結果が残って
+        // いる可能性があるため、この接続ではそれ以上送らず、接続を
+        // 張り直して新しい接続が開けてから続きを送る。
+        let pendingID = post.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+            guard let self, !self.destroyed,
+                  let expired = self.pendingPost, expired.id == pendingID
+            else { return }
+            self.pendingPost = nil
+            expired.completion("コメントの送信結果が確認できませんでした。投稿されている可能性があります。")
+            self.postBlockedUntilReconnect = true
+            self.scheduleReconnect(after: 0)
+        }
     }
 
-    /// 送信の結果を受けて、一番古い送信待ちを片付ける。
+    /// 送信の結果を受けて、結果待ちの投稿を片付ける。
     /// 成功したら、自分のコメントを一覧へ足す (Web 版と同じ)。
-    private func resolveOldestPost(error: String?) {
-        guard !pendingPosts.isEmpty else { return }
-        let post = pendingPosts.removeFirst()
+    /// 片付けたら、待ち行列の続きを送る。
+    private func resolvePendingPost(error: String?) {
+        guard let post = pendingPost else { return }
+        pendingPost = nil
         post.completion(error)
-        guard error == nil else { return }
-        let own = LiveJikkyoComment(
-            id: Int(Date().timeIntervalSince1970 * 1000),
-            text: post.text,
-            date: Date(),
-            userID: myNiconicoUserID.map(String.init) ?? "Unknown",
-            premium: nil,
-            myPost: true,
-            colorHex: post.colorHex,
-            type: post.type,
-            size: post.size,
-            displayTime: nowProvider())
-        onComments?([own], false)
+        if error == nil {
+            let own = LiveJikkyoComment(
+                id: Int(Date().timeIntervalSince1970 * 1000),
+                text: post.text,
+                date: Date(),
+                userID: myNiconicoUserID.map(String.init) ?? "Unknown",
+                premium: nil,
+                myPost: true,
+                colorHex: post.colorHex,
+                type: post.type,
+                size: post.size,
+                displayTime: nowProvider())
+            onComments?([own], false)
+        }
+        pumpPostQueue()
     }
 
     // MARK: - 張り直しと後片付け
@@ -668,13 +742,18 @@ final class LiveCommentSession {
         onNotice?("\(sessionTypeName)に再接続しています…")
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
             guard let self, !self.destroyed else { return }
-            self.teardownSockets()
+            // まだ送っていない投稿は、新しい接続で続きを送るため
+            // 残しておく。
+            self.teardownSockets(keepQueuedPosts: true)
             Task { await self.connect() }
         }
     }
 
-    /// 窓口とタイマーを片付ける。送信待ちは失敗として片付ける。
-    private func teardownSockets() {
+    /// 窓口とタイマーを片付ける。結果待ちの投稿は、結果が二度と
+    /// 来ないため失敗として片付ける。まだ送っていない待ち行列は、
+    /// 張り直しのときは残しておき (新しい接続が開けたら続きを
+    /// 送る)、画面を離れるときだけ失敗として片付ける。
+    private func teardownSockets(keepQueuedPosts: Bool = false) {
         keepSeatTimer?.invalidate()
         keepSeatTimer = nil
         deliveryTimer?.invalidate()
@@ -685,10 +764,16 @@ final class LiveCommentSession {
         commentTask?.cancel(with: .normalClosure, reason: nil)
         commentTask = nil
         commentSessionStarted = false
-        let posts = pendingPosts
-        pendingPosts = []
-        for post in posts {
+        if let post = pendingPost {
+            pendingPost = nil
             post.completion("コメントの送信に失敗しました。WebSocket 接続が確立されていません。")
+        }
+        if !keepQueuedPosts {
+            let posts = queuedPosts
+            queuedPosts = []
+            for post in posts {
+                post.completion("コメントの送信に失敗しました。WebSocket 接続が確立されていません。")
+            }
         }
     }
 

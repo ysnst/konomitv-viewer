@@ -321,6 +321,14 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
                     // 頭の後に同じ便で届いていた分は、本体の先頭として引き継ぐ。
                     self.requestBody = self.requestBuffer.subdata(in: headEnd.upperBound ..< self.requestBuffer.count)
                     self.requestBuffer = Data()
+                    // Transfer-Encoding (chunked など) の要求は受けない。
+                    // この中継は本体を Content-Length の分だけ読む作りで、
+                    // そのまま受けると本体が空として扱われ、残りの塊が
+                    // 次の要求と取り違えられるため、その場で断る。
+                    if Self.hasTransferEncoding(in: self.requestHead ?? "") {
+                        self.respondSimple(status: 501)
+                        return
+                    }
                     // 本体の長さが読めない・大きすぎる要求は、長さを
                     // 丸めて受け付けず、その場で断る。丸めて受けると、
                     // 切り詰めた本体が元のサーバーへ渡ってしまうため。
@@ -364,6 +372,13 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
         case invalid
         /// 受け付ける上限 (概ね1MB) を超えている。
         case tooLarge
+    }
+
+    /// 要求の頭に Transfer-Encoding があるか。
+    private static func hasTransferEncoding(in head: String) -> Bool {
+        head.components(separatedBy: "\r\n").contains {
+            $0.lowercased().hasPrefix("transfer-encoding:")
+        }
     }
 
     /// 要求の頭から、本体の長さを取り出す。無ければ 0 として扱う。

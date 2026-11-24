@@ -1052,10 +1052,17 @@ final class SettingsStore {
 
     var isLoggedIn: Bool { !accessToken.isEmpty }
 
+    /// 認証の世代。ログイン・ログアウトのたびに進む。同期の処理は
+    /// 開始時点の世代を控え、途中で世代が変わっていたら、別の
+    /// アカウントの処理になっているため打ち切る (取得は旧アカウント、
+    /// 送信は新アカウント、という取り違えを防ぐ)。
+    private(set) var authGeneration = 0
+
     func saveLogin(username: String, password: String, token: String) {
         self.username = username
         self.password = password
         self.accessToken = token
+        authGeneration += 1
     }
 
     /// ログアウトで消す、同期まわりの端末内の控えのキー一式。
@@ -1088,6 +1095,7 @@ final class SettingsStore {
     /// 控えを持つ側の今の値も、控えから読み直して既定値に戻す。
     func clearLogin() {
         accessToken = ""
+        authGeneration += 1
         password = ""
         for key in Self.syncedLocalKeys {
             defaults.removeObject(forKey: key)

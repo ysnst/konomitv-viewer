@@ -308,7 +308,12 @@ final class APIClient {
     /// 利用者設定を丸ごと送る (ログイン必須、成功は 204)。
     /// サーバーに保存されている分の last_synced_at より古い内容は
     /// 422 で拒否される。
-    func updateClientSettings(_ settings: [String: Any]) async throws {
+    /// expectedAuthGeneration を渡すと、送信の応答が返るまでの間に
+    /// 認証の世代が変わっていた場合、同期した時刻の控えは進めない
+    /// (別のアカウントの同期として数えないため)。
+    func updateClientSettings(
+        _ settings: [String: Any], expectedAuthGeneration: Int? = nil
+    ) async throws {
         var request = try request(forPath: "/api/settings/client", method: "PUT", authorized: true)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: settings)
@@ -316,6 +321,10 @@ final class APIClient {
         try check(response)
         // 送れた時点で、この端末はサーバーと同期したことになる
         // (ログイン時の自動取り込みの判定に使う端末側の控え)。
+        if let expectedAuthGeneration,
+           SettingsStore.shared.authGeneration != expectedAuthGeneration {
+            return
+        }
         if let syncedAt = (settings["last_synced_at"] as? NSNumber)?.doubleValue {
             SettingsStore.shared.lastSyncedAt = syncedAt
         }
@@ -972,21 +981,31 @@ final class WatchedHistorySync {
 
     private static func removeEntrySerial(videoID: Int) async -> Bool {
         guard isEnabled else { return false }
+        // 開始時点の認証の世代を控え、取得のあとで照合する
+        // (途中でログインし直していたら、この回の削除は打ち切る)。
+        let generation = SettingsStore.shared.authGeneration
         for _ in 0..<2 {
             do {
                 var settings = try await APIClient.shared.fetchClientSettings()
-                var history = historyArray(in: settings)
+                guard SettingsStore.shared.authGeneration == generation,
+                      SettingsStore.shared.isLoggedIn else { return false }
+                // 履歴は生の配列のまま扱い、辞書の形の要素だけを
+                // 対象にする (形の違う要素が1件あるだけで全体が
+                // 空扱いになり、書き戻しで履歴が消えるのを防ぐ)。
+                // 配列自体の形が違うときは、この回の書き込みをやめる。
+                guard var history = rawHistoryArray(in: settings) else { return false }
                 guard history.contains(where: {
-                    ($0["video_id"] as? NSNumber)?.intValue == videoID
+                    (($0 as? [String: Any])?["video_id"] as? NSNumber)?.intValue == videoID
                 }) else {
                     return true
                 }
                 history.removeAll {
-                    ($0["video_id"] as? NSNumber)?.intValue == videoID
+                    (($0 as? [String: Any])?["video_id"] as? NSNumber)?.intValue == videoID
                 }
                 settings["watched_history"] = history
                 settings["last_synced_at"] = Date().timeIntervalSince1970
-                try await APIClient.shared.updateClientSettings(settings)
+                try await APIClient.shared.updateClientSettings(
+                    settings, expectedAuthGeneration: generation)
                 return true
             } catch let APIError.badStatus(code) where code == 422 {
                 continue  // 取り直して1回だけやり直す。
@@ -1027,17 +1046,26 @@ final class WatchedHistorySync {
 
     private static func syncPositionSerial(videoID: Int, position: Double, registerIfNeeded: Bool) async {
         guard isEnabled else { return }
+        // 開始時点の認証の世代を控え、取得のあとで照合する
+        // (途中でログインし直していたら、この回の更新は打ち切る)。
+        let generation = SettingsStore.shared.authGeneration
         // 1回だけやり直す (初回 + 再試行1回)。
         for _ in 0..<2 {
             do {
                 var settings = try await APIClient.shared.fetchClientSettings()
-                var history = historyArray(in: settings)
+                guard SettingsStore.shared.authGeneration == generation,
+                      SettingsStore.shared.isLoggedIn else { return }
+                // 履歴は生の配列のまま扱い、辞書の形の要素だけを
+                // 対象にする (形の違う要素はそのまま残す)。
+                // 配列自体の形が違うときは、この回の書き込みをやめる。
+                guard var history = rawHistoryArray(in: settings) else { return }
                 let now = Date().timeIntervalSince1970
                 if let index = history.firstIndex(where: {
-                    ($0["video_id"] as? NSNumber)?.intValue == videoID
-                }) {
-                    history[index]["last_playback_position"] = position
-                    history[index]["updated_at"] = now
+                    (($0 as? [String: Any])?["video_id"] as? NSNumber)?.intValue == videoID
+                }), var entry = history[index] as? [String: Any] {
+                    entry["last_playback_position"] = position
+                    entry["updated_at"] = now
+                    history[index] = entry
                 } else if registerIfNeeded {
                     let maxCount = (settings["video_watched_history_max_count"] as? NSNumber)?.intValue
                         ?? defaultMaxCount
@@ -1045,14 +1073,20 @@ final class WatchedHistorySync {
                     guard maxCount > 0 else { return }
                     // 上限まで戻るよう、はみ出しの分だけ古いものから落とす
                     // (1件だけ落とすと、はみ出しが大きいときに上限へ戻らない)。
-                    while history.count >= maxCount, !history.isEmpty {
-                        var oldest = 0
+                    // 落とす対象は辞書の形の要素だけ (形の違う要素は残す)。
+                    while history.count >= maxCount {
+                        var oldestIndex: Int?
+                        var oldestCreated = Double.greatestFiniteMagnitude
                         for i in history.indices {
-                            let created = (history[i]["created_at"] as? NSNumber)?.doubleValue ?? 0
-                            let oldestCreated = (history[oldest]["created_at"] as? NSNumber)?.doubleValue ?? 0
-                            if created < oldestCreated { oldest = i }
+                            guard let entry = history[i] as? [String: Any] else { continue }
+                            let created = (entry["created_at"] as? NSNumber)?.doubleValue ?? 0
+                            if created < oldestCreated {
+                                oldestCreated = created
+                                oldestIndex = i
+                            }
                         }
-                        history.remove(at: oldest)
+                        guard let index = oldestIndex else { break }
+                        history.remove(at: index)
                     }
                     history.append([
                         "video_id": videoID,
@@ -1066,7 +1100,8 @@ final class WatchedHistorySync {
                 }
                 settings["watched_history"] = history
                 settings["last_synced_at"] = now
-                try await APIClient.shared.updateClientSettings(settings)
+                try await APIClient.shared.updateClientSettings(
+                    settings, expectedAuthGeneration: generation)
                 return
             } catch let APIError.badStatus(code) where code == 422 {
                 continue  // 取り直して1回だけやり直す。
@@ -1078,6 +1113,15 @@ final class WatchedHistorySync {
 
     private static func historyArray(in settings: [String: Any]) -> [[String: Any]] {
         settings["watched_history"] as? [[String: Any]] ?? []
+    }
+
+    /// 視聴履歴の生の配列。キーが無いときは空の配列、キーはあるが
+    /// 配列の形でないときは nil (書き込みをやめる合図)。
+    /// 読み取り専用の用途は historyArray のままでよいが、書き戻す
+    /// 用途ではこちらを使い、辞書でない要素を落とさない。
+    private static func rawHistoryArray(in settings: [String: Any]) -> [Any]? {
+        guard let value = settings["watched_history"] else { return [] }
+        return value as? [Any]
     }
 
     private static func entryIndex(in settings: [String: Any], videoID: Int) -> Int? {

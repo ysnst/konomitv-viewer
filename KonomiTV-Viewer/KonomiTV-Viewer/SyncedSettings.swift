@@ -301,11 +301,18 @@ final class SyncedSettingsStore {
     /// (回数の上限あり)。戻さないと、その変更はサーバーへ二度と
     /// 送られなくなってしまうため。
     private func drainSaveQueue() async {
+        let generationAtStart = SettingsStore.shared.authGeneration
         while let settings = pendingSave {
             pendingSave = nil
             if await saveToServer(settings) {
                 consecutiveSaveFailures = 0
                 continue
+            }
+            // 認証の世代が変わっていたら、前のログインの変更なので
+            // 戻さない (新しいログインへ送ってしまうため)。
+            guard SettingsStore.shared.authGeneration == generationAtStart else {
+                isSaving = false
+                return
             }
             // その間に新しい変更が来ていたら、そちらが最新なので
             // 古い分は戻さない。
@@ -336,6 +343,7 @@ final class SyncedSettingsStore {
         // 変更までサーバーの古い値で上書きされてしまうため。
         guard pendingSave == nil, !isSaving else { return false }
         let currentAtStart = current
+        let generationAtStart = SettingsStore.shared.authGeneration
         guard let settings = try? await APIClient.shared.fetchClientSettings() else {
             return false
         }
@@ -344,7 +352,8 @@ final class SyncedSettingsStore {
         // 変えたときの巻き戻しを防ぐ)。開始時点の確かめだけでは、
         // 取得の合間に始まった変更を取りこぼすため、取得のあとでも
         // もう一度確かめる。
-        guard pendingSave == nil, !isSaving, current == currentAtStart else {
+        guard pendingSave == nil, !isSaving, current == currentAtStart,
+              SettingsStore.shared.authGeneration == generationAtStart else {
             return false
         }
         capturePreservedEntries(from: settings)
@@ -563,9 +572,16 @@ final class SyncedSettingsStore {
     /// last_synced_at を今に更新して送る。422 (その間に他の端末が先に
     /// 更新した) が返ったら、1回だけ取り直してやり直す。
     private func saveToServerSerial(_ settings: SyncedClientSettings) async -> Bool {
+        // 開始時点の認証の世代を控え、取得のあと・送信の直前に
+        // 照合する。途中でログインし直していたら、取得は前の
+        // アカウント・送信は新しいアカウントになってしまうため、
+        // この回の保存は打ち切る。
+        let generation = SettingsStore.shared.authGeneration
         for _ in 0..<2 {
             do {
                 var clientSettings = try await APIClient.shared.fetchClientSettings()
+                guard SettingsStore.shared.authGeneration == generation,
+                      SettingsStore.shared.isLoggedIn else { return false }
                 clientSettings["caption_font"] = settings.captionFont
                 clientSettings["always_border_caption_text"] = settings.alwaysBorderCaptionText
                 clientSettings["specify_caption_opacity"] = settings.specifyCaptionOpacity
@@ -616,7 +632,8 @@ final class SyncedSettingsStore {
                         + preservedMylistEntries
                 }
                 clientSettings["last_synced_at"] = Date().timeIntervalSince1970
-                try await APIClient.shared.updateClientSettings(clientSettings)
+                try await APIClient.shared.updateClientSettings(
+                    clientSettings, expectedAuthGeneration: generation)
                 return true
             } catch let APIError.badStatus(code) where code == 422 {
                 continue  // 取り直して1回だけやり直す。

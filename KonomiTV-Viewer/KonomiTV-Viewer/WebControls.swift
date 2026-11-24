@@ -260,15 +260,33 @@ final class WebToggle: UIControl {
         setHaloVisible(true)
     }
 
+    /// 切り替えの本体。指で触れて離したときと、読み上げ
+    /// (VoiceOver) の標準操作の両方から呼ぶ。状態の変更と
+    /// 知らせ (.valueChanged) は、ここで1回だけ行う
+    /// (見た目と読み上げの値の更新は isOn の didSet 側)。
+    private func toggle() {
+        isOn.toggle()
+        sendActions(for: .valueChanged)
+    }
+
+    /// 読み上げ (VoiceOver) の標準操作 (ダブルタップ) の受け口。
+    /// 切り替えは今まで touchesEnded の中でしか行っておらず、
+    /// 読み上げの操作が同じ経路に入る保証が無かったため、
+    /// 共通の切り替え処理をこちらからも呼ぶ。
+    /// 無効のときは false、切り替えたときは true を返す。
+    override func accessibilityActivate() -> Bool {
+        guard isEnabled else { return false }
+        toggle()
+        return true
+    }
+
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         super.touchesEnded(touches, with: event)
         setHaloVisible(false)
         guard isEnabled,
               let touch = touches.first,
               bounds.contains(touch.location(in: self)) else { return }
-        // 見た目と読み上げの更新は isOn の didSet 側で行う。
-        isOn.toggle()
-        sendActions(for: .valueChanged)
+        toggle()
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {

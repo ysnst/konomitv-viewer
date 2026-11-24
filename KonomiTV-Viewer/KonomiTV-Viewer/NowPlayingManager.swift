@@ -70,8 +70,11 @@ final class NowPlayingManager {
     }
 
     private func dispatch(_ action: @escaping (Handlers) -> Void) {
-        DispatchQueue.main.async { [weak self] in
-            guard let handlers = self?.handlers else { return }
+        // 受け口は呼び出し時点のものを控えて使う。メイン側の実行を
+        // 待つ間に持ち主が入れ替わっていたら、操作が新しい画面へ
+        // 届いてしまうため。
+        guard let handlers else { return }
+        DispatchQueue.main.async {
             action(handlers)
         }
     }

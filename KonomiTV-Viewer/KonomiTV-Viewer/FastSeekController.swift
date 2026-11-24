@@ -1,5 +1,43 @@
 import UIKit
 
+/// 高速シーク中の消音の持ち主を一元化する置き場。送りと戻しの
+/// 2つの操作が同時に進んでも、音の状態が壊れないようにするためのもの。
+///
+/// 以前は操作ごとに「消音前の状態」を別々に控えていたため、元が
+/// 非消音のときに、戻し開始→送り開始→戻し終了→送り終了の順になると、
+/// 最後に送り側の控え (消音) が戻されて、消音が残ってしまっていた。
+/// ここでは、最初に持ち始めた操作が消音前の状態を控えて消音し、
+/// 最後の操作が手放したときにだけ元へ戻す。
+final class FastSeekMuteKeeper {
+    /// いま音が消えているかどうかを読む口。
+    var isMutedProvider: (() -> Bool)?
+    /// 音の消去・復帰を行う口 (引数が true で消す)。
+    var setMutedHandler: ((Bool) -> Void)?
+
+    /// 消音を持っている操作の数。
+    private var holderCount = 0
+    /// 最初の操作が持ち始める直前の、音が消えていたかどうか。
+    private var wasMutedBefore = false
+
+    /// 消音を持ち始める。最初の1つだけが、状態を控えて実際に消音する。
+    func acquire() {
+        if holderCount == 0 {
+            wasMutedBefore = isMutedProvider?() ?? false
+            setMutedHandler?(true)
+        }
+        holderCount += 1
+    }
+
+    /// 消音を手放す。最後の1つが手放したときにだけ、控えた状態へ戻す。
+    func release() {
+        guard holderCount > 0 else { return }
+        holderCount -= 1
+        if holderCount == 0 {
+            setMutedHandler?(wasMutedBefore)
+        }
+    }
+}
+
 /// 送り・戻しボタンの長押しによる高速シーク (Web 版 SeekControlManager の写し)。
 ///
 /// 長押し (480ミリ秒以上) が始まったら、0.25秒ごとに2秒ずつ移動し続ける
@@ -21,9 +59,15 @@ final class FastSeekController {
     /// 指定した位置 (秒) へ移動する口。
     var seekHandler: ((Double) -> Void)?
     /// いま音が消えているかどうかを読む口。
+    /// 消音の持ち主 (muteKeeper) を使うときは、そちら側に付ける。
     var isMutedProvider: (() -> Bool)?
     /// 音の消去・復帰を行う口 (引数が true で消す)。
+    /// 消音の持ち主 (muteKeeper) を使うときは、そちら側に付ける。
     var setMutedHandler: ((Bool) -> Void)?
+    /// 消音の持ち主。送りと戻しで同じものを共有すると、同時に
+    /// 長押ししても消音が残らなくなる。付けないときは、この操作
+    /// だけで消音前の状態を控えて出し入れする (従来の動き)。
+    var muteKeeper: FastSeekMuteKeeper?
     /// 高速シークが始まったときの知らせ先 (引数は方向: 1 = 早送り、-1 = 巻き戻し)。
     var onStart: ((Int) -> Void)?
     /// 操作帯を消さずに出し続けるための知らせ先 (開始時に呼ぶ)。
@@ -46,7 +90,7 @@ final class FastSeekController {
         // 音を消したまま終わらないよう、高速シーク中なら音も元に戻す。
         timer?.invalidate()
         if isFastSeeking {
-            setMutedHandler?(wasMutedBefore)
+            releaseMute()
         }
     }
 
@@ -68,12 +112,32 @@ final class FastSeekController {
         }
     }
 
+    /// 消音を持ち始める。持ち主がいればそちらへ任せ、いなければ
+    /// この操作だけで消音前の状態を控えて消音する。
+    private func acquireMute() {
+        if let muteKeeper {
+            muteKeeper.acquire()
+        } else {
+            wasMutedBefore = isMutedProvider?() ?? false
+            setMutedHandler?(true)
+        }
+    }
+
+    /// 消音を手放す。持ち主がいればそちらへ任せ、いなければ
+    /// 控えた状態へ戻す。
+    private func releaseMute() {
+        if let muteKeeper {
+            muteKeeper.release()
+        } else {
+            setMutedHandler?(wasMutedBefore)
+        }
+    }
+
     /// 高速シークを始める (音を消し、まず1回分移動してから一定間隔で繰り返す)。
     private func start() {
         guard !isFastSeeking else { return }
         isFastSeeking = true
-        wasMutedBefore = isMutedProvider?() ?? false
-        setMutedHandler?(true)
+        acquireMute()
         onStart?(direction)
         onKeepControlsVisible?()
         applyStep()
@@ -88,7 +152,7 @@ final class FastSeekController {
         timer = nil
         guard isFastSeeking else { return }
         isFastSeeking = false
-        setMutedHandler?(wasMutedBefore)
+        releaseMute()
         onEnd?()
     }
 
