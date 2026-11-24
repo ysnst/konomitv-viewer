@@ -175,6 +175,12 @@ final class SettingsStore {
         // この端末が最後に設定を同期した時刻 (ログイン時の自動取り込みの
         // 判定に使う、端末だけの控え)。
         static let lastSyncedAt = "viewer_last_synced_at"
+        // サーバーへまだ送れていない設定の変更の控え (JSON データ)。
+        // アプリを終了しても未送信の変更を失わないために置く。
+        // アカウントと接続先の目印と一緒に保存し、認証の秘密
+        // (トークンやパスワード) は含めない。
+        static let unsentSyncedSettings = "viewer_unsent_synced_settings"
+        static let unsentTimeTableSettings = "viewer_unsent_timetable_settings"
         // 番組表の表示設定 (Web 版の利用者設定と同じ項目名に viewer_ を
         // 付けたもの)。端末内の控えで、サーバーとの同期が入っているときは
         // TimeTableSettingsStore がサーバー側の値をここへ写し、変更時は
@@ -690,6 +696,40 @@ final class SettingsStore {
     var lastSyncedAt: Double {
         get { defaults.double(forKey: Key.lastSyncedAt) }
         set { defaults.set(newValue, forKey: Key.lastSyncedAt) }
+    }
+
+    /// サーバーへまだ送れていない共通設定の変更の控え (JSON データ)。
+    /// 中身の組み立てと解釈は SyncedSettingsStore 側で行う。
+    var unsentSyncedSettingsData: Data? {
+        get { defaults.data(forKey: Key.unsentSyncedSettings) }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.unsentSyncedSettings)
+            } else {
+                defaults.removeObject(forKey: Key.unsentSyncedSettings)
+            }
+        }
+    }
+
+    /// サーバーへまだ送れていない番組表の表示設定の変更の控え
+    /// (JSON データ)。中身の組み立てと解釈は TimeTableSettingsStore
+    /// 側で行う。
+    var unsentTimeTableSettingsData: Data? {
+        get { defaults.data(forKey: Key.unsentTimeTableSettings) }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.unsentTimeTableSettings)
+            } else {
+                defaults.removeObject(forKey: Key.unsentTimeTableSettings)
+            }
+        }
+    }
+
+    /// 未送信の変更の控えが、どのアカウント・接続先のものかを示す目印。
+    /// 接続先とユーザー名の組み合わせで、認証の秘密は含めない。
+    /// 取り違えを防ぐため、控えの保存・復元の照合に使う。
+    var unsentSettingsIdentity: String {
+        Self.normalizeURLString(rawURLString) + "\n" + username
     }
 
     // MARK: - 番組表の表示設定 (端末内の控え)

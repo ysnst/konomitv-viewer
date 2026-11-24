@@ -181,9 +181,31 @@ final class TimeTableSettingsStore {
         let generation: Int
         /// 変更が起きた時点の同期の世代。
         let syncGeneration: Int
+        /// 結果が分からない送信 (サーバーへ届いたかもしれないのに
+        /// 応答が返らなかった送信) に含まれていた項目 (サーバー側の
+        /// 項目名)。サーバーに残っているかもしれない値と、最終的な
+        /// 意図が食い違うときに送り直すための控え (共通設定の同期と
+        /// 同じ扱い)。
+        var uncertainKeys: Set<String> = []
+        /// 結果が分からない送信の時点の編集後の値。ジャンル色の
+        /// ような項目ごとの値で、最終的な意図と食い違う分を特定
+        /// するために使う。
+        var uncertainDesired: TimeTableDisplaySettings?
+    }
+
+    /// サーバーへの送信の結果。届かなかったことが明らかな失敗と、
+    /// 届いたかどうか分からない失敗を区別する (共通設定の同期と
+    /// 同じ扱い)。
+    private enum SaveOutcome {
+        case success
+        case notApplied
+        case unknown
     }
 
     private var pendingSave: PendingSave?
+    /// いま送っている最中の変更。送信の結果が分かるまでは、端末への
+    /// 控えの対象として送信待ちと同じに扱う (共通設定の同期と同じ)。
+    private var inFlightSave: PendingSave?
     /// 自動の送り直しの上限に達して、まだサーバーへ届いていない変更。
     /// 捨てずに保持し、次の変更や取り込みのときに差分へ合成して
     /// 送り直す (共通設定の同期と同じ扱い)。世代が変わったら前の
@@ -209,7 +231,11 @@ final class TimeTableSettingsStore {
     /// 送信待ちの変更も取り下げる。
     func reloadFromLocalAfterLogout() {
         pendingSave = nil
+        inFlightSave = nil
         unsentSave = nil
+        // 端末に残した未送信の変更の控えも消す (共通設定の同期と同じ)。
+        restoredUnsent = nil
+        SettingsStore.shared.unsentTimeTableSettingsData = nil
         consecutiveSaveFailures = 0
         current = TimeTableDisplaySettings.defaults
     }
@@ -223,6 +249,9 @@ final class TimeTableSettingsStore {
         let previous = current
         current = settings
         saveToLocal(settings)
+        // 前回の起動で送れずに端末へ残した変更があれば、ここで
+        // 引き継ぐ (条件が合わなければ破棄する)。
+        adoptRestoredUnsentIfNeeded()
         guard Self.isSyncEnabled else { return }
         // 世代は変更が起きたこの時点で確定させる (設定の同期と同じ理由)。
         let generation = SettingsStore.shared.authGeneration
@@ -233,12 +262,17 @@ final class TimeTableSettingsStore {
         // 共通設定の同期と同じ扱い)。送り直しの上限に達して未送信
         // として残っている分も同じく、ここで差分の元として引き継ぐ。
         // 世代の違う残りは前の状態のものなので引き継がない。
+        // 結果が分からない送信の控えも合わせて引き継ぐ。
         var carriedBase: TimeTableDisplaySettings?
+        var carriedUncertainKeys: Set<String> = []
+        var carriedUncertainDesired: TimeTableDisplaySettings?
         if let unsent = unsentSave {
             unsentSave = nil
             if unsent.generation == generation,
                unsent.syncGeneration == syncGeneration {
                 carriedBase = unsent.base
+                carriedUncertainKeys = unsent.uncertainKeys
+                carriedUncertainDesired = unsent.uncertainDesired
             }
         }
         let base: TimeTableDisplaySettings
@@ -246,6 +280,9 @@ final class TimeTableSettingsStore {
            pending.generation == generation,
            pending.syncGeneration == syncGeneration {
             base = pending.base
+            carriedUncertainKeys.formUnion(pending.uncertainKeys)
+            carriedUncertainDesired = pending.uncertainDesired
+                ?? carriedUncertainDesired
         } else if let carriedBase {
             base = carriedBase
         } else {
@@ -253,7 +290,10 @@ final class TimeTableSettingsStore {
         }
         pendingSave = PendingSave(
             id: pendingSaveSequence, base: base, settings: settings,
-            generation: generation, syncGeneration: syncGeneration)
+            generation: generation, syncGeneration: syncGeneration,
+            uncertainKeys: carriedUncertainKeys,
+            uncertainDesired: carriedUncertainDesired)
+        syncPersistedRecord()
         consecutiveSaveFailures = 0
         guard !isSaving else { return }
         isSaving = true
@@ -268,27 +308,54 @@ final class TimeTableSettingsStore {
     /// いれば続けて送る (古い係の終了処理が、新しいログインの
     /// 送信待ちを取り残したり消したりしないため)。
     private func drainSaveQueue() async {
-        while let item = pendingSave {
+        while let pendingItem = pendingSave {
             pendingSave = nil
+            var item = pendingItem
+            inFlightSave = item
+            syncPersistedRecord()
             // 前のログインの変更と、同期の切り替え前の変更は送らない。
             guard item.generation == SettingsStore.shared.authGeneration,
                   item.syncGeneration == SettingsStore.shared.syncGeneration
-            else { continue }
-            if await saveToServer(base: item.base, desired: item.settings,
-                                  expectedGeneration: item.generation,
-                                  expectedSyncGeneration: item.syncGeneration) {
-                consecutiveSaveFailures = 0
+            else {
+                inFlightSave = nil
+                syncPersistedRecord()
                 continue
+            }
+            let outcome = await saveToServer(
+                base: item.base, desired: item.settings,
+                uncertainKeys: item.uncertainKeys,
+                uncertainDesired: item.uncertainDesired,
+                expectedGeneration: item.generation,
+                expectedSyncGeneration: item.syncGeneration)
+            inFlightSave = nil
+            if outcome == .success {
+                consecutiveSaveFailures = 0
+                syncPersistedRecord()
+                continue
+            }
+            if outcome == .unknown {
+                // 届いたかどうか分からない送信。サーバー側にこの変更
+                // の値が残っているかもしれないので、含まれていた項目
+                // とその時点の値を控える (共通設定の同期と同じ扱い)。
+                item.uncertainKeys.formUnion(
+                    Self.changedKeys(base: item.base, desired: item.settings))
+                item.uncertainDesired = item.settings
             }
             // 送信の途中でログインが変わっていたら、この変更は
             // 前のログインのものなので戻さない。
-            guard SettingsStore.shared.authGeneration == item.generation else { continue }
+            guard SettingsStore.shared.authGeneration == item.generation else {
+                syncPersistedRecord()
+                continue
+            }
             // 同期が切り替わって無効になった変更も戻さない。戻すと、
             // 送り直しの待ち時間 (15秒) を無効な分が占有して、
             // 新しい保存がその間ずっと待たされてしまうため
             // (共通設定の同期と同じ扱い)。
             guard item.syncGeneration == SettingsStore.shared.syncGeneration,
-                  Self.isSyncEnabled else { continue }
+                  Self.isSyncEnabled else {
+                syncPersistedRecord()
+                continue
+            }
             consecutiveSaveFailures += 1
             // その間に新しい変更が来ていたら、失敗した分の差分を
             // 新しい分の差分へ合成してから送る。新しい分の差分の元は
@@ -298,15 +365,21 @@ final class TimeTableSettingsStore {
             if let pending = pendingSave {
                 if pending.generation == item.generation,
                    pending.syncGeneration == item.syncGeneration {
+                    // 結果が分からない送信の控えは、失敗した分と新しい
+                    // 分の両方から引き継ぐ (共通設定の同期と同じ扱い)。
                     let merged = PendingSave(
                         id: pending.id, base: item.base, settings: pending.settings,
                         generation: pending.generation,
-                        syncGeneration: pending.syncGeneration)
+                        syncGeneration: pending.syncGeneration,
+                        uncertainKeys: item.uncertainKeys.union(pending.uncertainKeys),
+                        uncertainDesired: pending.uncertainDesired
+                            ?? item.uncertainDesired)
                     if consecutiveSaveFailures > 3 {
                         // 送り直しの上限。合成した分は捨てずに未送信
                         // として残し、失敗したことは画面側へ知らせる。
                         unsentSave = merged
                         pendingSave = nil
+                        syncPersistedRecord()
                         await MainActor.run {
                             NotificationCenter.default.post(
                                 name: .timeTableSettingsSaveFailed, object: nil)
@@ -317,6 +390,7 @@ final class TimeTableSettingsStore {
                 }
                 // 世代の違う新しい変更がある場合は、失敗した分は
                 // 前の状態のものなので合成せず、新しい分を続けて送る。
+                syncPersistedRecord()
                 continue
             }
             guard consecutiveSaveFailures <= 3 else {
@@ -326,6 +400,7 @@ final class TimeTableSettingsStore {
                 // は保存されているため、黙っていると他の端末で
                 // 変わっていないことに気づけない)。
                 unsentSave = item
+                syncPersistedRecord()
                 await MainActor.run {
                     NotificationCenter.default.post(
                         name: .timeTableSettingsSaveFailed, object: nil)
@@ -333,6 +408,7 @@ final class TimeTableSettingsStore {
                 continue
             }
             pendingSave = item
+            syncPersistedRecord()
             // 少し間を置いてから送り直す (通信が戻るのを待つ)。
             // 待ちは取り消せる形にし、待っている間に新しい変更が
             // 来たり、状態が変わったりしたら、待ちを打ち切って
@@ -373,6 +449,145 @@ final class TimeTableSettingsStore {
         Task { await self.drainSaveQueue() }
     }
 
+    // MARK: - 未送信の変更の端末への保存
+
+    /// 端末に保存した未送信の変更の控え (読み出した形)。
+    /// 共通設定の同期と同じ作り・方針。
+    private struct RestoredUnsent {
+        /// どのアカウント・接続先の変更かを示す目印。
+        let identity: String
+        let base: TimeTableDisplaySettings
+        let desired: TimeTableDisplaySettings
+        let uncertainKeys: Set<String>
+        let uncertainDesired: TimeTableDisplaySettings?
+    }
+
+    /// 端末から読み出した控え。引き継ぐかどうかは、使う時点で
+    /// ログインと同期の状態と照合して決める。
+    private var restoredUnsent: RestoredUnsent?
+    private var restoredUnsentLoaded = false
+
+    /// いま未送信の変更全体 (古い分から新しい分へ合成した形)。
+    /// 端末への控えはこの形で残す。
+    private func outstandingSave() -> PendingSave? {
+        var result: PendingSave?
+        for item in [unsentSave, inFlightSave, pendingSave].compactMap({ $0 }) {
+            if let accumulated = result {
+                result = PendingSave(
+                    id: item.id, base: accumulated.base, settings: item.settings,
+                    generation: item.generation,
+                    syncGeneration: item.syncGeneration,
+                    uncertainKeys: accumulated.uncertainKeys.union(item.uncertainKeys),
+                    uncertainDesired: item.uncertainDesired
+                        ?? accumulated.uncertainDesired)
+            } else {
+                result = item
+            }
+        }
+        return result
+    }
+
+    /// 未送信の変更を端末へ残す (アプリを終了しても消えないように
+    /// するため)。残すのは、アカウントと接続先の目印と、変更の
+    /// 前後の値だけで、認証の秘密は含めない。未送信分が無くなった
+    /// ら控えも消す。状態が変わるたびに呼び直す。
+    private func syncPersistedRecord() {
+        let store = SettingsStore.shared
+        guard let item = outstandingSave(),
+              item.generation == store.authGeneration,
+              item.syncGeneration == store.syncGeneration else {
+            store.unsentTimeTableSettingsData = nil
+            return
+        }
+        var record: [String: Any] = [
+            "identity": store.unsentSettingsIdentity,
+            "base": Self.displaySettingsDictionary(from: item.base),
+            "desired": Self.displaySettingsDictionary(from: item.settings),
+            "uncertainKeys": Array(item.uncertainKeys),
+        ]
+        if let uncertainDesired = item.uncertainDesired {
+            record["uncertainDesired"] =
+                Self.displaySettingsDictionary(from: uncertainDesired)
+        }
+        store.unsentTimeTableSettingsData =
+            try? JSONSerialization.data(withJSONObject: record)
+    }
+
+    /// 端末に残した未送信の変更を読み出し、条件が合えば未送信分と
+    /// して引き継ぐ。条件と破棄の方針は共通設定の同期と同じ
+    /// (ログイン中かつ同期が入っていて目印が一致すれば引き継ぎ、
+    /// 同期が切れているとき (ログイン中の場合) と目印が違うときは
+    /// 破棄、ログインしていないだけのときは残しておく)。
+    /// ログイン時の自動取り込み (同期を後から有効にする経路) からも、
+    /// 有効にする前に破棄の判定だけ行うために呼ばれる。
+    func adoptRestoredUnsentIfNeeded() {
+        if !restoredUnsentLoaded {
+            restoredUnsentLoaded = true
+            restoredUnsent = Self.loadPersistedRecord()
+        }
+        guard let restored = restoredUnsent else { return }
+        let store = SettingsStore.shared
+        guard Self.isSyncEnabled else {
+            if store.isLoggedIn {
+                restoredUnsent = nil
+                store.unsentTimeTableSettingsData = nil
+            }
+            return
+        }
+        guard restored.identity == store.unsentSettingsIdentity else {
+            restoredUnsent = nil
+            store.unsentTimeTableSettingsData = nil
+            return
+        }
+        restoredUnsent = nil
+        // すでに未送信分がある場合は、そちらの方が新しい状態なので
+        // 控えは取り込まずに消す (通常は起きない)。
+        guard unsentSave == nil, pendingSave == nil, inFlightSave == nil else {
+            syncPersistedRecord()
+            return
+        }
+        unsentSave = PendingSave(
+            id: 0, base: restored.base, settings: restored.desired,
+            generation: store.authGeneration,
+            syncGeneration: store.syncGeneration,
+            uncertainKeys: restored.uncertainKeys,
+            uncertainDesired: restored.uncertainDesired)
+        syncPersistedRecord()
+    }
+
+    /// 端末に残した控えを読み出す。形が違う・読めないときは nil。
+    private static func loadPersistedRecord() -> RestoredUnsent? {
+        guard let data = SettingsStore.shared.unsentTimeTableSettingsData,
+              let record = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let identity = record["identity"] as? String,
+              let baseDict = record["base"] as? [String: Any],
+              let desiredDict = record["desired"] as? [String: Any]
+        else { return nil }
+        let uncertainDesired = (record["uncertainDesired"] as? [String: Any]).map {
+            settings(fromClientSettings: $0, fallback: .defaults)
+        }
+        return RestoredUnsent(
+            identity: identity,
+            base: settings(fromClientSettings: baseDict, fallback: .defaults),
+            desired: settings(fromClientSettings: desiredDict, fallback: .defaults),
+            uncertainKeys: Set(record["uncertainKeys"] as? [String] ?? []),
+            uncertainDesired: uncertainDesired)
+    }
+
+    /// 表示設定一式を、サーバーの利用者設定と同じ形の辞書に写す
+    /// (端末への控えの保存に使う。読み戻しは
+    /// settings(fromClientSettings:) で行う)。
+    private static func displaySettingsDictionary(
+        from settings: TimeTableDisplaySettings
+    ) -> [String: Any] {
+        [
+            "timetable_channel_width": settings.channelWidth,
+            "timetable_hour_height": settings.hourHeight,
+            "timetable_dim_shopping_programs": settings.dimShoppingPrograms,
+            "timetable_genre_colors": settings.genreColors,
+        ]
+    }
+
     /// サーバー側の値を取り込んで、現在の値と違えば差し替える。
     /// 差し替えたかどうかを返す (呼び出し側は true のときだけ組み直す)。
     /// 同期が効いていない・取得に失敗したときは何もせず false を返す。
@@ -381,6 +596,9 @@ final class TimeTableSettingsStore {
     /// 変更や別のログインの値を、古いサーバー値で上書きしないため。
     /// 同期を切った後に取得済みの値が反映されてしまうのも防ぐ)。
     func refreshFromServer() async -> Bool {
+        // 前回の起動で送れずに端末へ残した変更があれば、ここで
+        // 引き継ぐ (条件が合わなければ破棄する)。
+        adoptRestoredUnsentIfNeeded()
         guard Self.isSyncEnabled else { return false }
         // 未送信の変更が残っていたら、先に送り直す。取り込みを先に
         // すると、届いていない端末の値がサーバーの古い値で上書き
@@ -395,10 +613,14 @@ final class TimeTableSettingsStore {
                    pending.generation == unsent.generation,
                    pending.syncGeneration == unsent.syncGeneration {
                     // 送信待ちがある間は、その差分の元へ合成して引き継ぐ。
+                    // 結果が分からない送信の控えも合わせて引き継ぐ。
                     pendingSave = PendingSave(
                         id: pending.id, base: unsent.base, settings: pending.settings,
                         generation: pending.generation,
-                        syncGeneration: pending.syncGeneration)
+                        syncGeneration: pending.syncGeneration,
+                        uncertainKeys: unsent.uncertainKeys.union(pending.uncertainKeys),
+                        uncertainDesired: pending.uncertainDesired
+                            ?? unsent.uncertainDesired)
                 } else if pendingSave == nil {
                     pendingSave = unsent
                     if !isSaving {
@@ -407,8 +629,10 @@ final class TimeTableSettingsStore {
                         Task { await self.drainSaveQueue() }
                     }
                 }
+                syncPersistedRecord()
                 return false
             }
+            syncPersistedRecord()
         }
         guard pendingSave == nil, !isSaving else { return false }
         let currentAtStart = current
@@ -447,25 +671,37 @@ final class TimeTableSettingsStore {
         store.timeTableGenreColors = settings.genreColors
     }
 
-    /// 変更をサーバーへ送る。手順は視聴履歴の書き戻しと同じ:
+    /// 送信の結果を受け渡すための箱 (順番待ちの中から書き戻すため)。
+    private final class SaveOutcomeBox: @unchecked Sendable {
+        var value = SaveOutcome.notApplied
+    }
+
+    /// 変更をサーバーへ送る。結果 (送れた／届いていないことが明らか／
+    /// 結果が分からない) を返す。手順は視聴履歴の書き戻しと同じ:
     /// 送る直前に最新を取得 → 編集で変わった項目だけを最新の値へ
     /// 適用する → last_synced_at を今に更新して送る。422 (その間に
     /// 他の端末が先に更新した) が返ったら、1回だけ取り直して、
     /// 同じ差分を新しい最新へ適用し直す。
     /// ジャンル色はジャンルごとに比べ、変わった分だけをサーバー側の
     /// 割り当てへ上書きする (知らないジャンルがあっても落とさない)。
+    /// 結果が分からない送信に含まれていた項目は、編集の前後で値が
+    /// 同じでも、取得した最新の値と最終的な意図が食い違えば意図の
+    /// 値で送り直す (共通設定の同期と同じ扱い)。
     private func saveToServer(
         base: TimeTableDisplaySettings, desired: TimeTableDisplaySettings,
+        uncertainKeys: Set<String>, uncertainDesired: TimeTableDisplaySettings?,
         expectedGeneration: Int, expectedSyncGeneration: Int
-    ) async -> Bool {
+    ) async -> SaveOutcome {
         // 他の保存 (視聴履歴・各種設定) と重なって互いを上書きしないよう、
         // 保存の順番待ちに並んでから本体を行う。
         // 世代は呼び出し側が変更の時点で確定させたものを受け取る
         // (順番待ちの実行時点で読み直さない)。
-        let box = BoolResultBox()
+        let box = SaveOutcomeBox()
         await ClientSettingsSaveQueue.shared.run {
             box.value = await self.saveToServerSerial(
-                base: base, desired: desired, expectedGeneration: expectedGeneration,
+                base: base, desired: desired,
+                uncertainKeys: uncertainKeys, uncertainDesired: uncertainDesired,
+                expectedGeneration: expectedGeneration,
                 expectedSyncGeneration: expectedSyncGeneration)
         }
         return box.value
@@ -473,8 +709,9 @@ final class TimeTableSettingsStore {
 
     private func saveToServerSerial(
         base: TimeTableDisplaySettings, desired: TimeTableDisplaySettings,
+        uncertainKeys: Set<String>, uncertainDesired: TimeTableDisplaySettings?,
         expectedGeneration: Int, expectedSyncGeneration: Int
-    ) async -> Bool {
+    ) async -> SaveOutcome {
         // 照合は、変更が起きた時点の世代で行う。順番待ちの間に
         // ログインし直していたら、この回の保存は打ち切る。
         // 同期の世代も同じで、順番待ちの間に同期を切られていたら
@@ -483,50 +720,108 @@ final class TimeTableSettingsStore {
         guard SettingsStore.shared.authGeneration == generation,
               SettingsStore.shared.syncGeneration == expectedSyncGeneration,
               SettingsStore.shared.syncSettings,
-              SettingsStore.shared.isLoggedIn else { return false }
+              SettingsStore.shared.isLoggedIn else { return .notApplied }
         for _ in 0..<2 {
+            // 送信前の取得が失敗した場合は、送信自体を行っていない
+            // ので、届いていないことが明らかな失敗として扱う。
+            let fetched: [String: Any]
             do {
-                var clientSettings = try await APIClient.shared.fetchClientSettings()
-                guard SettingsStore.shared.authGeneration == generation,
-                      SettingsStore.shared.syncGeneration == expectedSyncGeneration,
-                      SettingsStore.shared.syncSettings,
-                      SettingsStore.shared.isLoggedIn else { return false }
-                // 編集の前後で変わった項目だけを、取得した最新の
-                // サーバー値へ適用する。変わっていない項目は最新の
-                // 値のまま触らないため、他の端末が変えた幅・高さ・
-                // ジャンル色が、無関係な保存で消えることはない。
-                if base.channelWidth != desired.channelWidth {
-                    clientSettings["timetable_channel_width"] = desired.channelWidth
+                fetched = try await APIClient.shared.fetchClientSettings()
+            } catch {
+                return .notApplied
+            }
+            guard SettingsStore.shared.authGeneration == generation,
+                  SettingsStore.shared.syncGeneration == expectedSyncGeneration,
+                  SettingsStore.shared.syncSettings,
+                  SettingsStore.shared.isLoggedIn else { return .notApplied }
+            var clientSettings = fetched
+            // 編集の前後で変わった項目だけを、取得した最新の
+            // サーバー値へ適用する。変わっていない項目は最新の
+            // 値のまま触らないため、他の端末が変えた幅・高さ・
+            // ジャンル色が、無関係な保存で消えることはない。
+            if base.channelWidth != desired.channelWidth
+                || (uncertainKeys.contains("timetable_channel_width")
+                    && (clientSettings["timetable_channel_width"] as? String)
+                        != desired.channelWidth) {
+                clientSettings["timetable_channel_width"] = desired.channelWidth
+            }
+            if base.hourHeight != desired.hourHeight
+                || (uncertainKeys.contains("timetable_hour_height")
+                    && (clientSettings["timetable_hour_height"] as? String)
+                        != desired.hourHeight) {
+                clientSettings["timetable_hour_height"] = desired.hourHeight
+            }
+            if base.dimShoppingPrograms != desired.dimShoppingPrograms
+                || (uncertainKeys.contains("timetable_dim_shopping_programs")
+                    && (clientSettings["timetable_dim_shopping_programs"] as? NSNumber)?
+                        .boolValue != desired.dimShoppingPrograms) {
+                clientSettings["timetable_dim_shopping_programs"] =
+                    desired.dimShoppingPrograms
+            }
+            // ジャンル色はジャンルごとに比べる。結果が分からない
+            // 送信に含まれていたジャンルは、その送信の値と最終的な
+            // 意図が食い違い、かつ最新の値も意図と違えば送り直す。
+            let latestGenreColors =
+                clientSettings["timetable_genre_colors"] as? [String: Any] ?? [:]
+            var changedGenreColors: [String: String] = [:]
+            for (genre, name) in desired.genreColors {
+                if base.genreColors[genre] != name {
+                    changedGenreColors[genre] = name
+                } else if uncertainKeys.contains("timetable_genre_colors"),
+                          let uncertainDesired,
+                          uncertainDesired.genreColors[genre] != name,
+                          (latestGenreColors[genre] as? String) != name {
+                    changedGenreColors[genre] = name
                 }
-                if base.hourHeight != desired.hourHeight {
-                    clientSettings["timetable_hour_height"] = desired.hourHeight
+            }
+            if !changedGenreColors.isEmpty {
+                var genreColors = latestGenreColors
+                for (genre, name) in changedGenreColors {
+                    genreColors[genre] = name
                 }
-                if base.dimShoppingPrograms != desired.dimShoppingPrograms {
-                    clientSettings["timetable_dim_shopping_programs"] =
-                        desired.dimShoppingPrograms
-                }
-                let changedGenreColors = desired.genreColors.filter {
-                    base.genreColors[$0.key] != $0.value
-                }
-                if !changedGenreColors.isEmpty {
-                    var genreColors =
-                        clientSettings["timetable_genre_colors"] as? [String: Any] ?? [:]
-                    for (genre, name) in changedGenreColors {
-                        genreColors[genre] = name
-                    }
-                    clientSettings["timetable_genre_colors"] = genreColors
-                }
-                clientSettings["last_synced_at"] = Date().timeIntervalSince1970
+                clientSettings["timetable_genre_colors"] = genreColors
+            }
+            clientSettings["last_synced_at"] = Date().timeIntervalSince1970
+            do {
                 try await APIClient.shared.updateClientSettings(
                     clientSettings, expectedAuthGeneration: generation)
-                return true
+                return .success
             } catch let APIError.badStatus(code) where code == 422 {
                 continue  // 取り直して1回だけやり直す。
+            } catch is APIError {
+                // サーバーから応答が返ってきた失敗 (拒否など) と、
+                // 送信前に止まった失敗は、適用されていないことが
+                // 分かる失敗として扱う。
+                return .notApplied
             } catch {
-                return false  // それ以外の失敗は、この回の送信を諦める。
+                // 応答が返ってこなかった失敗。サーバー側で保存が
+                // 済んでいるかもしれないので、結果は分からない。
+                return .unknown
             }
         }
-        return false
+        // 422 が続いた = サーバーが受け付けなかった。
+        return .notApplied
+    }
+
+    /// 編集の前後で変わった項目の、サーバー側の項目名の一覧。
+    /// 結果が分からない送信に含まれていた項目を特定するために使う。
+    private static func changedKeys(
+        base: TimeTableDisplaySettings, desired: TimeTableDisplaySettings
+    ) -> [String] {
+        var keys: [String] = []
+        if base.channelWidth != desired.channelWidth {
+            keys.append("timetable_channel_width")
+        }
+        if base.hourHeight != desired.hourHeight {
+            keys.append("timetable_hour_height")
+        }
+        if base.dimShoppingPrograms != desired.dimShoppingPrograms {
+            keys.append("timetable_dim_shopping_programs")
+        }
+        if base.genreColors != desired.genreColors {
+            keys.append("timetable_genre_colors")
+        }
+        return keys
     }
 
     /// 利用者設定の辞書から表示設定を組み立てる。項目が無い・形が違う

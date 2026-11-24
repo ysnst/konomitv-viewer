@@ -233,6 +233,9 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
             programs = []
             total = 0
             currentPage = 1
+            // 同期が効いていないときは、保留していた読み直しの要求も
+            // ここではっきり捨てる (あとで古い要求が実行されないため)。
+            pendingReloadPage = nil
             statusLabel.text = Self.guidanceText
             tableView.reloadData()
             refreshControl.endRefreshing()
@@ -264,9 +267,7 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
                     return
                 }
                 self.statusLabel.text = "読み込めませんでした。\n接続先とネットワークを確認してください。"
-                self.isLoading = false
-                self.refreshControl.endRefreshing()
-                self.updatePagination()
+                self.finishLoadAndRunPendingReload()
                 return
             }
             self.historyIDs = ids
@@ -276,12 +277,25 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
                 self.currentPage = 1
                 self.statusLabel.text = Self.emptyText
                 self.tableView.reloadData()
-                self.isLoading = false
-                self.refreshControl.endRefreshing()
-                self.updatePagination()
+                self.finishLoadAndRunPendingReload()
                 return
             }
             await self.loadPage(page)
+        }
+    }
+
+    /// 読み込みの終了処理 (履歴 ID の取得で終わる経路用)。
+    /// 保留していた読み直しの要求があれば、一度だけ取り出して
+    /// 実行する。失敗や空の結果で終わる経路でも要求を取り残すと、
+    /// あとの通常の読み込みの終わりに古い要求が実行されてしまう
+    /// ため、どの終わり方でもここを通す。
+    private func finishLoadAndRunPendingReload() {
+        isLoading = false
+        refreshControl.endRefreshing()
+        updatePagination()
+        if let pending = pendingReloadPage {
+            pendingReloadPage = nil
+            reloadHistory(page: pending)
         }
     }
 
@@ -361,11 +375,23 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
 
     /// ページ送りから指定されたページへ移る。ID の並びは取り直さず、
     /// 取得済みの並びでページだけ取り直す。
+    /// 並びは、取った時点のログイン・同期の世代と一体で扱う。世代が
+    /// 変わっていたら、前の状態の並びは使わず、破棄して取り直す
+    /// (ページ送りのたびに世代を今の値へ書き換えて取り繕うと、
+    /// 前のログインで取った並びがそのまま使われてしまうため)。
     private func goToPage(_ page: Int) {
         guard page != currentPage, !isLoading, !historyIDs.isEmpty else { return }
+        guard loadAuthGeneration == SettingsStore.shared.authGeneration,
+              loadSyncGeneration == SettingsStore.shared.syncGeneration else {
+            historyIDs = []
+            programs = []
+            total = 0
+            currentPage = 1
+            tableView.reloadData()
+            reloadHistory(page: 1)
+            return
+        }
         isLoading = true
-        loadAuthGeneration = SettingsStore.shared.authGeneration
-        loadSyncGeneration = SettingsStore.shared.syncGeneration
         updatePagination()
         Task { [weak self] in
             guard let self else { return }
