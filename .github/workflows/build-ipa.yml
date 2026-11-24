@@ -88,8 +88,11 @@ jobs:
       # 取り方の本線は「固定タグのリリースに IPA をそのまま置く」形。
       # 毎回のビルドで同じリリースの中身 (IPA と説明) を差し替える。
       # IPA のファイル名には版番号が入るため、--clobber では名前違いの古い IPA が
-      # 差し替わらずに残ってしまう。置く前に既存の IPA 資産をすべて消し、
-      # 常に「最新の IPA が1つだけ」になるようにする。
+      # 差し替わらずに残ってしまう。そのため、新しい IPA を先に上げてから、
+      # 名前が違う古い IPA 資産を消し、最終的に「最新の IPA が1つだけ」に
+      # なるようにする。先に消してから上げると、差し替えの間にリリースに
+      # IPA が1つも無い時間ができ、その間に開くと 404 になってしまう
+      # (2026-11-24 に実際に報告があったため、この順番にした)。
       # Source code の自動資産は .ipa で終わらないので、この削除には掛からない。
       - name: Publish IPA to fixed release
         if: github.event_name != 'pull_request'
@@ -108,9 +111,11 @@ jobs:
           else
             gh release create "$RELEASE_TAG" --title "$TITLE" --notes "$NOTES" --prerelease
           fi
-          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name | select(endswith(".ipa"))' | while IFS= read -r asset; do
-            echo "Deleting old IPA asset: $asset"
-            gh release delete-asset "$RELEASE_TAG" "$asset"
-          done
           gh release upload "$RELEASE_TAG" "$IPA" --clobber
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name | select(endswith(".ipa"))' | while IFS= read -r asset; do
+            if [ "$asset" != "$IPA_NAME" ]; then
+              echo "Deleting old IPA asset: $asset"
+              gh release delete-asset "$RELEASE_TAG" "$asset"
+            fi
+          done
           gh release view "$RELEASE_TAG"
