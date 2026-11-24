@@ -50,6 +50,10 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
     private var isLoading = false
 
     private let thumbnailCache = NSCache<NSNumber, UIImage>()
+    /// サムネイルを取得中の番組 ID と、失敗して取り直し待ちの番組 ID。
+    /// 同じ番組への取得を重ねないことと、失敗したままにしないために使う。
+    private var thumbnailLoadingIDs: Set<Int> = []
+    private var thumbnailRetryingIDs: Set<Int> = []
     /// 局ロゴのキャッシュと、ロゴが無かった局の控え (録画一覧と同じ方式)。
     private let logoCache = NSCache<NSString, UIImage>()
     private var failedLogoIDs: Set<String> = []
@@ -332,7 +336,7 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
         let cell = tableView.dequeueReusableCell(withIdentifier: VideoCell.reuseID, for: indexPath) as! VideoCell
         let program = programs[indexPath.row]
         cell.configure(with: program)
-        loadThumbnail(for: program, at: indexPath)
+        loadThumbnail(for: program, into: cell)
         if let channelID = program.channel?.id {
             if let cached = logoCache.object(forKey: channelID as NSString) {
                 cell.setLogo(cached)
@@ -363,23 +367,69 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
         }
     }
 
-    private func loadThumbnail(for program: RecordedProgram, at indexPath: IndexPath) {
-        let key = NSNumber(value: program.id)
-        if let cached = thumbnailCache.object(forKey: key) {
-            (tableView.cellForRow(at: indexPath) as? VideoCell)?.setThumbnail(cached)
+    /// サムネイルをセルへ出す。端末に控えがあれば、その場でこのセルへ
+    /// 即座に出す。セルが作り直されても、控えのある番組は仮の絵のままに
+    /// ならない。控えが無いときだけサーバーへ取りに行く。
+    private func loadThumbnail(for program: RecordedProgram, into cell: VideoCell) {
+        if let cached = thumbnailCache.object(forKey: NSNumber(value: program.id)) {
+            cell.setThumbnail(cached)
             return
         }
+        fetchThumbnail(videoID: program.id, isRetry: false)
+    }
+
+    /// サムネイルをサーバーから取る。同じ番組への取得は重ねない。
+    /// 取れたら控えに入れ、いまその番組を表示しているセルへ出す
+    /// (行の位置は取得が終わった時点で探し直すので、途中で一覧が
+    /// 作り直されたり並びが変わったりしても取りこぼさない)。
+    /// 失敗したら、少し置いて1回だけ取り直す。
+    private func fetchThumbnail(videoID: Int, isRetry: Bool) {
+        guard !thumbnailLoadingIDs.contains(videoID) else { return }
+        thumbnailLoadingIDs.insert(videoID)
         Task { [weak self] in
             guard let self else { return }
-            guard let data = try? await APIClient.shared.fetchThumbnail(videoID: program.id),
-                  let image = UIImage(data: data) else { return }
-            self.thumbnailCache.setObject(image, forKey: key)
-            if let cell = self.tableView.cellForRow(at: indexPath) as? VideoCell,
-               self.programs.indices.contains(indexPath.row),
-               self.programs[indexPath.row].id == program.id {
-                cell.setThumbnail(image)
+            var image: UIImage?
+            if let data = try? await APIClient.shared.fetchThumbnail(videoID: videoID) {
+                image = UIImage(data: data)
+            }
+            self.thumbnailLoadingIDs.remove(videoID)
+            if let image {
+                self.thumbnailCache.setObject(image, forKey: NSNumber(value: videoID))
+                self.applyThumbnail(image, videoID: videoID)
+            } else if !isRetry {
+                self.scheduleThumbnailRetry(videoID: videoID)
             }
         }
+    }
+
+    /// 失敗したサムネイルの取り直しを、少し置いて1回だけ行う。
+    /// その番組がもう画面に出ていないときは取り直さない。
+    private func scheduleThumbnailRetry(videoID: Int) {
+        guard !thumbnailRetryingIDs.contains(videoID),
+              thumbnailRow(videoID: videoID) != nil else { return }
+        thumbnailRetryingIDs.insert(videoID)
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard let self else { return }
+            self.thumbnailRetryingIDs.remove(videoID)
+            guard self.thumbnailCache.object(forKey: NSNumber(value: videoID)) == nil,
+                  self.thumbnailRow(videoID: videoID) != nil else { return }
+            self.fetchThumbnail(videoID: videoID, isRetry: true)
+        }
+    }
+
+    /// 取れたサムネイルを、いまその番組を表示しているセルへ出す。
+    /// セルが使い回されて別の番組に変わっていたら出さない。
+    private func applyThumbnail(_ image: UIImage, videoID: Int) {
+        guard let row = thumbnailRow(videoID: videoID),
+              let cell = tableView.cellForRow(at: IndexPath(row: row, section: 0)) as? VideoCell,
+              cell.thumbnailProgramID == videoID else { return }
+        cell.setThumbnail(image)
+    }
+
+    /// いま表示しているデータの中で、その番組の行を探す。
+    private func thumbnailRow(videoID: Int) -> Int? {
+        programs.firstIndex { $0.id == videoID }
     }
 
     // MARK: - UITableViewDelegate
