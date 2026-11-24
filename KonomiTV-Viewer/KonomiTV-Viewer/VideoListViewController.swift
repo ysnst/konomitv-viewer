@@ -47,8 +47,8 @@ enum AppPalette {
 /// 録画番組の一覧。Web 版と同じく30件ごとのページ分けで、番号付きの
 /// ページ送りを一覧の上と下の両方に置く。
 /// 並びは Web 版と同じく、番組ごとに独立した角丸カードが間隔を空けて並ぶ形。
-/// フィルタと並び替えは Web 版のスマホ縦の形に合わせ、見出し行の右端の
-/// 「フィルタ」ボタンから開くメニューで切り替える。
+/// フィルタと並び替えは Web 版のスマホ縦の形に合わせ、見出し行の下の
+/// 行の右端の「フィルタ」ボタンから開くメニューで切り替える。
 final class VideoListViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     /// 1ページの件数。サーバー側の固定値 (PAGE_SIZE = 30) に合わせる。
     private static let pageSize = 30
@@ -78,31 +78,31 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     private var storageStatus: StorageStatus?
     /// 容量情報の定期取得 (Web 版と同じ30秒間隔) 用。
     private var storageTimer: Timer?
-    /// 見出し行 (「録画番組一覧 ○件」と「フィルタ」ボタン)。
+    /// 見出し行 (「録画番組一覧 ○件」と、右端の「ゴミ箱を開く」)。
     private let listHeaderView = UIView()
     private let listTitleLabel = UILabel()
     private let countLabel = UILabel()
+    /// 見出し行の下の行。左端に複数選択の入り口のピル、右端にフィルタの
+    /// ボタンを置く。ピルを出さないときはフィルタだけの行になる。
+    private let selectFilterRowView = UIView()
     private let filterButton = RippleButton()
     /// フィルタボタン右上の、ON になっているフィルタの件数の印。
     private let filterBadgeLabel = UILabel()
-    /// ゴミ箱への入口の行 (Web 版の録画番組一覧にある「ゴミ箱を開く」の
-    /// リンクに相当)。拡張版かつ管理者でログインしているときだけ出す。
-    private let trashLinkRowView = UIView()
+    /// ゴミ箱への入口 (Web 版の録画番組一覧にある「ゴミ箱を開く」の
+    /// リンクに相当)。見出し行の右端に置く。拡張版かつ管理者で
+    /// ログインしているときだけ出す。
     private let trashLinkButton = RippleButton()
     /// ログイン中の利用者が管理者かどうか。ゴミ箱の入口と、長押し
     /// メニューの「ゴミ箱に移動する」の出し分けに使う (Web 版と同じく、
     /// ゴミ箱まわりは管理者だけに出す)。
     private var isAdminUser = false
-    /// ゴミ箱の入口の行を出すかどうか。
+    /// ゴミ箱の入口を出すかどうか。
     private var showsTrashLink: Bool { AppEdition.trashEnabled && isAdminUser }
-    /// ゴミ箱の入口の行の高さ (出すときだけ)。
-    private static let trashLinkRowHeight: CGFloat = 26
-    /// 複数選択の入り口のピル (見出し行の中、フィルタボタンの左隣。
+    /// 選択とフィルタの行の高さ。
+    private static let selectFilterRowHeight: CGFloat = 38
+    /// 複数選択の入り口のピル (見出し行の下の行の左端。
     /// ゴミ箱の「選択する」のピルと同じ見た目)。
     private let selectButton = RippleButton()
-    /// ピルを隠すときに幅を 0 に潰すための制約 (見出し行の並びの中で
-    /// 場所を取らないようにする)。組み立て時に作る。
-    private var selectButtonZeroWidthConstraint: NSLayoutConstraint?
     /// 「選択する」のピルを出すかどうか。複数選択で使える操作が
     /// 1つでもあるとき (保護のトグルがオン、またはゴミ箱のトグルが
     /// オンで管理者) に、一覧が空でないときだけ出す。選択中は、
@@ -249,9 +249,11 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         storageRowView.addSubview(recordingResultsButton)
 
         // 見出し行。Web 版と同じく「録画番組一覧」の右に全件数を出し、
-        // 右端にフィルタのボタンを置く。見出しの横に Web 版にある戻る印 (＜) は、
-        // たつやさんの判断で付けない。
+        // 右端にはゴミ箱への入口を置く (出すときだけ)。見出しの横に
+        // Web 版にある戻る印 (＜) は、たつやさんの判断で付けない。
+        // その下の行に、左端の選択のピルと右端のフィルタのボタンを置く。
         headContainerView.addSubview(listHeaderView)
+        headContainerView.addSubview(selectFilterRowView)
         listTitleLabel.text = "録画番組一覧"
         listTitleLabel.font = .scaledSystemFont(ofSize: 17, weight: .semibold)
         listTitleLabel.textColor = AppPalette.text
@@ -277,7 +279,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         filterButton.layer.borderWidth = 1
         filterButton.showsMenuAsPrimaryAction = true
         filterButton.translatesAutoresizingMaskIntoConstraints = false
-        listHeaderView.addSubview(filterButton)
+        selectFilterRowView.addSubview(filterButton)
         // ON 件数の印はボタンの右上に重ねる小さな丸。0件のときは出さない。
         filterBadgeLabel.font = .scaledSystemFont(ofSize: 10, weight: .bold)
         filterBadgeLabel.textAlignment = .center
@@ -287,8 +289,8 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         filterBadgeLabel.clipsToBounds = true
         filterBadgeLabel.isHidden = true
         filterBadgeLabel.translatesAutoresizingMaskIntoConstraints = false
-        listHeaderView.addSubview(filterBadgeLabel)
-        // ゴミ箱への入口。Web 版と同じく右寄せの小さなリンクで、
+        selectFilterRowView.addSubview(filterBadgeLabel)
+        // ゴミ箱への入口。見出し行の右端に置く小さなリンクで、
         // アイコン (アーカイブの箱) +「ゴミ箱を開く」、文字 14px。
         trashLinkButton.setTitle("ゴミ箱を開く", for: .normal)
         trashLinkButton.setTitleColor(AppPalette.text.withAlphaComponent(0.85), for: .normal)
@@ -302,10 +304,11 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         trashLinkButton.titleEdgeInsets = UIEdgeInsets(top: 0, left: 3, bottom: 0, right: -3)
         trashLinkButton.contentEdgeInsets = UIEdgeInsets(top: 2, left: 6, bottom: 2, right: 6)
         trashLinkButton.addTarget(self, action: #selector(openTrash), for: .touchUpInside)
-        trashLinkRowView.addSubview(trashLinkButton)
-        trashLinkRowView.isHidden = true
+        trashLinkButton.translatesAutoresizingMaskIntoConstraints = false
+        trashLinkButton.isHidden = true
+        listHeaderView.addSubview(trashLinkButton)
         // 複数選択の入り口。ゴミ箱の「選択する」のピルと同じ見た目で、
-        // 見出し行の中にフィルタボタンの左隣で置く (並びの制約は下の
+        // 見出し行の下の行の左端に置く (並びの制約は下の
         // NSLayoutConstraint.activate、出し分けは refreshHeadContainer)。
         selectButton.setTitle("選択する", for: .normal)
         selectButton.setTitleColor(AppPalette.text, for: .normal)
@@ -317,9 +320,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         selectButton.addTarget(self, action: #selector(toggleSelectionMode), for: .touchUpInside)
         selectButton.translatesAutoresizingMaskIntoConstraints = false
         selectButton.isHidden = true
-        selectButtonZeroWidthConstraint = selectButton.widthAnchor.constraint(equalToConstant: 0)
-        selectButtonZeroWidthConstraint?.isActive = true
-        listHeaderView.addSubview(selectButton)
+        selectFilterRowView.addSubview(selectButton)
         // 前回保存した表示状態 (ページ・並び順・両フィルタ) を復元する。
         restoreViewState()
         updateFilterButtonAppearance()
@@ -376,12 +377,14 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             listTitleLabel.centerYAnchor.constraint(equalTo: listHeaderView.centerYAnchor),
             countLabel.leadingAnchor.constraint(equalTo: listTitleLabel.trailingAnchor, constant: 8),
             countLabel.centerYAnchor.constraint(equalTo: listHeaderView.centerYAnchor),
-            filterButton.trailingAnchor.constraint(equalTo: listHeaderView.trailingAnchor, constant: -12),
-            filterButton.centerYAnchor.constraint(equalTo: listHeaderView.centerYAnchor),
-            filterButton.leadingAnchor.constraint(greaterThanOrEqualTo: countLabel.trailingAnchor, constant: 8),
-            selectButton.trailingAnchor.constraint(equalTo: filterButton.leadingAnchor, constant: -8),
-            selectButton.centerYAnchor.constraint(equalTo: listHeaderView.centerYAnchor),
-            selectButton.leadingAnchor.constraint(greaterThanOrEqualTo: countLabel.trailingAnchor, constant: 8),
+            trashLinkButton.trailingAnchor.constraint(equalTo: listHeaderView.trailingAnchor, constant: -12),
+            trashLinkButton.centerYAnchor.constraint(equalTo: listHeaderView.centerYAnchor),
+            trashLinkButton.leadingAnchor.constraint(greaterThanOrEqualTo: countLabel.trailingAnchor, constant: 8),
+            selectButton.leadingAnchor.constraint(equalTo: selectFilterRowView.leadingAnchor, constant: 12),
+            selectButton.centerYAnchor.constraint(equalTo: selectFilterRowView.centerYAnchor),
+            filterButton.trailingAnchor.constraint(equalTo: selectFilterRowView.trailingAnchor, constant: -12),
+            filterButton.centerYAnchor.constraint(equalTo: selectFilterRowView.centerYAnchor),
+            filterButton.leadingAnchor.constraint(greaterThanOrEqualTo: selectButton.trailingAnchor, constant: 8),
             filterBadgeLabel.widthAnchor.constraint(equalToConstant: 16),
             filterBadgeLabel.heightAnchor.constraint(equalToConstant: 16),
             filterBadgeLabel.centerXAnchor.constraint(equalTo: filterButton.trailingAnchor, constant: -2),
@@ -474,12 +477,12 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         ])
     }
 
-    /// 先頭まわり一式の高さ。容量行は取得できたときだけ 22 (文字の行 18 + 下の余白 4)、
-    /// ゴミ箱の入口の行は出すときだけ 26。複数選択のピルは見出し行の中に
-    /// 入っているため、高さには加えない。
+    /// 先頭まわり一式の高さ。容量行は取得できたときだけ 22 (文字の行 18 + 下の余白 4)。
+    /// 見出し行は 44、その下の選択とフィルタの行は常に出す (ピルを
+    /// 出さないときはフィルタだけの行になる)。
     private var headContainerHeight: CGFloat {
         SPHeaderView.height + (showsStorageRow ? 22 : 0)
-            + (showsTrashLink ? Self.trashLinkRowHeight : 0) + 44
+            + 44 + Self.selectFilterRowHeight
             + PaginationView.preferredHeight
     }
 
@@ -489,15 +492,14 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     private func installHeadContainer() {
         headContainerView.addSubview(headerView)
         headContainerView.addSubview(storageRowView)
-        headContainerView.addSubview(trashLinkRowView)
         refreshHeadContainer()
     }
 
     /// 先頭まわり一式の並びと大きさを決め直して、テーブルへ付け直す。
-    /// 並びは Web 版と同じ ロゴ帯 → 容量行 → 見出し行 → 上のページ送りで、
-    /// ゴミ箱の入口の行は Web 版の置き場所 (一覧の見出しの上、右寄せ) に
-    /// 合わせて容量行と見出し行の間に入れる。複数選択のピルは見出し行の
-    /// 中 (フィルタボタンの左隣) に入れてあり、ここでは出し分けだけ合わせる。
+    /// 並びは ロゴ帯 → 容量行 → 見出し行 → 選択とフィルタの行 → 上の
+    /// ページ送り。ゴミ箱の入口は見出し行の右端に置き、複数選択のピルと
+    /// フィルタのボタンは見出し行の下の行に置いてあり、ここでは
+    /// 出し分けだけ合わせる。
     private func refreshHeadContainer() {
         let width = tableView.bounds.width
         let storageHeight: CGFloat = showsStorageRow ? 22 : 0
@@ -513,17 +515,9 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         }
         storageIconView.isHidden = storageStatus == nil
         storageLabel.isHidden = storageStatus == nil
-        // ゴミ箱の入口の行。ボタンは右寄せで、右端は容量行に合わせる (右に 8px)。
-        let trashHeight: CGFloat = showsTrashLink ? Self.trashLinkRowHeight : 0
-        trashLinkRowView.frame = CGRect(
-            x: 0, y: SPHeaderView.height + storageHeight, width: width, height: trashHeight)
-        trashLinkRowView.isHidden = !showsTrashLink
-        if showsTrashLink {
-            trashLinkButton.sizeToFit()
-            let buttonWidth = trashLinkButton.frame.width
-            trashLinkButton.frame = CGRect(
-                x: width - 8 - buttonWidth, y: 0, width: buttonWidth, height: trashHeight)
-        }
+        // ゴミ箱の入口は見出し行の右端 (並びは組み立て時の制約)。
+        // 出すときだけ見せる。
+        trashLinkButton.isHidden = !showsTrashLink
         // 容量行の中身は右寄せ (Web 版と同じ)。右端はカードの余白 (8px) に合わせ、
         // アイコン (16px) と文字の間は 6px。
         storageLabel.sizeToFit()
@@ -531,14 +525,18 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         storageLabel.frame = CGRect(x: width - 8 - labelWidth, y: 0, width: labelWidth, height: 18)
         storageIconView.frame = CGRect(x: width - 8 - labelWidth - 6 - 16, y: 1, width: 16, height: 16)
         storageRowView.isHidden = !showsStorageRow
-        let listHeaderY = SPHeaderView.height + storageHeight + trashHeight
+        let listHeaderY = SPHeaderView.height + storageHeight
         listHeaderView.frame = CGRect(x: 0, y: listHeaderY, width: width, height: 44)
-        // 複数選択のピルは見出し行の中 (フィルタボタンの左隣)。隠すときは
-        // 幅を 0 に潰して、見出し行の並びで場所を取らないようにする。
+        // 見出し行の下の行。左に複数選択のピル、右にフィルタのボタン
+        // (並びは組み立て時の制約)。ピルを出さないときはフィルタだけの
+        // 行になる。
+        let selectFilterRowY = listHeaderY + 44
+        selectFilterRowView.frame = CGRect(
+            x: 0, y: selectFilterRowY, width: width, height: Self.selectFilterRowHeight)
         selectButton.isHidden = !showsSelectButton
-        selectButtonZeroWidthConstraint?.isActive = !showsSelectButton
         topPaginationView.frame = CGRect(
-            x: 0, y: listHeaderY + 44, width: width, height: PaginationView.preferredHeight)
+            x: 0, y: selectFilterRowY + Self.selectFilterRowHeight,
+            width: width, height: PaginationView.preferredHeight)
         headContainerView.frame = CGRect(x: 0, y: 0, width: width, height: headContainerHeight)
         tableView.tableHeaderView = headContainerView
     }
