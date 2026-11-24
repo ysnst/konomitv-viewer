@@ -233,16 +233,18 @@ final class StreamRelayServer {
     /// 受け口を作ったときの、接続先と認証の設定の目印。
     private var upstreamFingerprint: String?
 
-    /// 接続先と認証の設定をまとめた目印。接続先や合言葉が変わったら
-    /// 目印も変わり、使い回しの受け口は捨てて作り直される (古い
-    /// 接続先・古い合言葉のままの接続が残らないため)。
+    /// 接続先と認証の設定をまとめた目印。接続先や認証の設定が
+    /// 変わったら目印も変わり、使い回しの受け口は捨てて作り直される
+    /// (古い接続先・古い認証のままの接続が残らないため)。
+    /// 判定には、認証まわりの設定が変わるたびに進む世代
+    /// (SettingsStore.authConfigGeneration) を使う。ヘッダーとして
+    /// 先回りで付ける方式 (Basic認証など) はヘッダーの値で比べる
+    /// こともできるが、Digest認証・クライアント証明書・URLの
+    /// 合言葉はヘッダーが空になるため、値比べでは変更を検出できない。
+    /// 世代なら方式を問わず検出でき、目印に秘密の値も混ざらない。
     private static func currentUpstreamFingerprint() -> String {
         let base = SettingsStore.shared.baseURL?.absoluteString ?? ""
-        let headers = SettingsStore.shared.serverAuthHeaders
-            .sorted { $0.key < $1.key }
-            .map { "\($0.key):\($0.value)" }
-            .joined(separator: "\n")
-        return base + "\n" + headers
+        return base + "\n" + String(SettingsStore.shared.authConfigGeneration)
     }
 
     /// 使い回しの受け口を返す。中継のキューの上で呼ぶこと。

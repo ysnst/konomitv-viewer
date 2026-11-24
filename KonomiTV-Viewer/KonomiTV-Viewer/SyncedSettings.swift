@@ -243,26 +243,39 @@ final class SyncedSettingsStore {
         SettingsStore.shared.isLoggedIn && SettingsStore.shared.syncSettings
     }
 
-    /// サーバーへの送信待ちの最新値と、送信中かどうかの控え。
+    /// サーバーへの送信待ちと、送信中かどうかの控え。
     /// 変更が短時間に重なっても、古い内容の送信が新しい内容を
     /// 上書きしないよう、送信は1つずつ順番に行う。
-    /// 送信待ちには、変更が起きた時点の認証の世代と同期の世代も
-    /// 持たせる。認証の世代が今と違う送信待ちは、前のログインの
-    /// 変更なので送らない。同期の世代が違う送信待ちは、同期の
-    /// オン・オフが切り替わる前の変更なので送らない (同期を切った
-    /// 後に待ち分が送られたり、入れ直したときに前の待ち分が
-    /// 復活したりしないため)。
-    private var pendingSave: (settings: SyncedClientSettings, generation: Int, syncGeneration: Int)?
+    /// 送信待ちには、編集の前後の値 (差分の元と先) と、変更が起きた
+    /// 時点の認証の世代と同期の世代を持たせる。保存のときは、編集の
+    /// 前後で変わった項目だけを、直前に取得した最新のサーバー値へ
+    /// 適用する。触っていない項目は最新の値のまま残るため、他の
+    /// 端末がその間に追加・変更した内容が、無関係な保存で消えたり、
+    /// 向こうで消したものがこちらから復活したりしない。
+    /// 認証の世代が今と違う送信待ちは、前のログインの変更なので
+    /// 送らない。同期の世代が違う送信待ちは、同期のオン・オフが
+    /// 切り替わる前の変更なので送らない (同期を切った後に待ち分が
+    /// 送られたり、入れ直したときに前の待ち分が復活したりしないため)。
+    private struct PendingSave {
+        /// 通し番号。送り直しの待ちの間に、新しい変更に置き換わった
+        /// かどうかの判定に使う。
+        let id: Int
+        /// 編集が起きる直前の値 (差分の元)。
+        let base: SyncedClientSettings
+        /// 編集後の値 (差分の先)。
+        let desired: SyncedClientSettings
+        /// 変更が起きた時点の認証の世代。
+        let generation: Int
+        /// 変更が起きた時点の同期の世代。
+        let syncGeneration: Int
+    }
+
+    private var pendingSave: PendingSave?
+    /// 送信待ちの通し番号の払い出し用。
+    private var pendingSaveSequence = 0
     private var isSaving = false
     /// 送信に続けて失敗した回数 (自動で試し直す回数の上限に使う)。
     private var consecutiveSaveFailures = 0
-
-    /// 利用者が字幕フォントを自分で選び直したかどうか。
-    /// サーバー側にアプリが知らない名前のフォントがあるときは、
-    /// 利用者が明示的に選び直した場合だけ送る値で置き換える
-    /// (保存のたびに、知らないフォントが端末側の値で消えないため)。
-    /// 判定は保存の直前に取得した最新のサーバー値に対して行う。
-    private var captionFontEditedByUser = false
 
     /// 取り込みの通し番号。取り込みが重なったとき、遅れて届いた
     /// 古い応答が、新しい応答で取り込んだ値を上書きしないために使う。
@@ -274,19 +287,13 @@ final class SyncedSettingsStore {
     /// 送らないため)。
     func reloadFromLocalAfterLogout() {
         pendingSave = nil
-        captionFontEditedByUser = false
         current = Self.loadFromLocal()
     }
 
     /// 値を差し替える。端末内の控えへはその場で書き、同期が効いている
     /// ときはサーバーへも送る (送信は裏で行い、失敗しても握りつぶす)。
     func update(_ settings: SyncedClientSettings) {
-        // 利用者が字幕フォントを選び直したら、その印を立てる
-        // (サーバー側の知らない名前のフォントを、保存時に置き換えて
-        // よいのはこの場合だけ)。
-        if settings.captionFont != current.captionFont {
-            captionFontEditedByUser = true
-        }
+        let previous = current
         current = settings
         saveToLocal(settings)
         guard Self.isSyncEnabled else { return }
@@ -294,8 +301,23 @@ final class SyncedSettingsStore {
         // 共有の順番待ちの実行時点で読むと、待ちの間にログインが
         // 切り替わったときに、前のログインの変更を次のログインの
         // 世代として扱ってしまうため。
-        pendingSave = (settings, SettingsStore.shared.authGeneration,
-                       SettingsStore.shared.syncGeneration)
+        let generation = SettingsStore.shared.authGeneration
+        let syncGeneration = SettingsStore.shared.syncGeneration
+        pendingSaveSequence += 1
+        // まだ送れていない変更が残っていれば、差分の元はその変更の
+        // 直前の値のまま引き継ぐ (間の編集も含めた差分にするため)。
+        // 世代の違う残りは前の状態のものなので引き継がない。
+        let base: SyncedClientSettings
+        if let pending = pendingSave,
+           pending.generation == generation,
+           pending.syncGeneration == syncGeneration {
+            base = pending.base
+        } else {
+            base = previous
+        }
+        pendingSave = PendingSave(
+            id: pendingSaveSequence, base: base, desired: settings,
+            generation: generation, syncGeneration: syncGeneration)
         guard !isSaving else { return }
         isSaving = true
         consecutiveSaveFailures = 0
@@ -317,7 +339,8 @@ final class SyncedSettingsStore {
             guard item.generation == SettingsStore.shared.authGeneration,
                   item.syncGeneration == SettingsStore.shared.syncGeneration
             else { continue }
-            if await saveToServer(item.settings, expectedGeneration: item.generation,
+            if await saveToServer(base: item.base, desired: item.desired,
+                                  expectedGeneration: item.generation,
                                   expectedSyncGeneration: item.syncGeneration) {
                 consecutiveSaveFailures = 0
                 continue
@@ -326,13 +349,13 @@ final class SyncedSettingsStore {
             // 前のログインのものなので戻さない。
             guard SettingsStore.shared.authGeneration == item.generation else { continue }
             // 同期が切り替わって無効になった変更も戻さない。戻すと、
-            // 送り直しの待ち時間 (15秒) を無効な分が占有して、
-            // 新しい保存がその間ずっと待たされてしまうため。
+            // 送り直しの待ち時間を無効な分が占有して、新しい保存が
+            // その間ずっと待たされてしまうため。
             guard item.syncGeneration == SettingsStore.shared.syncGeneration,
                   Self.isSyncEnabled else { continue }
-            // その間に新しい変更が来ていたら、そちらが最新 (設定は
-            // 一式の控えなので、新しい分に失敗した分の変更も含まれる)
-            // ため、古い分は戻さず、新しい分を続けて送る。
+            // その間に新しい変更が来ていたら、そちらが最新 (差分の
+            // 元は引き継がれているため、新しい分に失敗した分の変更も
+            // 含まれる) ため、古い分は戻さず、新しい分を続けて送る。
             guard pendingSave == nil else { continue }
             pendingSave = item
             consecutiveSaveFailures += 1
@@ -342,24 +365,30 @@ final class SyncedSettingsStore {
                 continue
             }
             // 少し間を置いてから試し直す (通信が戻るのを待つ)。
-            // 待つ間も係は続ける。途中で別のログインの変更が来たら、
-            // 次の周でそちらが扱われる。
-            try? await Task.sleep(nanoseconds: 15_000_000_000)
-            // 待っている間にログアウトされていたり、同期が切り替わって
-            // この分が無効になっていたら、送信待ちを取り下げて係を
-            // 終える (同期が切れている間に来た変更は、待ちに残って
-            // いないため、ここには来ない)。
-            guard Self.isSyncEnabled,
-                  SettingsStore.shared.syncGeneration == item.syncGeneration else {
-                if pendingSave?.generation == item.generation,
-                   pendingSave?.syncGeneration == item.syncGeneration {
-                    pendingSave = nil
-                }
-                break
-            }
+            // 待ちは取り消せる形にし、待っている間に新しい変更が
+            // 来たり、状態が変わったりしたら、待ちを打ち切って
+            // 次の周で新しい状態に合わせて扱う (状態が変わっても
+            // 待ちが終わるまで新しい保存が始まらない、ということが
+            // ないようにするため)。
+            await waitBeforeRetry(of: item)
         }
         isSaving = false
         restartDrainIfNeeded()
+    }
+
+    /// 送り直しまでの待ち (最長15秒)。細切れに眠り、そのたびに
+    /// 状態を確かめる。待ちの対象が新しい変更に置き換わっていたり、
+    /// ログインや同期の状態が変わっていたりしたら、すぐに起きて
+    /// 呼び出し側の次の周に任せる。
+    private func waitBeforeRetry(of item: PendingSave) async {
+        // 15秒を 0.2秒 × 75回に分ける。
+        for _ in 0..<75 {
+            if pendingSave?.id != item.id { return }
+            if SettingsStore.shared.authGeneration != item.generation { return }
+            if SettingsStore.shared.syncGeneration != item.syncGeneration { return }
+            if !Self.isSyncEnabled { return }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
     }
 
     /// 送る係を終えるときの後始末。終わる間際に今のログインの
@@ -596,25 +625,26 @@ final class SyncedSettingsStore {
     /// 世代は呼び出し側が変更の時点で確定させたものを受け取る
     /// (順番待ちの実行時点で読み直さない)。
     private func saveToServer(
-        _ settings: SyncedClientSettings, expectedGeneration: Int,
-        expectedSyncGeneration: Int
+        base: SyncedClientSettings, desired: SyncedClientSettings,
+        expectedGeneration: Int, expectedSyncGeneration: Int
     ) async -> Bool {
         let box = BoolResultBox()
         await ClientSettingsSaveQueue.shared.run {
             box.value = await self.saveToServerSerial(
-                settings, expectedGeneration: expectedGeneration,
+                base: base, desired: desired, expectedGeneration: expectedGeneration,
                 expectedSyncGeneration: expectedSyncGeneration)
         }
         return box.value
     }
 
     /// 変更をサーバーへ送る本体。手順は番組表・視聴履歴と同じ:
-    /// 送る直前に最新を取得 → この設定一式の項目だけ差し替え →
-    /// last_synced_at を今に更新して送る。422 (その間に他の端末が先に
-    /// 更新した) が返ったら、1回だけ取り直してやり直す。
+    /// 送る直前に最新を取得 → 編集で変わった項目だけを最新の値へ
+    /// 適用する → last_synced_at を今に更新して送る。422 (その間に
+    /// 他の端末が先に更新した) が返ったら、1回だけ取り直して、
+    /// 同じ差分を新しい最新へ適用し直す。
     private func saveToServerSerial(
-        _ settings: SyncedClientSettings, expectedGeneration: Int,
-        expectedSyncGeneration: Int
+        base: SyncedClientSettings, desired: SyncedClientSettings,
+        expectedGeneration: Int, expectedSyncGeneration: Int
     ) async -> Bool {
         // 照合は、変更が起きた時点の世代で行う。順番待ちの間に
         // ログインし直していたら、取得は前のログイン・送信は
@@ -633,65 +663,10 @@ final class SyncedSettingsStore {
                       SettingsStore.shared.syncGeneration == expectedSyncGeneration,
                       SettingsStore.shared.syncSettings,
                       SettingsStore.shared.isLoggedIn else { return false }
-                // 字幕フォント：サーバー側の値がアプリの知らない名前で、
-                // 利用者が自分で選び直してもいないときは、そのまま
-                // 残す (無関係な設定の保存で、他の端末が入れたフォントが
-                // 端末側の値に置き換わって消えないため)。利用者が
-                // 選び直したときだけ、送る値で置き換える。
-                if let latestFont = clientSettings["caption_font"] as? String,
-                   !SyncedClientSettings.captionFontOptions.contains(where: { $0.value == latestFont }),
-                   !captionFontEditedByUser {
-                    // 取得した値が既に入っているので、何もしない。
-                } else {
-                    clientSettings["caption_font"] = settings.captionFont
-                }
-                clientSettings["always_border_caption_text"] = settings.alwaysBorderCaptionText
-                clientSettings["specify_caption_opacity"] = settings.specifyCaptionOpacity
-                clientSettings["caption_opacity"] = settings.captionOpacity
-                clientSettings["tv_show_superimpose"] = settings.tvShowSuperimpose
-                clientSettings["video_show_superimpose"] = settings.videoShowSuperimpose
-                clientSettings["comment_speed_rate"] = settings.commentSpeedRate
-                clientSettings["comment_font_size"] = settings.commentFontSize
-                clientSettings["prefer_posting_to_nicolive"] = settings.preferPostingToNicolive
-                clientSettings["close_comment_form_after_sending"] =
-                    settings.closeCommentFormAfterSending
-                clientSettings["mute_big_size_comments"] = settings.muteBigSizeComments
-                clientSettings["mute_fixed_comments"] = settings.muteFixedComments
-                clientSettings["mute_colored_comments"] = settings.muteColoredComments
-                clientSettings["mute_consecutive_same_characters_comments"] =
-                    settings.muteConsecutiveSameCharactersComments
-                clientSettings["mute_comment_keywords_normalize_alphanumeric_width_case"] =
-                    settings.muteCommentKeywordsNormalize
-                // 配列の項目は、以前に取得した控えではなく、いま取得した
-                // 最新のサーバー値を土台に差し替える。形の違う要素は
-                // そのまま残し、利用者が消した既知の要素は落とし、
-                // 利用者が足した要素だけを加える (他の端末が保存の
-                // 直前に追加した、形の違う登録が消えないため)。
-                clientSettings["muted_comment_keywords"] = Self.mergedKeywordEntries(
-                    latest: clientSettings["muted_comment_keywords"],
-                    desired: settings.mutedCommentKeywords)
-                clientSettings["muted_niconico_user_ids"] = Self.mergedStringEntries(
-                    latest: clientSettings["muted_niconico_user_ids"],
-                    desired: settings.mutedNiconicoUserIDs)
-                clientSettings["video_watched_history_max_count"] = settings.videoWatchedHistoryMaxCount
-                clientSettings["video_panel_active_tab"] = settings.videoPanelActiveTab
-                clientSettings["tv_panel_active_tab"] = settings.tvPanelActiveTab
-                clientSettings["tv_channel_sort_by_jikkyo_force"] = settings.tvChannelSortByJikkyoForce
-                clientSettings["use_28hour_clock"] = settings.use28HourClock
-                clientSettings["show_original_broadcast_time_during_playback"] =
-                    settings.showOriginalBroadcastTimeDuringPlayback
-                clientSettings["pinned_channel_ids"] = settings.pinnedChannelIDs
-                clientSettings["mylist"] = Self.mergedMylistEntries(
-                    latest: clientSettings["mylist"], desired: settings.mylist)
+                Self.applyEdits(base: base, desired: desired, to: &clientSettings)
                 clientSettings["last_synced_at"] = Date().timeIntervalSince1970
                 try await APIClient.shared.updateClientSettings(
                     clientSettings, expectedAuthGeneration: generation)
-                // 送れたら、フォントの「利用者が選び直した」印は下ろす
-                // (より新しい編集が控えているときは、その編集の印を
-                // 消さないよう、送った値と現在の値が同じときだけ)。
-                if settings.captionFont == current.captionFont {
-                    captionFontEditedByUser = false
-                }
                 return true
             } catch let APIError.badStatus(code) where code == 422 {
                 continue  // 取り直して1回だけやり直す。
@@ -702,18 +677,121 @@ final class SyncedSettingsStore {
         return false
     }
 
-    /// ミュートキーワードの配列を、最新のサーバー値を土台に組み直す。
-    /// 形の違う要素 (辞書でない・キーワードが空など) はそのまま残す。
-    /// 読み解ける要素は、利用者の一覧にあるものだけをサーバー側の
-    /// 形のまま残し、一覧に無いものは利用者が消したものとして落とす。
-    /// 利用者の一覧にあってサーバー側に無いものは、末尾に足す。
+    /// 編集の前後で変わった項目だけを、取得した最新のサーバー値へ
+    /// 適用する。変わっていない項目は最新の値のまま触らない。
+    /// 字幕フォントも同じ扱いで、利用者が選び直したときだけ送る値で
+    /// 置き換えるため、サーバー側にあるアプリの知らない名前の
+    /// フォントが、無関係な保存で消えることはない。
+    private static func applyEdits(
+        base: SyncedClientSettings, desired: SyncedClientSettings,
+        to clientSettings: inout [String: Any]
+    ) {
+        if base.captionFont != desired.captionFont {
+            clientSettings["caption_font"] = desired.captionFont
+        }
+        if base.alwaysBorderCaptionText != desired.alwaysBorderCaptionText {
+            clientSettings["always_border_caption_text"] = desired.alwaysBorderCaptionText
+        }
+        if base.specifyCaptionOpacity != desired.specifyCaptionOpacity {
+            clientSettings["specify_caption_opacity"] = desired.specifyCaptionOpacity
+        }
+        if base.captionOpacity != desired.captionOpacity {
+            clientSettings["caption_opacity"] = desired.captionOpacity
+        }
+        if base.tvShowSuperimpose != desired.tvShowSuperimpose {
+            clientSettings["tv_show_superimpose"] = desired.tvShowSuperimpose
+        }
+        if base.videoShowSuperimpose != desired.videoShowSuperimpose {
+            clientSettings["video_show_superimpose"] = desired.videoShowSuperimpose
+        }
+        if base.commentSpeedRate != desired.commentSpeedRate {
+            clientSettings["comment_speed_rate"] = desired.commentSpeedRate
+        }
+        if base.commentFontSize != desired.commentFontSize {
+            clientSettings["comment_font_size"] = desired.commentFontSize
+        }
+        if base.preferPostingToNicolive != desired.preferPostingToNicolive {
+            clientSettings["prefer_posting_to_nicolive"] = desired.preferPostingToNicolive
+        }
+        if base.closeCommentFormAfterSending != desired.closeCommentFormAfterSending {
+            clientSettings["close_comment_form_after_sending"] =
+                desired.closeCommentFormAfterSending
+        }
+        if base.muteBigSizeComments != desired.muteBigSizeComments {
+            clientSettings["mute_big_size_comments"] = desired.muteBigSizeComments
+        }
+        if base.muteFixedComments != desired.muteFixedComments {
+            clientSettings["mute_fixed_comments"] = desired.muteFixedComments
+        }
+        if base.muteColoredComments != desired.muteColoredComments {
+            clientSettings["mute_colored_comments"] = desired.muteColoredComments
+        }
+        if base.muteConsecutiveSameCharactersComments
+            != desired.muteConsecutiveSameCharactersComments {
+            clientSettings["mute_consecutive_same_characters_comments"] =
+                desired.muteConsecutiveSameCharactersComments
+        }
+        if base.muteCommentKeywordsNormalize != desired.muteCommentKeywordsNormalize {
+            clientSettings["mute_comment_keywords_normalize_alphanumeric_width_case"] =
+                desired.muteCommentKeywordsNormalize
+        }
+        if base.mutedCommentKeywords != desired.mutedCommentKeywords {
+            clientSettings["muted_comment_keywords"] = mergedKeywordEntries(
+                latest: clientSettings["muted_comment_keywords"],
+                base: base.mutedCommentKeywords, desired: desired.mutedCommentKeywords)
+        }
+        if base.mutedNiconicoUserIDs != desired.mutedNiconicoUserIDs {
+            clientSettings["muted_niconico_user_ids"] = mergedStringEntries(
+                latest: clientSettings["muted_niconico_user_ids"],
+                base: base.mutedNiconicoUserIDs, desired: desired.mutedNiconicoUserIDs)
+        }
+        if base.videoWatchedHistoryMaxCount != desired.videoWatchedHistoryMaxCount {
+            clientSettings["video_watched_history_max_count"] =
+                desired.videoWatchedHistoryMaxCount
+        }
+        if base.videoPanelActiveTab != desired.videoPanelActiveTab {
+            clientSettings["video_panel_active_tab"] = desired.videoPanelActiveTab
+        }
+        if base.tvPanelActiveTab != desired.tvPanelActiveTab {
+            clientSettings["tv_panel_active_tab"] = desired.tvPanelActiveTab
+        }
+        if base.tvChannelSortByJikkyoForce != desired.tvChannelSortByJikkyoForce {
+            clientSettings["tv_channel_sort_by_jikkyo_force"] = desired.tvChannelSortByJikkyoForce
+        }
+        if base.use28HourClock != desired.use28HourClock {
+            clientSettings["use_28hour_clock"] = desired.use28HourClock
+        }
+        if base.showOriginalBroadcastTimeDuringPlayback
+            != desired.showOriginalBroadcastTimeDuringPlayback {
+            clientSettings["show_original_broadcast_time_during_playback"] =
+                desired.showOriginalBroadcastTimeDuringPlayback
+        }
+        if base.pinnedChannelIDs != desired.pinnedChannelIDs {
+            clientSettings["pinned_channel_ids"] = mergedPinnedChannelIDs(
+                latest: clientSettings["pinned_channel_ids"],
+                base: base.pinnedChannelIDs, desired: desired.pinnedChannelIDs)
+        }
+        if base.mylist != desired.mylist {
+            clientSettings["mylist"] = mergedMylistEntries(
+                latest: clientSettings["mylist"],
+                base: base.mylist, desired: desired.mylist)
+        }
+    }
+
+    /// ミュートキーワードの配列へ、編集の差分 (追加と削除) だけを
+    /// 適用する。土台は最新のサーバー値で、利用者がこの端末で
+    /// 消した要素だけを落とし、足した要素だけを末尾に加える。
+    /// 編集に含まれない要素 (他の端末が足した正常な形の要素も、
+    /// 形の違う要素も) はそのまま残る。
     private static func mergedKeywordEntries(
-        latest: Any?, desired: [MutedCommentKeyword]
+        latest: Any?, base: [MutedCommentKeyword], desired: [MutedCommentKeyword]
     ) -> [Any] {
         func key(match: String, pattern: String) -> String { match + "\u{1}" + pattern }
+        let baseKeys = Set(base.map { key(match: $0.match, pattern: $0.pattern) })
         let desiredKeys = Set(desired.map { key(match: $0.match, pattern: $0.pattern) })
+        let removedKeys = baseKeys.subtracting(desiredKeys)
         var result: [Any] = []
-        var seen = Set<String>()
+        var presentKeys = Set<String>()
         if let rawEntries = latest as? [Any] {
             for raw in rawEntries {
                 guard let entry = raw as? [String: Any],
@@ -724,30 +802,32 @@ final class SyncedSettingsStore {
                 }
                 let entryKey = key(match: entry["match"] as? String ?? "partial",
                                    pattern: pattern)
-                if desiredKeys.contains(entryKey) {
-                    result.append(raw)
-                    seen.insert(entryKey)
-                }
+                if removedKeys.contains(entryKey) { continue }
+                result.append(raw)
+                presentKeys.insert(entryKey)
             }
         }
         for keyword in desired
-        where !seen.contains(key(match: keyword.match, pattern: keyword.pattern)) {
+        where !baseKeys.contains(key(match: keyword.match, pattern: keyword.pattern))
+            && !presentKeys.contains(key(match: keyword.match, pattern: keyword.pattern)) {
             result.append(["match": keyword.match, "pattern": keyword.pattern] as [String: Any])
         }
         return result
     }
 
-    /// マイリストの配列を、最新のサーバー値を土台に組み直す。
+    /// マイリストの配列へ、編集の差分だけを適用する。
     /// キーワードと同じ考え方で、照合の鍵は種類と番号の組。
-    /// 読み解ける要素のうち利用者の一覧に無いものは、利用者が
-    /// 消したものとして落とす (消した登録が復活しないため)。
+    /// 利用者がこの端末で消した登録は復活せず、他の端末が足した
+    /// 登録は消えない。
     private static func mergedMylistEntries(
-        latest: Any?, desired: [MylistEntry]
+        latest: Any?, base: [MylistEntry], desired: [MylistEntry]
     ) -> [Any] {
         func key(type: String, id: Int) -> String { type + "#" + String(id) }
+        let baseKeys = Set(base.map { key(type: $0.type, id: $0.id) })
         let desiredKeys = Set(desired.map { key(type: $0.type, id: $0.id) })
+        let removedKeys = baseKeys.subtracting(desiredKeys)
         var result: [Any] = []
-        var seen = Set<String>()
+        var presentKeys = Set<String>()
         if let rawEntries = latest as? [Any] {
             for raw in rawEntries {
                 guard let entry = raw as? [String: Any],
@@ -757,28 +837,69 @@ final class SyncedSettingsStore {
                     continue
                 }
                 let entryKey = key(type: parsed.type, id: parsed.id)
-                if desiredKeys.contains(entryKey) {
-                    result.append(raw)
-                    seen.insert(entryKey)
-                }
+                if removedKeys.contains(entryKey) { continue }
+                result.append(raw)
+                presentKeys.insert(entryKey)
             }
         }
-        for entry in desired where !seen.contains(key(type: entry.type, id: entry.id)) {
+        for entry in desired
+        where !baseKeys.contains(key(type: entry.type, id: entry.id))
+            && !presentKeys.contains(key(type: entry.type, id: entry.id)) {
             result.append(entry.dictionary as Any)
         }
         return result
     }
 
-    /// 文字列の配列 (ミュートするユーザー ID) を、最新のサーバー値を
-    /// 土台に組み直す。文字列でない要素はそのまま残す。
-    private static func mergedStringEntries(latest: Any?, desired: [String]) -> [Any] {
-        guard let rawEntries = latest as? [Any] else { return desired }
-        var result: [Any] = rawEntries.filter { raw in
-            guard let value = raw as? String else { return true }
-            return desired.contains(value)
+    /// 文字列の配列 (ミュートするユーザー ID) へ、編集の差分だけを
+    /// 適用する。文字列でない要素はそのまま残す。
+    private static func mergedStringEntries(
+        latest: Any?, base: [String], desired: [String]
+    ) -> [Any] {
+        let removed = Set(base).subtracting(Set(desired))
+        var result: [Any] = []
+        var present = Set<String>()
+        if let rawEntries = latest as? [Any] {
+            for raw in rawEntries {
+                guard let value = raw as? String else {
+                    result.append(raw)
+                    continue
+                }
+                if removed.contains(value) { continue }
+                result.append(raw)
+                present.insert(value)
+            }
         }
-        for value in desired
-        where !rawEntries.contains(where: { ($0 as? String) == value }) {
+        for value in desired where !base.contains(value) && !present.contains(value) {
+            result.append(value)
+        }
+        return result
+    }
+
+    /// ピン留めチャンネルの配列へ、編集の差分だけを適用する。
+    /// 追加と削除だけの編集は、最新の並びを土台に差分を適用する。
+    /// 要素の顔ぶれが同じで並びだけが変わった編集 (並び替え) は、
+    /// 差分では表せないため、利用者の並びそのもので置き換える。
+    private static func mergedPinnedChannelIDs(
+        latest: Any?, base: [String], desired: [String]
+    ) -> [Any] {
+        if Set(base) == Set(desired) {
+            return desired
+        }
+        let removed = Set(base).subtracting(Set(desired))
+        var result: [Any] = []
+        var present = Set<String>()
+        if let rawEntries = latest as? [Any] {
+            for raw in rawEntries {
+                guard let value = raw as? String else {
+                    result.append(raw)
+                    continue
+                }
+                if removed.contains(value) { continue }
+                result.append(raw)
+                present.insert(value)
+            }
+        }
+        for value in desired where !base.contains(value) && !present.contains(value) {
             result.append(value)
         }
         return result

@@ -368,12 +368,20 @@ final class SettingsStore {
 
     var rawURLString: String {
         get { defaults.string(forKey: Key.url) ?? "" }
-        set { defaults.set(newValue, forKey: Key.url) }
+        set {
+            let oldValue = defaults.string(forKey: Key.url) ?? ""
+            defaults.set(newValue, forKey: Key.url)
+            if newValue != oldValue { noteAuthConfigChanged() }
+        }
     }
 
     var cfClientID: String {
         get { defaults.string(forKey: Key.cfClientID) ?? "" }
-        set { defaults.set(newValue, forKey: Key.cfClientID) }
+        set {
+            let oldValue = defaults.string(forKey: Key.cfClientID) ?? ""
+            defaults.set(newValue, forKey: Key.cfClientID)
+            if newValue != oldValue { noteAuthConfigChanged() }
+        }
     }
 
     /// Cloudflare Access の秘密の値。他の合言葉と同じく
@@ -385,7 +393,11 @@ final class SettingsStore {
             migrateCFClientSecretToKeychainIfNeeded()
             return KeychainStore.string(forKey: KeychainKey.cfClientSecret) ?? ""
         }
-        set { KeychainStore.setString(newValue, forKey: KeychainKey.cfClientSecret) }
+        set {
+            let oldValue = KeychainStore.string(forKey: KeychainKey.cfClientSecret) ?? ""
+            KeychainStore.setString(newValue, forKey: KeychainKey.cfClientSecret)
+            if newValue != oldValue { noteAuthConfigChanged() }
+        }
     }
 
     /// 旧「既定の画質」(仮版までの単一の画質設定)。正式な設定への引き継ぎ元
@@ -1064,6 +1076,21 @@ final class SettingsStore {
     /// 送信は新アカウント、という取り違えを防ぐ)。
     private(set) var authGeneration = 0
 
+    /// 接続先と、その手前の認証まわりの設定の世代。接続先・認証方式・
+    /// 資格情報・証明書・合言葉・ブラウザでログインの Cookie のどれかが
+    /// 変わるたびに進む。アプリ内の中継が、元のサーバーへの接続の
+    /// 使い回しを続けてよいかの判定に使う (認証が変わったら、古い
+    /// 認証のまま張られた接続を使い回さないため)。
+    /// 世代はただの通し番号で、秘密の値そのものは含まない (目印に
+    /// 秘密の値を混ぜないため)。
+    private(set) var authConfigGeneration = 0
+
+    /// 接続先・認証まわりの設定が変わったことを記録する (世代を進める)。
+    /// 各設定の書き込み口から、値が実際に変わったときだけ呼ぶ。
+    private func noteAuthConfigChanged() {
+        authConfigGeneration += 1
+    }
+
     func saveLogin(username: String, password: String, token: String) {
         self.username = username
         self.password = password
@@ -1138,25 +1165,41 @@ final class SettingsStore {
                 || !cfClientSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             return hasAccessValues ? .cloudflareAccess : .none
         }
-        set { defaults.set(newValue.rawValue, forKey: Key.authMethod) }
+        set {
+            let oldValue = authMethod
+            defaults.set(newValue.rawValue, forKey: Key.authMethod)
+            if newValue != oldValue { noteAuthConfigChanged() }
+        }
     }
 
     /// Basic認証のユーザー名。
     var basicUsername: String {
         get { defaults.string(forKey: Key.basicUsername) ?? "" }
-        set { defaults.set(newValue, forKey: Key.basicUsername) }
+        set {
+            let oldValue = defaults.string(forKey: Key.basicUsername) ?? ""
+            defaults.set(newValue, forKey: Key.basicUsername)
+            if newValue != oldValue { noteAuthConfigChanged() }
+        }
     }
 
     /// Basic認証のパスワードはキーチェーンに保存する (UserDefaults には置かない)。
     var basicPassword: String {
         get { KeychainStore.string(forKey: KeychainKey.basicPassword) ?? "" }
-        set { KeychainStore.setString(newValue, forKey: KeychainKey.basicPassword) }
+        set {
+            let oldValue = KeychainStore.string(forKey: KeychainKey.basicPassword) ?? ""
+            KeychainStore.setString(newValue, forKey: KeychainKey.basicPassword)
+            if newValue != oldValue { noteAuthConfigChanged() }
+        }
     }
 
     /// Digest認証のユーザー名。
     var digestUsername: String {
         get { defaults.string(forKey: Key.digestUsername) ?? "" }
-        set { defaults.set(newValue, forKey: Key.digestUsername) }
+        set {
+            let oldValue = defaults.string(forKey: Key.digestUsername) ?? ""
+            defaults.set(newValue, forKey: Key.digestUsername)
+            if newValue != oldValue { noteAuthConfigChanged() }
+        }
     }
 
     /// Digest認証のパスワードはキーチェーンに保存する (UserDefaults には置かない)。
@@ -1164,7 +1207,11 @@ final class SettingsStore {
     /// ヘッダーとしては用意せず、応答は ServerAuthChallengeResponder が行う。
     var digestPassword: String {
         get { KeychainStore.string(forKey: KeychainKey.digestPassword) ?? "" }
-        set { KeychainStore.setString(newValue, forKey: KeychainKey.digestPassword) }
+        set {
+            let oldValue = KeychainStore.string(forKey: KeychainKey.digestPassword) ?? ""
+            KeychainStore.setString(newValue, forKey: KeychainKey.digestPassword)
+            if newValue != oldValue { noteAuthConfigChanged() }
+        }
     }
 
     // MARK: - ブラウザでログイン (Cookie の引き継ぎ)
@@ -1211,6 +1258,15 @@ final class SettingsStore {
             }
         }
         set {
+            // 並べた形の控え同士で比べ、実際に変わったときだけ
+            // 認証まわりの世代を進める (中継の接続の使い回しを
+            // 捨てる合図にするため)。
+            func signature(_ cookies: [HTTPCookie]) -> [String] {
+                cookies.map {
+                    "\($0.name)=\($0.value)@\($0.domain)\($0.path)"
+                }
+            }
+            let changed = signature(browserLoginCookies) != signature(newValue)
             let stored = newValue.map { cookie in
                 StoredCookie(name: cookie.name, value: cookie.value,
                              domain: cookie.domain, path: cookie.path,
@@ -1219,6 +1275,7 @@ final class SettingsStore {
             }
             let data = try? JSONEncoder().encode(stored)
             KeychainStore.setData(data, forKey: KeychainKey.browserLoginCookies)
+            if changed { noteAuthConfigChanged() }
         }
     }
 
@@ -1226,7 +1283,9 @@ final class SettingsStore {
 
     /// 取り込んだ Cookie を消す (ログアウトと、方式の変更のときに使う)。
     func clearBrowserLoginCookies() {
+        let hadCookies = hasBrowserLoginCookies
         KeychainStore.setData(nil, forKey: KeychainKey.browserLoginCookies)
+        if hadCookies { noteAuthConfigChanged() }
     }
 
     /// Cookie の送り先の絞り (path) が、送り先のパスに合うかどうか。
@@ -1332,11 +1391,15 @@ final class SettingsStore {
         cachedClientCertificate = material
         cachedClientCertificateHash = p12Data.hashValue
         clientCertificateLock.unlock()
+        // 証明書が入れ替わったので、認証まわりの世代を進める
+        // (古い証明書で張られた接続を使い回さないため)。
+        noteAuthConfigChanged()
         return true
     }
 
     /// 取り込んだ証明書を削除する。
     func removeClientCertificate() {
+        let hadCertificate = hasClientCertificate
         KeychainStore.setData(nil, forKey: KeychainKey.clientCertificateP12)
         KeychainStore.setString(nil, forKey: KeychainKey.clientCertificatePassphrase)
         clientCertificateLabel = ""
@@ -1344,6 +1407,7 @@ final class SettingsStore {
         cachedClientCertificate = nil
         cachedClientCertificateHash = nil
         clientCertificateLock.unlock()
+        if hadCertificate { noteAuthConfigChanged() }
     }
 
     private func clientCertificateMaterial() -> ClientCertificateMaterial? {
@@ -1372,24 +1436,40 @@ final class SettingsStore {
     /// 独自の合言葉ヘッダを見ている環境向けで、名前は自由に決められる。
     var customHeaderName1: String {
         get { defaults.string(forKey: Key.customHeaderName1) ?? "" }
-        set { defaults.set(newValue, forKey: Key.customHeaderName1) }
+        set {
+            let oldValue = defaults.string(forKey: Key.customHeaderName1) ?? ""
+            defaults.set(newValue, forKey: Key.customHeaderName1)
+            if newValue != oldValue { noteAuthConfigChanged() }
+        }
     }
 
     var customHeaderName2: String {
         get { defaults.string(forKey: Key.customHeaderName2) ?? "" }
-        set { defaults.set(newValue, forKey: Key.customHeaderName2) }
+        set {
+            let oldValue = defaults.string(forKey: Key.customHeaderName2) ?? ""
+            defaults.set(newValue, forKey: Key.customHeaderName2)
+            if newValue != oldValue { noteAuthConfigChanged() }
+        }
     }
 
     /// カスタムヘッダの値は合言葉なので、パスワードと同じく
     /// キーチェーンに保存する (UserDefaults には置かない)。
     var customHeaderValue1: String {
         get { KeychainStore.string(forKey: KeychainKey.customHeaderValue1) ?? "" }
-        set { KeychainStore.setString(newValue, forKey: KeychainKey.customHeaderValue1) }
+        set {
+            let oldValue = KeychainStore.string(forKey: KeychainKey.customHeaderValue1) ?? ""
+            KeychainStore.setString(newValue, forKey: KeychainKey.customHeaderValue1)
+            if newValue != oldValue { noteAuthConfigChanged() }
+        }
     }
 
     var customHeaderValue2: String {
         get { KeychainStore.string(forKey: KeychainKey.customHeaderValue2) ?? "" }
-        set { KeychainStore.setString(newValue, forKey: KeychainKey.customHeaderValue2) }
+        set {
+            let oldValue = KeychainStore.string(forKey: KeychainKey.customHeaderValue2) ?? ""
+            KeychainStore.setString(newValue, forKey: KeychainKey.customHeaderValue2)
+            if newValue != oldValue { noteAuthConfigChanged() }
+        }
     }
 
     // MARK: - URLパラメータ (合言葉)
@@ -1398,14 +1478,22 @@ final class SettingsStore {
     /// URL のパラメータを見て認証している環境向け。名前は端末に保存する。
     var urlParameterName: String {
         get { defaults.string(forKey: Key.urlParameterName) ?? "" }
-        set { defaults.set(newValue, forKey: Key.urlParameterName) }
+        set {
+            let oldValue = defaults.string(forKey: Key.urlParameterName) ?? ""
+            defaults.set(newValue, forKey: Key.urlParameterName)
+            if newValue != oldValue { noteAuthConfigChanged() }
+        }
     }
 
     /// 合言葉の値は、パスワードと同じくキーチェーンに保存する
     /// (UserDefaults には置かない)。
     var urlParameterValue: String {
         get { KeychainStore.string(forKey: KeychainKey.urlParameterValue) ?? "" }
-        set { KeychainStore.setString(newValue, forKey: KeychainKey.urlParameterValue) }
+        set {
+            let oldValue = KeychainStore.string(forKey: KeychainKey.urlParameterValue) ?? ""
+            KeychainStore.setString(newValue, forKey: KeychainKey.urlParameterValue)
+            if newValue != oldValue { noteAuthConfigChanged() }
+        }
     }
 
     /// 選ばれている方式が「URLパラメータ (合言葉)」のとき、接続先への

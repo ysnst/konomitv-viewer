@@ -209,6 +209,11 @@ final class PlayerViewController: UIViewController {
     /// 効かずに先頭から始まってしまったときの受け皿 (再生開始の合図で、
     /// 現在位置が控えと大きく違う場合だけ移る)。
     private var vlcPendingStartPosition: Double?
+    /// VLCKit 経路で、再生が始まる前に届いた開始位置の補正の保留分。
+    /// 準備が終わる前に位置を送っても再生部品に届かないことがある
+    /// ため、再生が始まった合図で効かせる。手動の移動・画質の
+    /// 切り替え・後片付けのときは破棄する。
+    private var vlcPendingStartCorrection: Double?
     /// VLCKit 経路で、開始の見張り用タイマー。一定時間たっても再生が
     /// 始まらなければ、真っ黒のまま無言にせず、その旨を表示する。
     private var vlcStartWatchdog: Timer?
@@ -626,8 +631,9 @@ final class PlayerViewController: UIViewController {
             }
             return
         }
+        let provisionalPosition = initialStartPosition()
         userSeekedSinceStart = false
-        startPlayback(at: initialStartPosition())
+        startPlayback(at: provisionalPosition)
         let startCount = startPlaybackCount
         Task { [weak self] in
             guard let self else { return }
@@ -639,10 +645,28 @@ final class PlayerViewController: UIViewController {
                   self.startPlaybackCount == startCount,
                   !self.userSeekedSinceStart else { return }
             let target = self.startPosition(savedPosition: saved)
-            let current = self.currentPosition()
-            guard current.isFinite, abs(target - current) > 5 else { return }
-            self.seek(to: target)
+            // 仮の開始位置と、確定した開始位置を比べる。今の再生位置と
+            // 比べると、応答が遅れた分だけ再生が進んだ状態と比べることに
+            // なり、開始位置が同じでも差が開いて、再生が巻き戻ってしまう
+            // (通信が遅いだけで起きる)。比べるのは位置同士にする。
+            guard abs(target - provisionalPosition) > 5 else { return }
+            self.applyStartPositionCorrection(target)
         }
+    }
+
+    /// 遅れて確定した開始位置への補正を効かせる。
+    /// VLCKit 経路で、再生部品の準備がまだ終わっていないときに位置を
+    /// 送っても、部品側に届かず補正が失われることがある。その場合は
+    /// 準備が終わるまで補正を保留し、再生が始まった合図で効かせる
+    /// (開始位置の指定と、こちらの補正で一元化する)。
+    private func applyStartPositionCorrection(_ target: Double) {
+#if canImport(MobileVLCKit)
+        if vlcPlayer != nil, !vlcDidStartPlaying {
+            vlcPendingStartCorrection = target
+            return
+        }
+#endif
+        seek(to: target)
     }
 
     /// 再生を始める位置を決める。
@@ -2264,6 +2288,9 @@ final class PlayerViewController: UIViewController {
         // 開始位置の控え (デリゲート側で、":start-time" の指定が効いて
         // いなかった場合の受け皿として使う)。
         vlcPendingStartPosition = seconds > 0 ? seconds : nil
+        // 前の再生で保留していた開始位置の補正は、新しい開始では
+        // 意味を持たないため破棄する。
+        vlcPendingStartCorrection = nil
         // 進み具合の見張りは 0.5 秒ごとのタイマーで行う
         // (AVPlayer の定期観測にあたる)。
         vlcTimeTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -2281,6 +2308,7 @@ final class PlayerViewController: UIViewController {
         vlcStartWatchdog?.invalidate()
         vlcStartWatchdog = nil
         vlcPendingStartPosition = nil
+        vlcPendingStartCorrection = nil
         vlcPlayer?.stop()
         vlcPlayer = nil
     }
@@ -3898,6 +3926,15 @@ extension PlayerViewController: VLCMediaPlayerDelegate {
                     // どおりここで移る。
                     if start > 0, abs(self.currentPosition() - start) > 3 {
                         self.seek(to: start)
+                    }
+                }
+                if let correction = self.vlcPendingStartCorrection {
+                    self.vlcPendingStartCorrection = nil
+                    // 保留していた開始位置の補正を、準備が終わった
+                    // ここで効かせる。保留の間に利用者が自分で位置を
+                    // 動かしていたら、その位置を優先して移らない。
+                    if !self.userSeekedSinceStart {
+                        self.seek(to: correction)
                     }
                 }
                 if let pending = self.pendingQualityWriteBack,

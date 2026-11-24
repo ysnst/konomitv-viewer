@@ -998,7 +998,16 @@ final class WatchedHistorySync {
     /// 案内や失敗の表示に分ける)。
     static func historyVideoIDs() async -> [Int]? {
         guard isEnabled else { return nil }
+        // 読み取りの開始時点の認証と同期の状態を控え、応答が返って
+        // きたときに照合する。取得の間に同期を切り替えたり、
+        // アカウントが変わったりしていたら、その応答は今の状態の
+        // ものではないため使わない (古い履歴が一覧に反映されないため)。
+        let authGenerationAtStart = SettingsStore.shared.authGeneration
+        let syncGenerationAtStart = SettingsStore.shared.syncGeneration
         guard let settings = try? await APIClient.shared.fetchClientSettings() else { return nil }
+        guard isEnabled,
+              SettingsStore.shared.authGeneration == authGenerationAtStart,
+              SettingsStore.shared.syncGeneration == syncGenerationAtStart else { return nil }
         let history = historyArray(in: settings)
         let sorted = history.sorted {
             (($0["updated_at"] as? NSNumber)?.doubleValue ?? 0)
@@ -1080,7 +1089,15 @@ final class WatchedHistorySync {
     /// (呼び出し側は今までの元データに落ちる)。
     static func lastPlaybackPosition(videoID: Int) async -> Double? {
         guard isEnabled else { return nil }
+        // 読み取りの開始時点の認証と同期の状態を控え、応答が返って
+        // きたときに照合する (historyVideoIDs と同じ理由。古い応答の
+        // 位置が、切り替え後の再生位置に反映されないため)。
+        let authGenerationAtStart = SettingsStore.shared.authGeneration
+        let syncGenerationAtStart = SettingsStore.shared.syncGeneration
         guard let settings = try? await APIClient.shared.fetchClientSettings() else { return nil }
+        guard isEnabled,
+              SettingsStore.shared.authGeneration == authGenerationAtStart,
+              SettingsStore.shared.syncGeneration == syncGenerationAtStart else { return nil }
         guard let index = entryIndex(in: settings, videoID: videoID) else { return nil }
         let history = historyArray(in: settings)
         return (history[index]["last_playback_position"] as? NSNumber)?.doubleValue

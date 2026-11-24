@@ -165,8 +165,11 @@ final class TimeTableSettingsStore {
     /// 持たせる。認証の世代が今と違う送信待ちは、前のログインの
     /// 変更なので送らない。同期の世代が違う送信待ちは、同期の
     /// オン・オフが切り替わる前の変更なので送らない (共通設定の
-    /// 同期と同じ扱い)。
-    private var pendingSave: (settings: TimeTableDisplaySettings, generation: Int, syncGeneration: Int)?
+    /// 同期と同じ扱い)。通し番号は、送り直しの待ちの間に新しい
+    /// 変更に置き換わったかどうかの判定に使う。
+    private var pendingSave: (id: Int, settings: TimeTableDisplaySettings, generation: Int, syncGeneration: Int)?
+    /// 送信待ちの通し番号の払い出し用。
+    private var pendingSaveSequence = 0
     private var isSaving = false
 
     /// 取り込みの通し番号。取り込みが重なったとき、遅れて届いた
@@ -192,7 +195,8 @@ final class TimeTableSettingsStore {
         saveToLocal(settings)
         guard Self.isSyncEnabled else { return }
         // 世代は変更が起きたこの時点で確定させる (設定の同期と同じ理由)。
-        pendingSave = (settings, SettingsStore.shared.authGeneration,
+        pendingSaveSequence += 1
+        pendingSave = (pendingSaveSequence, settings, SettingsStore.shared.authGeneration,
                        SettingsStore.shared.syncGeneration)
         consecutiveSaveFailures = 0
         guard !isSaving else { return }
@@ -246,24 +250,33 @@ final class TimeTableSettingsStore {
                 continue
             }
             // 少し間を置いてから送り直す (通信が戻るのを待つ)。
-            // 待つ間も係は続ける。途中で別のログインの変更が来たら、
-            // 次の周でそちらが扱われる (以前は、待つ間に来た新しい
-            // ログインの変更まで消してしまっていた)。
-            try? await Task.sleep(nanoseconds: 15_000_000_000)
-            // 待っている間にログアウトされていたり、同期が切り替わって
-            // この分が無効になっていたら、送信待ちを取り下げて係を
-            // 終える。
-            guard Self.isSyncEnabled,
-                  SettingsStore.shared.syncGeneration == item.syncGeneration else {
-                if pendingSave?.generation == item.generation,
-                   pendingSave?.syncGeneration == item.syncGeneration {
-                    pendingSave = nil
-                }
-                break
-            }
+            // 待ちは取り消せる形にし、待っている間に新しい変更が
+            // 来たり、状態が変わったりしたら、待ちを打ち切って
+            // 次の周で新しい状態に合わせて扱う (状態が変わっても
+            // 待ちが終わるまで新しい保存が始まらない、ということが
+            // ないようにするため。共通設定の同期と同じ扱い)。
+            // 無効になった分は、次の周の冒頭の照合で取り下げられる。
+            await waitBeforeRetry(of: item)
         }
         isSaving = false
         restartDrainIfNeeded()
+    }
+
+    /// 送り直しまでの待ち (最長15秒)。細切れに眠り、そのたびに
+    /// 状態を確かめる。待ちの対象が新しい変更に置き換わっていたり、
+    /// ログインや同期の状態が変わっていたりしたら、すぐに起きて
+    /// 呼び出し側の次の周に任せる。
+    private func waitBeforeRetry(
+        of item: (id: Int, settings: TimeTableDisplaySettings, generation: Int, syncGeneration: Int)
+    ) async {
+        // 15秒を 0.2秒 × 75回に分ける。
+        for _ in 0..<75 {
+            if pendingSave?.id != item.id { return }
+            if SettingsStore.shared.authGeneration != item.generation { return }
+            if SettingsStore.shared.syncGeneration != item.syncGeneration { return }
+            if !Self.isSyncEnabled { return }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
     }
 
     /// 送る係を終えるときの後始末。終わる間際に今のログインの
