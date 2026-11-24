@@ -106,6 +106,29 @@ jobs:
           ビルド日時 (日本時間): $(date '+%Y/%m/%d %H:%M')
           Actions 実行 ID: ${{ github.run_id }}
           実行ページ: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          # 変更履歴 (CHANGELOG.md) の一番新しい版の要約を、説明へ足す。
+          # 要約は、版の見出し (## 0.00) の直後から、詳しい一覧の見出し
+          # (### ...) の前まで。変更履歴が無い・要約が空のときは足さない。
+          if [ -f CHANGELOG.md ]; then
+            SUMMARY=$(awk '
+              /^## / { if (in_section) exit; in_section = 1; next }
+              in_section && /^### / { exit }
+              in_section { lines[++count] = $0 }
+              END {
+                while (count > 0 && lines[count] == "") count--
+                for (i = 1; i <= count; i++) print lines[i]
+              }
+            ' CHANGELOG.md)
+            if [ -n "$SUMMARY" ]; then
+              NOTES="$NOTES
+
+          この版の変更点:
+          $SUMMARY"
+            fi
+          fi
+          NOTES="$NOTES
+
+          変更履歴 (すべての版): ${{ github.server_url }}/${{ github.repository }}/blob/main/CHANGELOG.md"
           if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
             gh release edit "$RELEASE_TAG" --title "$TITLE" --notes "$NOTES" --prerelease
           else
