@@ -658,15 +658,18 @@ final class APIClient {
     }
 
     /// 既定の録画設定を取る (プリセットの id 0)。
-    /// プリセットが取れなかった場合は Web 版の既定値に落ちる (Web 版と同じ)。
-    func fetchDefaultRecordSettings() async -> RecordSettings {
-        guard let request = try? request(forPath: "/api/recording/presets"),
-              let (data, response) = try? await session.data(for: request),
-              let http = response as? HTTPURLResponse,
-              (200..<300).contains(http.statusCode),
-              let presets = try? JSONDecoder().decode(RecordSettingsPresetsResponse.self, from: data),
-              let preset = presets.presets.first(where: { $0.id == 0 }) else {
-            return .webDefault
+    /// 取れなかった場合は失敗として返す。アプリ内の既定値で代用すると、
+    /// 利用者の設定と違う保存先・優先度・録画方式で予約が作られてしまう
+    /// ため、呼び出し側は失敗したら予約自体を作らないこと。
+    /// プリセットの一覧は取れたが id 0 が無い場合も、代用できる設定が
+    /// 無いため失敗として扱う。
+    func fetchDefaultRecordSettings() async throws -> RecordSettings {
+        let request = try request(forPath: "/api/recording/presets")
+        let (data, response) = try await session.data(for: request)
+        try check(response)
+        let presets = try JSONDecoder().decode(RecordSettingsPresetsResponse.self, from: data)
+        guard let preset = presets.presets.first(where: { $0.id == 0 }) else {
+            throw APIError.invalidResponse
         }
         return preset.record_settings
     }

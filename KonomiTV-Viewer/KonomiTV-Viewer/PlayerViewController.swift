@@ -245,8 +245,11 @@ final class PlayerViewController: UIViewController {
     /// 「CM 区間の開始を跨いだ瞬間」だけを拾うため、シークしたときは
     /// 移動先の位置で上書きする (区間の真ん中へ移った直後は発動させない)。
     private var lastObservedPosition: Double = 0
-    /// 視聴進捗の報告用。最後にサーバーへ報告した位置と時刻。
+    /// 視聴進捗の報告用。サーバーへ報告できた位置と、最後に報告を
+    /// 試みた位置・時刻を分けて持つ。失敗した報告を「報告済み」に
+    /// してしまうと、その位置が二度と送られなくなるため。
     private var lastReportedPosition: Double = -1
+    private var lastReportAttemptPosition: Double = -1
     private var lastReportedAt: TimeInterval = 0
     /// 共通の視聴履歴 (利用者設定の watched_history) への書き戻し用。
     /// 再生を始めた時刻 (履歴への登録は30秒後、Web 版と同じ)、
@@ -255,6 +258,20 @@ final class PlayerViewController: UIViewController {
     private var lastHistorySyncAt: TimeInterval = 0
     private var historySyncInFlight = false
     private var historyRegistrationTimer: Timer?
+    /// 視聴履歴の書き戻しの世代。画面を離れるときの最後の保存で進め、
+    /// まだ送られていない古い定期保存を無効にする (古い位置が最後の
+    /// 位置を上書きしないため)。
+    private var historySyncEpoch = 0
+    /// 録画中かどうか (開いた時点の値から、録画の完了に合わせて更新する)。
+    /// 番組の控えは開いた時点のまま変わらないため、履歴の書き戻しや
+    /// ボタンの表示はこちらで判定する。
+    private var recordingInProgress = false
+    /// 再生の世代。画面を離れるたびに進め、離れる前に始めた非同期の
+    /// 処理が、戻ってきた後や別の再生へ影響しないようにする。
+    private var playbackGeneration = 0
+    /// 前の話・次の話への移動が進んでいるかどうか (連打で複数の
+    /// 再生画面が積まれないようにする)。
+    private var isNavigatingToEpisode = false
     /// 画面を離れる処理が済んだかどうか。開始位置の取得 (非同期) が
     /// 離れた後に返ってきた場合、再生を始め直さないための印。
     private var didLeaveScreen = false
@@ -512,6 +529,7 @@ final class PlayerViewController: UIViewController {
 
     init(program: RecordedProgram) {
         self.program = program
+        self.recordingInProgress = program.isRecording
         // 回線の区分はこの時点で決める。手動切り替えの記憶があればそれを
         // 優先し、無ければ現在の回線から決める (Web 版の優先順位と同じ)。
         // 画質はビデオ側のその区分の値から始める。
@@ -556,7 +574,7 @@ final class PlayerViewController: UIViewController {
         setupFastSeek()
         setupHighlightReel()
         // 録画中の番組は追いかけ再生として、先端追従を効かせる。
-        chaseFollowActive = program.isRecording
+        chaseFollowActive = recordingInProgress
         beginNowPlaying()
         resolveInitialStartPosition { [weak self] position in
             guard let self, !self.didLeaveScreen else { return }
@@ -1175,7 +1193,7 @@ final class PlayerViewController: UIViewController {
         updateMylistButtonTitle()
         watchedButton.setTitle("視聴済みにする", for: .normal)
         watchedButton.addTarget(self, action: #selector(markWatched), for: .touchUpInside)
-        watchedButton.isHidden = program.isRecording || (program.watched_ratio ?? 0) >= 1
+        watchedButton.isHidden = recordingInProgress || (program.watched_ratio ?? 0) >= 1
         // おやすみタイマー (Web 版パネルのボタンと同じ)。タイマーの絵つきで、
         // 文と色は状態に合わせて updateSleepTimerButton で合わせる。
         sleepTimerButton.setImage(
@@ -1990,7 +2008,7 @@ final class PlayerViewController: UIViewController {
     private func scheduleHistoryRegistration() {
         historyRegistrationTimer?.invalidate()
         historyRegistrationTimer = nil
-        guard WatchedHistorySync.isEnabled, !program.isRecording else { return }
+        guard WatchedHistorySync.isEnabled, !recordingInProgress else { return }
         historyRegistrationTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
             guard let self else { return }
             let current = currentPosition()
@@ -2050,7 +2068,11 @@ final class PlayerViewController: UIViewController {
         itemStatusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             guard item.status == .failed else { return }
             DispatchQueue.main.async {
-                self?.messageLabel.text = "再生を開始できませんでした。"
+                // 実行される時点で今の再生項目が別のものに替わっていたら、
+                // 古い項目の失敗を今の再生の失敗として表示しない。
+                guard let self, !self.didLeaveScreen,
+                      self.player?.currentItem === item else { return }
+                self.messageLabel.text = "再生を開始できませんでした。"
             }
         }
         if let player {
@@ -2252,6 +2274,25 @@ final class PlayerViewController: UIViewController {
     private func resumePlaybackAfterReturn() {
         commentOverlay.start()
         beginNowPlaying()
+        // 追いかけ再生の先端追従は、離れるときに止めている。戻ってきたら
+        // 最新の録画状態を取り直し、まだ録画中なら追従を復旧する。
+        // 離れている間に録画が終わっていたら、通常の録画へ移行する。
+        let generation = playbackGeneration
+        let videoID = program.id
+        Task { [weak self] in
+            guard let self,
+                  let latest = await APIClient.shared.fetchVideo(videoID: videoID),
+                  !self.didLeaveScreen, self.playbackGeneration == generation else { return }
+            if latest.isRecording {
+                if self.recordingInProgress {
+                    self.chaseFollowActive = true
+                    self.chaseLastStatusPollAt = Date().timeIntervalSince1970
+                    self.chaseStallSince = 0
+                }
+            } else if self.recordingInProgress {
+                self.handleRecordingFinished()
+            }
+        }
         startPlayback(at: positionBeforeLeave)
         if !wasPlayingBeforeLeave {
             pauseEngine()
@@ -2266,6 +2307,7 @@ final class PlayerViewController: UIViewController {
     }
 
     private func stopPlayback() {
+        playbackGeneration += 1
         commentOverlay.stop()
         cancelAutoplayCountdown()
         fastSeekBackController.invalidate()
@@ -2285,15 +2327,22 @@ final class PlayerViewController: UIViewController {
                 wasPlayingBeforeLeave = isCurrentlyPlaying()
             }
             if current.isFinite, current > lastReportedPosition {
-                lastReportedPosition = current
+                // 送れたときだけ「報告済みの位置」を進める。定期報告が
+                // 失敗していた場合も、ここで最後の位置が送り直される。
                 let videoID = program.id
-                Task {
-                    try? await APIClient.shared.reportWatched(videoID: videoID, position: current)
+                Task { [weak self] in
+                    if (try? await APIClient.shared.reportWatched(
+                        videoID: videoID, position: current)) != nil {
+                        self?.lastReportedPosition = max(self?.lastReportedPosition ?? -1, current)
+                    }
                 }
             }
             // 共通の視聴履歴にも最後の位置を書き戻す (Web 版が破棄時に
             // 履歴の位置を更新するのと同じ)。視聴状態への報告とは別系統。
-            if current.isFinite, WatchedHistorySync.isEnabled, !program.isRecording {
+            if current.isFinite, WatchedHistorySync.isEnabled, !recordingInProgress {
+                // まだ送られていない古い定期保存が、この最後の保存より
+                // 後から送られて上書きしないよう、世代を進めて無効にする。
+                historySyncEpoch += 1
                 let videoID = program.id
                 let registerIfNeeded = Date().timeIntervalSince1970 - playbackOpenedAt >= 30
                 Task {
@@ -2433,7 +2482,7 @@ final class PlayerViewController: UIViewController {
         }
         let duration = effectiveDuration
         let itemDuration = currentItemDurationSeconds
-        durationLabel.text = program.isRecording && !itemDuration.isFinite
+        durationLabel.text = recordingInProgress && !itemDuration.isFinite
             ? "録画中"
             : TimeFormat.hms(duration)
         bandView.duration = duration
@@ -2469,7 +2518,7 @@ final class PlayerViewController: UIViewController {
     /// 30秒より前は、履歴に項目がある場合だけ更新し、無い場合は
     /// 手順側で送らずに終わる。失敗しても再生は続ける (利用者には見せない)。
     private func syncWatchedHistoryIfNeeded(current: Double) {
-        guard WatchedHistorySync.isEnabled, !program.isRecording else { return }
+        guard WatchedHistorySync.isEnabled, !recordingInProgress else { return }
         guard isCurrentlyPlaying() else { return }
         let now = Date().timeIntervalSince1970
         guard now - lastHistorySyncAt >= 10 else { return }
@@ -2484,10 +2533,17 @@ final class PlayerViewController: UIViewController {
         historySyncInFlight = true
         lastHistorySyncAt = Date().timeIntervalSince1970
         let videoID = program.id
+        let epoch = historySyncEpoch
         Task { [weak self] in
-            await WatchedHistorySync.syncPosition(
-                videoID: videoID, position: current, registerIfNeeded: registerIfNeeded)
-            self?.historySyncInFlight = false
+            guard let self else { return }
+            // 画面を離れるときの最後の保存で世代が進んでいたら、この
+            // 古い位置の保存は送らない (保存自体は共通の順番待ちで
+            // 直列化されているが、順番待ちに入る前の取りこぼしを防ぐ)。
+            if self.historySyncEpoch == epoch {
+                await WatchedHistorySync.syncPosition(
+                    videoID: videoID, position: current, registerIfNeeded: registerIfNeeded)
+            }
+            self.historySyncInFlight = false
         }
     }
 
@@ -2496,15 +2552,19 @@ final class PlayerViewController: UIViewController {
     /// サーバーは到達した最大位置だけを残すので、戻し見をしても状態は後退しない。
     private func reportWatchedPositionIfNeeded(current: Double) {
         let now = Date().timeIntervalSince1970
-        let advanced = current - lastReportedPosition
+        let advanced = current - lastReportAttemptPosition
         let elapsed = now - lastReportedAt
         guard (advanced >= 10 && elapsed >= 5) || (advanced > 0 && elapsed >= 20) else { return }
-        lastReportedPosition = current
+        lastReportAttemptPosition = current
         lastReportedAt = now
         let videoID = program.id
-        Task {
-            // 報告の失敗は無視する (次回の報告で送り直される)。
-            try? await APIClient.shared.reportWatched(videoID: videoID, position: current)
+        Task { [weak self] in
+            // 送れたときだけ「報告済みの位置」を進める。失敗した位置は
+            // 報告済みにならないため、次回の報告や画面を離れるときの
+            // 最後の報告で送り直される。
+            if (try? await APIClient.shared.reportWatched(videoID: videoID, position: current)) != nil {
+                self?.lastReportedPosition = max(self?.lastReportedPosition ?? -1, current)
+            }
         }
     }
 
@@ -2600,13 +2660,26 @@ final class PlayerViewController: UIViewController {
     /// 指定した録画の再生画面へ移る。番組データを取り直してから開く
     /// (開き先でも前後の確認などが要るため)。
     private func navigateToEpisode(id: Int?) {
-        guard let id else { return }
+        guard let id, !isNavigatingToEpisode else { return }
+        // 移動が終わるまでは前後のボタンを押せないようにし、連打で
+        // 複数の再生画面が積まれないようにする。
+        isNavigatingToEpisode = true
+        prevEpisodeButton.isEnabled = false
+        nextEpisodeButton.isEnabled = false
+        let generation = playbackGeneration
         Task { [weak self] in
             guard let self else { return }
+            defer {
+                self.isNavigatingToEpisode = false
+                self.prevEpisodeButton.isEnabled = true
+                self.nextEpisodeButton.isEnabled = true
+            }
             if let target = await APIClient.shared.fetchVideo(videoID: id) {
+                // 取得の間に画面を離れていたら、古い画面からは移らない。
+                guard !self.didLeaveScreen, self.playbackGeneration == generation else { return }
                 self.navigationController?.pushViewController(
                     PlayerViewController(program: target), animated: true)
-            } else {
+            } else if !self.didLeaveScreen {
                 self.messageLabel.text = "番組を取得できませんでした。"
             }
         }
@@ -2723,7 +2796,9 @@ final class PlayerViewController: UIViewController {
                     self.showPlayerNotice("次回の放送が見つかりませんでした。")
                     return
                 }
-                let recordSettings = await APIClient.shared.fetchDefaultRecordSettings()
+                // 既定の録画設定が取れなかったら、代用の設定では作らず
+                // 失敗として知らせる (下の catch で表示される)。
+                let recordSettings = try await APIClient.shared.fetchDefaultRecordSettings()
                 try await APIClient.shared.addReservation(
                     programID: next.id, recordSettings: recordSettings)
                 if let start = next.startDate {
@@ -2751,7 +2826,15 @@ final class PlayerViewController: UIViewController {
         Task { [weak self] in
             guard let self else { return }
             defer { self.isCreatingSeries = false }
-            let recordSettings = await APIClient.shared.fetchDefaultRecordSettings()
+            let recordSettings: RecordSettings
+            do {
+                recordSettings = try await APIClient.shared.fetchDefaultRecordSettings()
+            } catch {
+                // 既定の録画設定が取れなかったら、代用の設定では
+                // 作らず、その旨を知らせて終わる。
+                self.showPlayerNotice("録画設定を取得できなかったため、シリーズ予約は作成していません。")
+                return
+            }
             let result = await ReservationConditions.addSeriesReservation(
                 title: source.title, seriesTitle: source.series_title,
                 networkID: source.network_id, serviceID: source.service_id,
@@ -2943,15 +3026,19 @@ final class PlayerViewController: UIViewController {
             return
         }
         guard AppEdition.episodeNavigationEnabled, let nextID = nextEpisodeID else { return }
+        let generation = playbackGeneration
         Task { [weak self] in
             guard let self else { return }
             guard let next = await APIClient.shared.fetchVideo(videoID: nextID) else { return }
+            // 取得の間に画面を離れていたら、数え下げを始めない。
+            guard !self.didLeaveScreen, self.playbackGeneration == generation else { return }
             self.startAutoplayCountdown(nextProgram: next)
         }
     }
 
     /// 次の話の自動再生の数え下げを始める (Web 版と同じ10秒)。
     private func startAutoplayCountdown(nextProgram: RecordedProgram) {
+        guard !didLeaveScreen else { return }
         autoplayNextProgram = nextProgram
         autoplayRemainingSeconds = 10
         autoplayTitleLabel.text = nextProgram.title
@@ -2960,7 +3047,7 @@ final class PlayerViewController: UIViewController {
         setControlsVisible(true)
         autoplayTimer?.invalidate()
         autoplayTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            guard let self else { return }
+            guard let self, !self.didLeaveScreen else { return }
             self.autoplayRemainingSeconds -= 1
             if self.autoplayRemainingSeconds <= 0 {
                 self.navigateToAutoplayNext()
@@ -2988,7 +3075,7 @@ final class PlayerViewController: UIViewController {
 
     /// 数え下げの終わり (または「今すぐ再生」) で、次の話の再生画面へ移る。
     private func navigateToAutoplayNext() {
-        guard let next = autoplayNextProgram else { return }
+        guard !didLeaveScreen, let next = autoplayNextProgram else { return }
         cancelAutoplayCountdown()
         navigationController?.pushViewController(
             PlayerViewController(program: next), animated: true)
@@ -3057,12 +3144,18 @@ final class PlayerViewController: UIViewController {
             updateReelBadge()
         } else {
             let nextID = next.videoID
+            let generation = playbackGeneration
             Task { [weak self] in
                 guard let self else { return }
                 if let nextProgram = await APIClient.shared.fetchVideo(videoID: nextID) {
+                    // 取得の間に画面を離れたり、横断再生が取り消されたり
+                    // していたら、古い画面からは次の録画を開かない。
+                    guard !self.didLeaveScreen, self.playbackGeneration == generation,
+                          self.reelActive,
+                          HighlightReelStore.shared.currentItem?.videoID == nextID else { return }
                     self.navigationController?.pushViewController(
                         PlayerViewController(program: nextProgram), animated: true)
-                } else {
+                } else if !self.didLeaveScreen {
                     // 取得に失敗したら、黙って区間が飛んだように見えない
                     // よう知らせる (順番はすでに次へ進んでいる)。
                     self.showPlayerNotice("次の録画を取り込めなかったため、その区間を飛ばしました")
@@ -3119,8 +3212,27 @@ final class PlayerViewController: UIViewController {
         Task { [weak self] in
             guard let self else { return }
             if let latest = await APIClient.shared.fetchVideo(videoID: videoID),
-               !latest.isRecording {
-                self.chaseFollowActive = false
+               !latest.isRecording, self.recordingInProgress {
+                self.handleRecordingFinished()
+            }
+        }
+    }
+
+    /// 録画が終わったときの移行を一か所にまとめる。先端追従をやめ、
+    /// 録画中かどうかで止めていた視聴履歴の書き戻しや登録を始め、
+    /// 「視聴済みにする」ボタンの表示も通常の録画に合わせる。
+    private func handleRecordingFinished() {
+        recordingInProgress = false
+        chaseFollowActive = false
+        watchedButton.isHidden = (program.watched_ratio ?? 0) >= 1
+        // 登録用のタイマーはここから30秒で仕掛け直す。すでに30秒以上
+        // 見ている場合は、定期の書き戻し側が登録も含めて行う。
+        scheduleHistoryRegistration()
+        if hasActiveEngine {
+            let current = currentPosition()
+            if current.isFinite {
+                runHistorySync(current: current,
+                               registerIfNeeded: Date().timeIntervalSince1970 - playbackOpenedAt >= 30)
             }
         }
     }
@@ -3630,12 +3742,15 @@ extension PlayerViewController: VLCMediaPlayerDelegate {
                     self.handlePlaybackEnded()
                 }
             } else if vlcPlayer.state == .error {
-                // 開始に失敗した (合言葉が通らない・サーバーに届かない等)。
-                // 真っ黒のまま無言にせず、その旨を表示する。
+                // 失敗の表示は、開始前と開始後で分ける。開始前は開始の
+                // 失敗として、開始後は途中で止まったこととして知らせる
+                // (真っ黒のまま無言にしない)。
                 self.vlcStartWatchdog?.invalidate()
                 self.vlcStartWatchdog = nil
                 if !self.vlcDidStartPlaying {
                     self.messageLabel.text = "再生を開始できませんでした。"
+                } else if !self.didLeaveScreen {
+                    self.messageLabel.text = "再生中にエラーが発生し、再生が止まりました。"
                 }
             }
             self.updatePlayPauseIcon()

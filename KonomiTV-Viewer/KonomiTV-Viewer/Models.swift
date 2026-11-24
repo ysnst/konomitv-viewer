@@ -841,7 +841,9 @@ struct RecordSettings: Codable {
     var is_sequential_recording_in_single_file_enabled: Bool
     var forced_tuner_id: Int?
 
-    /// Web 版の既定の録画設定 (プリセットが取れなかったときの予備)。
+    /// Web 版の既定の録画設定。取得できた録画設定の中で、項目が
+    /// 欠けていたときの予備としてだけ使う。プリセット自体が取れなかった
+    /// ときの代用には使わない (その場合は予約を作らない)。
     static let webDefault = RecordSettings(
         is_enabled: true,
         priority: 2,

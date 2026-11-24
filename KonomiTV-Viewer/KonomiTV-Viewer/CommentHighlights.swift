@@ -57,14 +57,28 @@ struct CommentDensity {
 ///   - positions: コメントの再生位置 (秒) の並び。
 ///   - duration: 録画の尺 (秒)。0 の場合はコメントの最大位置から推定する。
 func computeCommentDensity(positions: [Double], duration: Double) -> CommentDensity {
-    let maxPosition = positions.max() ?? 0
-    let effectiveDuration = duration > 0 ? duration : maxPosition + commentBinSeconds
+    // 尺が決まっている場合は、範囲外 (負・尺超過・非有限) の位置を
+    // 両端のビンへ集めず、数えない。Web 版は範囲外を両端へ丸めるが、
+    // 録画の盛り上がり判定では端の密度が歪むため、こちらでは除く。
+    // 尺が 0 の場合は Web 版と同じく、最大位置から尺を推定して丸める。
+    // 異常に大きい尺・位置で巨大な配列を作らないよう、ビン数には
+    // 上限 (5秒ビンで約7日分) を付ける。
+    let maxBinCount = 120_000
+    let finitePositions = positions.filter { $0.isFinite }
+    let maxPosition = finitePositions.max() ?? 0
+    let rawDuration = duration > 0 ? duration : maxPosition + commentBinSeconds
+    let effectiveDuration = min(rawDuration, Double(maxBinCount) * commentBinSeconds)
 
     let binCount = max(1, Int(ceil(effectiveDuration / commentBinSeconds)))
     var counts = [Int](repeating: 0, count: binCount)
-    for position in positions {
+    var total = 0
+    for position in finitePositions {
+        if duration > 0, position < 0 || position > effectiveDuration {
+            continue
+        }
         let index = min(binCount - 1, max(0, Int(floor(position / commentBinSeconds))))
         counts[index] += 1
+        total += 1
     }
     // 3ビンの移動平均で平滑化し、最大値で正規化する。
     let smoothed = counts.indices.map { i -> Double in
@@ -75,7 +89,7 @@ func computeCommentDensity(positions: [Double], duration: Double) -> CommentDens
     }
     let maxDensity = max(smoothed.max() ?? 0, 0.0001)
     let densities = smoothed.map { $0 / maxDensity }
-    return CommentDensity(densities: densities, counts: counts, total: positions.count, duration: effectiveDuration)
+    return CommentDensity(densities: densities, counts: counts, total: total, duration: effectiveDuration)
 }
 
 /// 密度から盛り上がり区間を抽出する (Web 版 extractHighlightSegments の写し)。

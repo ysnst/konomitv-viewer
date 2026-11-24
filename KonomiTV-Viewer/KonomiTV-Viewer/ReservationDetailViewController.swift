@@ -680,7 +680,9 @@ final class ReservationDetailViewController: UIViewController {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let settings = await APIClient.shared.fetchDefaultRecordSettings()
+                // 既定の録画設定が取れなかったら、代用の設定では作らず
+                // 失敗として知らせる (下の catch で表示される)。
+                let settings = try await APIClient.shared.fetchDefaultRecordSettings()
                 try await APIClient.shared.addReservation(
                     programID: self.program.id, recordSettings: settings)
                 // 追加できた予約の本体を取り直して、状態表示に切り替える。
@@ -729,7 +731,18 @@ final class ReservationDetailViewController: UIViewController {
             if let existingSettings {
                 recordSettings = existingSettings
             } else {
-                recordSettings = await APIClient.shared.fetchDefaultRecordSettings()
+                do {
+                    recordSettings = try await APIClient.shared.fetchDefaultRecordSettings()
+                } catch {
+                    // 既定の録画設定が取れなかったら、代用の設定では
+                    // 作らず、その旨を知らせて終わる。
+                    self.isCreatingSeries = false
+                    self.rebuildContent()
+                    self.showAlert(
+                        title: "シリーズ予約を作成できませんでした",
+                        message: "録画設定を取得できなかったため、予約は作成していません。通信状態を確認して、もう一度お試しください。")
+                    return
+                }
             }
             let result = await ReservationConditions.addSeriesReservation(
                 title: source.title, seriesTitle: nil,

@@ -172,9 +172,26 @@ final class StreamRelayServer {
         return queue.sync { relayURLOnQueue(for: originURL) }
     }
 
+    /// 2つの URL が同じ向き先 (スキーム・ホスト・ポート) かどうか。
+    /// ポートの指定が無い場合は、そのスキームの決まったポートとして比べる。
+    fileprivate static func isSameOrigin(_ a: URL, _ b: URL) -> Bool {
+        func effectivePort(_ url: URL) -> Int? {
+            url.port ?? (url.scheme == "https" ? 443 : url.scheme == "http" ? 80 : nil)
+        }
+        return a.scheme == b.scheme && a.host == b.host
+            && effectivePort(a) == effectivePort(b)
+    }
+
     /// relayURL の中身。中継のキューの上で呼ぶこと。
     fileprivate func relayURLOnQueue(for originURL: URL) -> URL? {
         guard originURL.scheme == "http" || originURL.scheme == "https" else { return nil }
+        // 接続先サーバーと向き先が違う URL は中継に載せない。中継は
+        // 接続先への経路だけを置き換えるもので、別のホストの参照を
+        // 接続先の同じ経路へ誤って向けることも、接続先の合言葉を
+        // 別のホストへ送ることも避けるため。
+        if let base = SettingsStore.shared.baseURL, !Self.isSameOrigin(originURL, base) {
+            return nil
+        }
         guard let port,
               let originComponents = URLComponents(url: originURL, resolvingAgainstBaseURL: false)
         else { return nil }
@@ -519,7 +536,14 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
             return
         }
         if headSent {
-            sendData(Data("0\r\n\r\n".utf8)) { [weak self] in self?.finish() }
+            if error != nil {
+                // 頭を送った後の失敗を、正常な終端 (終端チャンク) で
+                // 終わらせると、途中までの本文が完全な応答に見えてしまう。
+                // 正常な終端は送らず、接続を異常終了させる。
+                finish()
+            } else {
+                sendData(Data("0\r\n\r\n".utf8)) { [weak self] in self?.finish() }
+            }
         } else if error != nil {
             respondSimple(status: 502)
         } else {
@@ -557,9 +581,12 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
         headSent = true
         var lines = ["HTTP/1.1 \(status) \(HTTPURLResponse.localizedString(forStatusCode: status))"]
         // 中継で付け替えるもの・区切りに使うものは、元の値を使わない。
+        // Content-Encoding も渡さない: 受け取り側 (URLSession) が本文を
+        // 展開して渡す場合があり、展開済みの本文に元の圧縮の印が付いた
+        // ままだと、下流がもう一度展開しようとして失敗するため。
         let skipped: Set<String> = [
             "connection", "keep-alive", "transfer-encoding", "content-length",
-            "trailer", "te", "proxy-connection",
+            "trailer", "te", "proxy-connection", "content-encoding",
         ]
         var hasCORSHeader = false
         for (key, value) in headers {
@@ -681,8 +708,12 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
     private func relayMappedURL(_ uri: String, base: URL) -> String {
         // この処理は中継のキューの上で動いているため、キューの外向けの
         // relayURL (同期読み) ではなくキュー内向けを使う。
+        // 接続先と向き先が違う絶対 URL は中継に載せず、元のまま残す
+        // (接続先の同じ経路へ誤って向けたり、接続先の合言葉を別の
+        // ホストへ送ったりしないため)。
         guard let resolved = URL(string: uri, relativeTo: base)?.absoluteURL,
               resolved.scheme == "http" || resolved.scheme == "https",
+              StreamRelayServer.isSameOrigin(resolved, base),
               let relay = server.relayURLOnQueue(for: resolved) else { return uri }
         return relay.absoluteString
     }

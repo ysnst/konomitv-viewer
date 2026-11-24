@@ -233,9 +233,12 @@ final class JikkyoCommentOverlayView: UIView {
             item.label.frame.origin = CGPoint(x: x, y: CGFloat(item.lane) * laneHeight)
             return true
         }
-        // 固定コメントは出現順に積む (上は下へ、下は上へ)。
-        var topRow = 0
-        var bottomRow = 0
+        // 固定コメントは出現順に積む (上は下へ、下は上へ)。積む位置は
+        // 各ラベルの実測の高さで決め (大小の字が混ざっても重ならない)、
+        // 上と下が中央でぶつかる・表示領域からはみ出す分は出さない
+        // (「無制限に表示」のときだけ、収まらない分も従来どおり出す)。
+        var topCursor: CGFloat = 0
+        var bottomCursor: CGFloat = 0
         fixedItems = fixedItems.filter { item in
             let age = pos - item.comment.time
             guard age >= 0, age <= Self.fixedDuration else {
@@ -245,12 +248,22 @@ final class JikkyoCommentOverlayView: UIView {
             let size = item.label.bounds.size
             let x = (width - size.width) / 2
             if item.comment.type == "top" {
-                item.label.frame.origin = CGPoint(x: x, y: CGFloat(topRow) * (size.height + 2))
-                topRow += 1
+                if !unlimited, topCursor + size.height > bounds.height - bottomCursor {
+                    item.label.isHidden = true
+                    return true
+                }
+                item.label.isHidden = false
+                item.label.frame.origin = CGPoint(x: x, y: topCursor)
+                topCursor += size.height + 2
             } else {
+                if !unlimited, bottomCursor + size.height > bounds.height - topCursor {
+                    item.label.isHidden = true
+                    return true
+                }
+                item.label.isHidden = false
                 item.label.frame.origin = CGPoint(
-                    x: x, y: bounds.height - CGFloat(bottomRow + 1) * (size.height + 2))
-                bottomRow += 1
+                    x: x, y: bounds.height - bottomCursor - size.height)
+                bottomCursor += size.height + 2
             }
             return true
         }

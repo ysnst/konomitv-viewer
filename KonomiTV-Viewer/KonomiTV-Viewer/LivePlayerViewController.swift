@@ -1403,7 +1403,31 @@ final class LivePlayerViewController: UIViewController {
     /// 届いたコメントを、一覧と流れる表示へ回す。
     /// 初回のまとめは一覧にだけ出す (Web 版と同じ)。
     private func receiveLiveComments(_ comments: [LiveJikkyoComment], isInitial: Bool) {
-        liveComments.append(contentsOf: comments)
+        var incoming = comments
+        if isInitial {
+            // 再接続などで初回のまとめが届いたとき、すでに一覧にある
+            // コメントと重なる分は足さない。コメント番号があるものは
+            // 番号で、番号が無いものは投稿者・時刻・本文の組み合わせで
+            // 照合する。
+            let knownIDs = Set(liveComments.map { $0.id }.filter { $0 != 0 })
+            let knownKeys = Set(liveComments.map {
+                "\($0.userID)|\($0.date.timeIntervalSince1970)|\($0.text)"
+            })
+            incoming = incoming.filter { comment in
+                if comment.id != 0, knownIDs.contains(comment.id) { return false }
+                return !knownKeys.contains(
+                    "\(comment.userID)|\(comment.date.timeIntervalSince1970)|\(comment.text)")
+            }
+            // 初回のまとめの中どうしの重なりも落とす。
+            var seenIDs = Set<Int>()
+            var seenKeys = Set<String>()
+            incoming = incoming.filter { comment in
+                let key = "\(comment.userID)|\(comment.date.timeIntervalSince1970)|\(comment.text)"
+                if comment.id != 0, !seenIDs.insert(comment.id).inserted { return false }
+                return seenKeys.insert(key).inserted
+            }
+        }
+        liveComments.append(contentsOf: incoming)
         // 一覧が際限なく伸びないよう、古い分から少しずつ落とす。
         if liveComments.count > 1200 {
             liveComments.removeFirst(liveComments.count - 1000)
