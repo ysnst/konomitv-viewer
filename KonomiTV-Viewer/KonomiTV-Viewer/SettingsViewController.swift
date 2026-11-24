@@ -2,7 +2,7 @@ import UIKit
 import UniformTypeIdentifiers
 import WebKit
 
-/// 接続先 URL と認証方式 (なし / Cloudflare Access / Basic認証 / Digest認証 / カスタムヘッダ / ブラウザでログイン / クライアント証明書)、KonomiTV ログインを設定する画面。
+/// 接続先 URL と認証方式 (なし / Cloudflare Access / Basic認証 / Digest認証 / カスタムヘッダ / ブラウザでログイン / クライアント証明書 / URLパラメータ (合言葉))、KonomiTV ログインを設定する画面。
 /// 画質まわりは別画面 (「画質」) に分け、入口は設定の分類一覧
 /// (SettingsCategoryViewController) 側に置く (この画面と重複させない)。
 /// 初回起動時 (URL 未設定) の入力画面と、分類一覧の「このアプリの設定」の先で使う。
@@ -63,6 +63,11 @@ final class SettingsViewController: UIViewController {
     private let clientCertImportButton = RippleButton()
     private let clientCertRemoveButton = RippleButton()
     private var clientCertGroupView: UIStackView?
+    /// URLパラメータ (合言葉) の入力欄 (パラメータ名と値の1組)。
+    private let urlParameterNameField = UITextField()
+    private let urlParameterValueField = UITextField()
+    private var urlParameterNameGroupView: UIStackView?
+    private var urlParameterValueGroupView: UIStackView?
     private let statusLabel = UILabel()
     private let usernameField = UITextField()
     private let passwordField = UITextField()
@@ -98,6 +103,8 @@ final class SettingsViewController: UIViewController {
         case .customHeader:
             fields += [customHeaderName1Field, customHeaderValue1Field,
                        customHeaderName2Field, customHeaderValue2Field]
+        case .urlParameter:
+            fields += [urlParameterNameField, urlParameterValueField]
         case .none, .browserLogin, .clientCertificate:
             // 入力欄の無い方式 (ブラウザでログインとクライアント証明書は
             // ボタン操作のため、欄は持たない)。
@@ -421,6 +428,12 @@ final class SettingsViewController: UIViewController {
         clientCertRemoveButton.addTarget(self, action: #selector(removeClientCertificate), for: .touchUpInside)
         styleActionButton(clientCertRemoveButton)
 
+        // URLパラメータ (合言葉): パラメータ名と値の1組を、接続先への
+        // URL に付けて送る方式。値は合言葉なので伏せて入力する。
+        configure(urlParameterNameField, placeholder: "token", keyboard: .asciiCapable)
+        configure(urlParameterValueField, placeholder: "値", keyboard: .asciiCapable)
+        urlParameterValueField.isSecureTextEntry = true
+
         // リターンキーの表示は、表示中の欄に合わせて refreshReturnKeyTypes() で付ける。
 
         // KonomiTV ログイン (保護の切り替えに必要)。パスワードはキーチェーンに保存される。
@@ -583,6 +596,18 @@ final class SettingsViewController: UIViewController {
         let clientCertGroup = itemGroup(title: "クライアント証明書", field: clientCertField)
         clientCertGroupView = clientCertGroup
 
+        let urlParameterNameGroup = itemGroup(title: "パラメータ名", field: urlParameterNameField)
+        // 値の欄の下に、URL に合言葉が残る形であることの注意書きを置く。
+        let urlParameterValueStack = UIStackView(arrangedSubviews: [
+            urlParameterValueField,
+            makeDescriptionLabel("合言葉は、接続先への URL に付けて送ります。URL はサーバー側の記録 (ログ) に残ることがあるため、合言葉も一緒に残る場合があります。"),
+        ])
+        urlParameterValueStack.axis = .vertical
+        urlParameterValueStack.spacing = 14
+        let urlParameterValueGroup = itemGroup(title: "値", field: urlParameterValueStack)
+        urlParameterNameGroupView = urlParameterNameGroup
+        urlParameterValueGroupView = urlParameterValueGroup
+
         let connectionDivider = makeDivider()
         let stack = UIStackView(arrangedSubviews: [
             note,
@@ -600,6 +625,8 @@ final class SettingsViewController: UIViewController {
             customHeaderValue2Group,
             browserLoginGroup,
             clientCertGroup,
+            urlParameterNameGroup,
+            urlParameterValueGroup,
             uiScaleGroup,
             connectionDivider,
             usernameGroup,
@@ -663,7 +690,7 @@ final class SettingsViewController: UIViewController {
     /// 認証方式のプルダウンの表示と選択肢を、現在の選択に合わせて付け直す。
     private func updateAuthMethodControls() {
         authMethodButton.setTitle(selectedAuthMethod.displayName, for: .normal)
-        let methods: [ServerAuthMethod] = [.none, .cloudflareAccess, .basic, .digest, .customHeader, .browserLogin, .clientCertificate]
+        let methods: [ServerAuthMethod] = [.none, .cloudflareAccess, .basic, .digest, .customHeader, .browserLogin, .clientCertificate, .urlParameter]
         authMethodButton.menu = UIMenu(children: methods.map { method in
             UIAction(title: method.displayName,
                      state: method == selectedAuthMethod ? .on : .off) { [weak self] _ in
@@ -689,6 +716,8 @@ final class SettingsViewController: UIViewController {
         customHeaderValue2GroupView?.isHidden = selectedAuthMethod != .customHeader
         browserLoginGroupView?.isHidden = selectedAuthMethod != .browserLogin
         clientCertGroupView?.isHidden = selectedAuthMethod != .clientCertificate
+        urlParameterNameGroupView?.isHidden = selectedAuthMethod != .urlParameter
+        urlParameterValueGroupView?.isHidden = selectedAuthMethod != .urlParameter
         // 隠れた欄はリターンキーの移動先からも外れるため、表示を付け直す。
         refreshReturnKeyTypes()
     }
@@ -714,6 +743,8 @@ final class SettingsViewController: UIViewController {
         store.basicPassword = basicPasswordField.text ?? ""
         storeDigestFields(to: store)
         storeCustomHeaderFields(to: store)
+        store.urlParameterName = urlParameterNameField.text ?? ""
+        store.urlParameterValue = urlParameterValueField.text ?? ""
         if previousMethod == .browserLogin, selectedAuthMethod != .browserLogin {
             clearBrowserLoginCookies()
         }
@@ -877,6 +908,8 @@ final class SettingsViewController: UIViewController {
         customHeaderValue1Field.text = store.customHeaderValue1
         customHeaderName2Field.text = store.customHeaderName2
         customHeaderValue2Field.text = store.customHeaderValue2
+        urlParameterNameField.text = store.urlParameterName
+        urlParameterValueField.text = store.urlParameterValue
         refreshBrowserLoginStatus()
         refreshClientCertificateStatus()
         refreshAuthFieldVisibility()

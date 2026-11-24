@@ -83,6 +83,7 @@ enum ServerAuthMethod: String {
     case customHeader = "custom_header"
     case browserLogin = "browser_login"
     case clientCertificate = "client_certificate"
+    case urlParameter = "url_parameter"
 
     /// プルダウンに出す名前。
     var displayName: String {
@@ -94,6 +95,7 @@ enum ServerAuthMethod: String {
         case .customHeader: return "カスタムヘッダ"
         case .browserLogin: return "ブラウザでログイン"
         case .clientCertificate: return "クライアント証明書"
+        case .urlParameter: return "URLパラメータ（合言葉）"
         }
     }
 }
@@ -125,6 +127,7 @@ final class SettingsStore {
         static let basicUsername = "viewer_basic_username"
         static let digestUsername = "viewer_digest_username"
         static let clientCertificateLabel = "viewer_client_cert_label"
+        static let urlParameterName = "viewer_url_parameter_name"
         static let customHeaderName1 = "viewer_custom_header_name_1"
         static let customHeaderName2 = "viewer_custom_header_name_2"
         static let quality = "viewer_quality"
@@ -245,6 +248,7 @@ final class SettingsStore {
         static let clientCertificatePassphrase = "client_certificate_passphrase"
         static let customHeaderValue1 = "custom_header_value_1"
         static let customHeaderValue2 = "custom_header_value_2"
+        static let urlParameterValue = "url_parameter_value"
     }
 
     private let defaults = UserDefaults.standard
@@ -1279,6 +1283,50 @@ final class SettingsStore {
         set { KeychainStore.setString(newValue, forKey: KeychainKey.customHeaderValue2) }
     }
 
+    // MARK: - URLパラメータ (合言葉)
+
+    /// 合言葉を付けるパラメータの名前。自作のリバースプロキシ等で
+    /// URL のパラメータを見て認証している環境向け。名前は端末に保存する。
+    var urlParameterName: String {
+        get { defaults.string(forKey: Key.urlParameterName) ?? "" }
+        set { defaults.set(newValue, forKey: Key.urlParameterName) }
+    }
+
+    /// 合言葉の値は、パスワードと同じくキーチェーンに保存する
+    /// (UserDefaults には置かない)。
+    var urlParameterValue: String {
+        get { KeychainStore.string(forKey: KeychainKey.urlParameterValue) ?? "" }
+        set { KeychainStore.setString(newValue, forKey: KeychainKey.urlParameterValue) }
+    }
+
+    /// 選ばれている方式が「URLパラメータ (合言葉)」のとき、接続先への
+    /// URL に合言葉のパラメータを足して返す。それ以外の方式のとき、
+    /// 名前と値がそろっていないときは、そのまま返す。
+    /// すでに同じ名前のパラメータがある URL には二重に付けない
+    /// (中継の取り分など、付いた URL がもう一度ここを通る経路があるため)。
+    /// 既存のクエリは壊さないよう、エンコード済みの形のまま扱う。
+    func urlByApplyingAuthParameter(to url: URL) -> URL {
+        guard authMethod == .urlParameter else { return url }
+        let name = urlParameterName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = urlParameterValue
+        guard !name.isEmpty, !value.isEmpty else { return url }
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        var items = components.percentEncodedQueryItems ?? []
+        // 名前と値は、区切りの文字 (& や = など) が混ざっても壊れないよう、
+        // そのまま使える文字以外をすべてエンコードしてから足す。
+        let unreserved = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+        guard let encodedName = name.addingPercentEncoding(withAllowedCharacters: unreserved),
+              let encodedValue = value.addingPercentEncoding(withAllowedCharacters: unreserved) else {
+            return url
+        }
+        // すでにあるパラメータの名前はエンコード済みの形で入っているため、
+        // 両方の形と照らして二重付けを防ぐ。
+        guard !items.contains(where: { $0.name == name || $0.name == encodedName }) else { return url }
+        items.append(URLQueryItem(name: encodedName, value: encodedValue))
+        components.percentEncodedQueryItems = items
+        return components.url ?? url
+    }
+
     /// 接続先サーバーへの通信に付ける、認証のヘッダー。
     /// 選ばれている方式のものだけを返す (方式が違うヘッダーは付けない)。
     /// 値がそろっていない方式では何も付けない。
@@ -1317,6 +1365,10 @@ final class SettingsStore {
             // 証明書はヘッダーではなく、サーバーからの求めに応じて出す。
             // 応答は ServerAuthChallengeResponder が行い、AVPlayer 単独では
             // 出せないため再生は中継経由になる。
+            return [:]
+        case .urlParameter:
+            // 合言葉はヘッダーではなく URL に付ける
+            // (付け方は urlByApplyingAuthParameter)。
             return [:]
         }
     }

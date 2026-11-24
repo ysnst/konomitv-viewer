@@ -85,7 +85,10 @@ final class APIClient {
 
     private func url(forPath path: String) -> URL? {
         guard let base = SettingsStore.shared.baseURL else { return nil }
-        return URL(string: base.absoluteString + path)
+        guard let url = URL(string: base.absoluteString + path) else { return nil }
+        // 認証方式が「URLパラメータ (合言葉)」のときは、ここで合言葉を
+        // 付ける (API・画像・再生の URL はすべてこの口を通る)。
+        return SettingsStore.shared.urlByApplyingAuthParameter(to: url)
     }
 
     private func request(forPath path: String, method: String = "GET", authorized: Bool = false) throws -> URLRequest {
@@ -823,8 +826,11 @@ final class APIClient {
         // 応答が要るため、AVPlayer 単独では通せない。アプリ内の
         // 中継経由にすると、中継側の通信が求めに応答する
         // (中継が使えないときは元の URL)。
+        // URLパラメータ (合言葉) も同じく中継経由にする。プレイリストの
+        // URL に付けても、中の分割ファイルの URL には付かないため、
+        // 中継側で取り分ごとに付け直す必要がある。
         let method = SettingsStore.shared.authMethod
-        if method == .digest || method == .clientCertificate,
+        if method == .digest || method == .clientCertificate || method == .urlParameter,
            let relayed = StreamRelayServer.shared.relayURL(for: url) {
             return AVURLAsset(url: relayed)
         }

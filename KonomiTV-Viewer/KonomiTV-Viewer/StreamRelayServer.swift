@@ -323,7 +323,11 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
             liveCaptionExtractor = TSID3Extractor()
         }
 
-        var request = URLRequest(url: origin)
+        // 認証方式が「URLパラメータ (合言葉)」のときは、サーバーへの
+        // 取り分の URL に合言葉を付ける。再生 (プレイリストと分割ファイル)・
+        // データ放送の双方向など、中継を通る取り分はすべてここを通る。
+        // すでに付いている URL には二重に付けない (共通処理側の決まり)。
+        var request = URLRequest(url: SettingsStore.shared.urlByApplyingAuthParameter(to: origin))
         // POST の場合は、本体と中身の形式をそのまま元のサーバーへ渡す
         // (データ放送の双方向の送信)。
         if method == "POST" {
