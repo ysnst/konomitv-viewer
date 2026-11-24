@@ -2,39 +2,39 @@ import UIKit
 
 /// なぞり選択専用の指の動きの受け口 (ゴミ箱・録画一覧で共用)。
 ///
-/// スクロールか なぞり選択かの判定を、受け口が始まる前に済ませる
-/// ためのもの。指が少し (12pt) 動くまでは親に渡さず手元に留め、
-/// その間の動きの速さで決める。速ければ受け口を失敗で終わらせ、
-/// ゆっくりなら そのまま受け口を始めて、なぞり選択として取り込む。
-/// 一覧のスクロールは、この受け口が失敗するまで始めないよう
-/// 頼んである (require(toFail:)) ので、判定が出るまでは一覧が
-/// 一切動かず、決まった瞬間に位置が跳ぶこともない。
-/// 以前の作り (一覧のスクロールと同時に動きを見て、途中で
-/// スクロールを凍らせる) では、凍らせる瞬間に一覧が小刻みに
-/// 跳ねることがあったため、この形に変えた。
+/// なぞり選択の始め方の判定を、受け口が始まる前に済ませるための
+/// もの。項目の上で指を少し (0.25秒ほど) 止めてから動き出した
+/// ときだけ、なぞり選択として取り込む。止まらずにそのまま動かした
+/// ドラッグは、速さによらず全部スクロールとして扱い、受け口を
+/// 失敗で終わらせる (失敗を待っていた一覧のスクロールが始められる)。
+/// 止めている間は指の動きを親に渡さず手元に留めるが、その間は指が
+/// ほとんど動いていないので、一覧のスクロールはこの受け口が
+/// 失敗するか始まるかするまで始めないよう頼んであっても
+/// (require(toFail:))、決まった瞬間に一覧の位置が跳ぶことはない。
+/// 以前は「指が少し動くまでの速さ」で判定していたが、中くらいの
+/// 速さのドラッグが選択側に倒れてしまい、選択中に眺めるための
+/// スクロールがしにくかったため、止めたかどうかで決める形に変えた。
 final class DragSelectionPanGestureRecognizer: UIPanGestureRecognizer {
-    /// 判定するまでの指の移動量。
-    private static let decisionDistance: CGFloat = 12
-    /// これより速い指の動きはスクロールとして扱う速さ (1秒あたり)。
-    private static let scrollSpeedThreshold: CGFloat = 600
-    /// 速さを測るために残しておく、直近の指の位置と時刻。
-    private static let speedWindow: TimeInterval = 0.1
+    /// なぞり選択として取り込むまでに、指を止めておく時間。
+    private static let holdDuration: TimeInterval = 0.25
+    /// 止めている間に指がこれ以上動いたら、止めたとはみなさず
+    /// スクロールとして扱う移動量。
+    private static let holdSlop: CGFloat = 10
 
     /// 指が触れた位置 (受け口の付いている画面での座標)。
     /// 判定で受け口が始まる頃には指が少し動いているため、なぞり
     /// 選択の起点には、現在の位置ではなく この位置を使う。
     private(set) var startLocation: CGPoint = .zero
+    /// 指が触れた時刻 (判定に使う、タッチの時刻)。
+    private var startTime: TimeInterval = 0
     /// 判定が出たかどうか。
     private var decided = false
-    /// 速さの計算用の控え (古いものから順に並ぶ)。
-    private var samples: [(point: CGPoint, time: TimeInterval)] = []
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         decided = false
-        samples = []
         if let touch = touches.first, let view {
             startLocation = touch.location(in: view)
-            samples.append((startLocation, touch.timestamp))
+            startTime = touch.timestamp
         }
         super.touchesBegan(touches, with: event)
     }
@@ -49,44 +49,27 @@ final class DragSelectionPanGestureRecognizer: UIPanGestureRecognizer {
             return
         }
         let point = touch.location(in: view)
-        samples.append((point, touch.timestamp))
-        // 速さを測る窓から外れた控えは捨てる (触れたまま止まって
-        // から動き出した場合に、止まっていた時間が割り算に
-        // 混ざらないように)。
-        while samples.count > 1,
-              touch.timestamp - samples[0].time > Self.speedWindow {
-            samples.removeFirst()
-        }
-        guard hypot(point.x - startLocation.x, point.y - startLocation.y)
-                >= Self.decisionDistance,
-              samples.count >= 2,
-              let first = samples.first else {
-            // まだ決めない。親に渡さないので、受け口は始まらない。
-            // (samples が1つだけのときは、速さを測る材料が足りない
-            // ので、次の動きまで待つ。)
+        if touch.timestamp - startTime >= Self.holdDuration {
+            // 少し止めてから動き出した。なぞり選択として取り込む。
+            decided = true
+            super.touchesMoved(touches, with: event)
             return
         }
-        decided = true
-        let elapsed = touch.timestamp - first.time
-        let speed = elapsed > 0
-            ? hypot(point.x - first.point.x, point.y - first.point.y)
-                / CGFloat(elapsed)
-            : 0
-        if speed > Self.scrollSpeedThreshold {
-            // 速い動きはスクロール。受け口を失敗で終わらせると、
-            // 失敗を待っていた一覧のスクロールが始められる。
-            // 一覧はまだ動いていないので、位置の跳びは起きない。
+        let distance = hypot(
+            point.x - startLocation.x, point.y - startLocation.y)
+        if distance >= Self.holdSlop {
+            // 止まらずに動き出したドラッグは、速さによらず
+            // スクロール。受け口を失敗で終わらせる。
+            decided = true
             state = .failed
             return
         }
-        // ゆっくりした動きは、なぞり選択として取り込む。
-        super.touchesMoved(touches, with: event)
+        // まだ止めている最中。親に渡さないので、受け口は始まらない。
     }
 
     override func reset() {
         super.reset()
         decided = false
-        samples = []
     }
 }
 
@@ -100,8 +83,9 @@ final class DragSelectionPanGestureRecognizer: UIPanGestureRecognizer {
 /// - 管理者は「選択する」から複数選択に入れ、選んだ分をまとめて
 ///   復元・完全削除できる。まとめて削除も1件のときと同じ流儀で、
 ///   確認を挟み、項目ごとに事前確認を取ってから削除する。
-///   選択中は、カードに触れたまま指を動かすと通ったカードを連続で
-///   選べる (写真アプリのなぞって選択と同じ感覚)。
+///   選択中は、カードの上で指を少し止めてから動かすと、通った
+///   カードを連続で選べる (なぞって選択)。止めずにそのまま
+///   動かしたドラッグは、速さによらずスクロールになる。
 /// - 一覧の先頭に保持期間の説明を出し (一覧と一緒にスクロール
 ///   する)、各カードには録画一覧と同じカード部品 (VideoCell) に
 ///   「あと○日で完全に削除されます」の行と、「復元する」
@@ -193,11 +177,13 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
     /// だと、選択中でないときでも受け口が指の動きを横取りして、
     /// 普通のスクロールができなくなった)。
     /// スクロールか なぞり選択かの判定は受け口の中で済ませる
-    /// (DragSelectionPanGestureRecognizer を参照)。受け口が
-    /// 始まった時点で判定は終わっていて、ここに来たものは
-    /// なぞり選択として取り込む。一覧のスクロールは、受け口が
-    /// 失敗するまで始めないよう頼んであるので、判定が出るまで
-    /// 一覧は動かず、決まった瞬間に位置が跳ぶこともない。
+    /// (DragSelectionPanGestureRecognizer を参照)。指を少し
+    /// 止めてから動かしたときだけ受け口が始まり、ここに来たものは
+    /// なぞり選択として取り込む。止めずに動かしたドラッグは
+    /// 受け口が失敗してスクロールになる。一覧のスクロールは、
+    /// 受け口が失敗するまで始めないよう頼んであるが、判定の間は
+    /// 指がほとんど動いていないので、決まった瞬間に一覧の位置が
+    /// 跳ぶこともない。
     private let dragSelectionGesture = DragSelectionPanGestureRecognizer()
     /// この指の動きをなぞり選択として取り込んだかどうか。
     private var dragCommitted = false
@@ -716,8 +702,8 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
         updateBulkBar()
     }
 
-    /// 選択中にカードへ触れたまま指を動かしたときの処理 (写真アプリの
-    /// なぞって選択と同じ感覚)。指の下にある行と、なぞり始めの行の間の
+    /// 選択中に、カードの上で指を少し止めてから動かしたときの処理
+    /// (なぞって選択)。指の下にある行と、なぞり始めの行の間の
     /// 範囲をまとめて選択／解除する。逆向きに戻れば、範囲から外れた分は
     /// なぞる前の状態へ戻る。
     ///
@@ -731,11 +717,11 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
     ///
     /// スクロールか なぞり選択かの判定は、受け口が始まる前に
     /// 受け口の中で済ませる (DragSelectionPanGestureRecognizer)。
-    /// 一覧のスクロールは受け口が失敗するまで始めないので、判定が
-    /// 出るまで一覧は一切動かず、ここに来たものは そのまま
-    /// なぞり選択として取り込める。以前の作り (同時に動きを見て、
-    /// 途中で一覧のスクロールを凍らせる) では、凍らせる瞬間に
-    /// 一覧が小刻みに跳ねることがあった。
+    /// 指を少し止めてから動かしたときだけ受け口が始まるので、
+    /// ここに来たものは そのまま なぞり選択として取り込める。
+    /// 止めずに動かしたドラッグは受け口が失敗してスクロールに
+    /// なるため、選択中に眺めるためのスクロールは速さによらず
+    /// そのままできる。
     @objc private func handleDragSelection(_ gesture: DragSelectionPanGestureRecognizer) {
         switch gesture.state {
         case .began:

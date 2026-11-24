@@ -176,12 +176,13 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     /// だと、選択中でないときでも受け口が指の動きを横取りして、
     /// 普通のスクロールができなくなった)。
     /// スクロールか なぞり選択かの判定は受け口の中で済ませる
-    /// (DragSelectionPanGestureRecognizer を参照)。受け口が
-    /// 始まった時点で判定は終わっていて、ここに来たものは
-    /// なぞり選択として取り込む。一覧のスクロールは、受け口が
-    /// 失敗するまで始めないよう頼んであるので、判定が出るまで
-    /// 一覧は動かず、決まった瞬間に位置が跳ぶこともない
-    /// (ゴミ箱と同じ)。
+    /// (DragSelectionPanGestureRecognizer を参照)。指を少し
+    /// 止めてから動かしたときだけ受け口が始まり、ここに来たものは
+    /// なぞり選択として取り込む。止めずに動かしたドラッグは
+    /// 受け口が失敗してスクロールになる。一覧のスクロールは、
+    /// 受け口が失敗するまで始めないよう頼んであるが、判定の間は
+    /// 指がほとんど動いていないので、決まった瞬間に一覧の位置が
+    /// 跳ぶこともない (ゴミ箱と同じ)。
     private let dragSelectionGesture = DragSelectionPanGestureRecognizer()
     /// この指の動きをなぞり選択として取り込んだかどうか。
     private var dragCommitted = false
@@ -1501,8 +1502,8 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         navigationController?.pushViewController(player, animated: true)
     }
 
-    /// 選択中にカードへ触れたまま指を動かしたときの処理 (写真アプリの
-    /// なぞって選択と同じ感覚。ゴミ箱と同じ作り)。指の下にある行と、
+    /// 選択中に、カードの上で指を少し止めてから動かしたときの処理
+    /// (なぞって選択。ゴミ箱と同じ作り)。指の下にある行と、
     /// なぞり始めの行の間の範囲をまとめて選択／解除する。逆向きに
     /// 戻れば、範囲から外れた分はなぞる前の状態へ戻る。
     /// 範囲は表示中のページの中だけ。
@@ -1517,11 +1518,11 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     ///
     /// スクロールか なぞり選択かの判定は、受け口が始まる前に
     /// 受け口の中で済ませる (DragSelectionPanGestureRecognizer)。
-    /// 一覧のスクロールは受け口が失敗するまで始めないので、判定が
-    /// 出るまで一覧は一切動かず、ここに来たものは そのまま
-    /// なぞり選択として取り込める。以前の作り (同時に動きを見て、
-    /// 途中で一覧のスクロールを凍らせる) では、凍らせる瞬間に
-    /// 一覧が小刻みに跳ねることがあった。
+    /// 指を少し止めてから動かしたときだけ受け口が始まるので、
+    /// ここに来たものは そのまま なぞり選択として取り込める。
+    /// 止めずに動かしたドラッグは受け口が失敗してスクロールに
+    /// なるため、選択中に眺めるためのスクロールは速さによらず
+    /// そのままできる。
     @objc private func handleDragSelection(_ gesture: DragSelectionPanGestureRecognizer) {
         switch gesture.state {
         case .began:
@@ -2290,10 +2291,18 @@ final class VideoCell: UITableViewCell {
     /// ゴミ箱の操作ボタンを押したときの受け先。再利用時に外す。
     private var onTrashRestore: (() -> Void)?
     private var onTrashDelete: (() -> Void)?
-    /// 複数選択のときにカードの左上に出す選択の印
+    /// 複数選択のときにカードの左側に出す選択の印
     /// (Web 版のチェックボックスに相当)。選択中でないときは隠したまま。
     private let selectionMarkView = UIView()
     private let selectionCheckView = UIImageView()
+    /// サムネイルの左端の制約。選択中は、丸をサムネイルに重ねず
+    /// カードの左側に丸専用の場所を確保するため、その分だけ
+    /// サムネイル (と、それに続く本文) を右へ寄せる。
+    private var thumbnailLeadingConstraint: NSLayoutConstraint?
+    /// 丸専用の場所の幅 (丸 26px + 右の間隔 8px)。
+    private static let selectionSlotWidth: CGFloat = 34
+    /// カードの左の余白 (通常時)。
+    private static let cardContentLeading: CGFloat = 9
     /// 押したときの波紋 (共通部品)。本家 Web 版のカードと同じく、
     /// カード全体を対象に、触れた位置から広げる。
     private let ripple = RippleSurface()
@@ -2435,7 +2444,9 @@ final class VideoCell: UITableViewCell {
         textStack.setCustomSpacing(4, after: descriptionLabel)
         textStack.setCustomSpacing(8, after: noticeLabel)
 
-        // 選択の印はカードの左上に重ねる丸 (26px)。選ばれているときは
+        // 選択の印は丸 (26px)。選択中はサムネイルに重ねず、カードの
+        // 左側に確保した専用の場所に置く (サムネイルはその分だけ
+        // 右へ寄る。configureSelection を参照)。選ばれているときは
         // アクセント色で塗って白いチェックを出し、そうでないときは
         // 黒の半透明に白い枠だけにする。
         selectionMarkView.backgroundColor = UIColor.black.withAlphaComponent(0.45)
@@ -2469,17 +2480,21 @@ final class VideoCell: UITableViewCell {
         // 画面の左右は同コンテナの左右パディング 8px。
         // カード内は録画カード (スマホ縦) の寸法: 左右 9px、上下 8px、
         // サムネイルと本文の間 12px。
+        // サムネイルの左端だけは、選択中に丸専用の場所を空けるため
+        // 付け替えるので、別に持つ。
+        thumbnailLeadingConstraint = thumbnailView.leadingAnchor.constraint(
+            equalTo: cardView.leadingAnchor, constant: Self.cardContentLeading)
+        thumbnailLeadingConstraint?.isActive = true
         NSLayoutConstraint.activate([
             cardView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 10),
             cardView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
             cardView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -8),
             cardView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            thumbnailView.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 9),
             thumbnailView.centerYAnchor.constraint(equalTo: cardView.centerYAnchor),
             thumbnailView.widthAnchor.constraint(equalToConstant: 120),
             thumbnailView.heightAnchor.constraint(equalToConstant: 80),
-            selectionMarkView.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 6),
-            selectionMarkView.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 6),
+            selectionMarkView.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 9),
+            selectionMarkView.centerYAnchor.constraint(equalTo: cardView.centerYAnchor),
             selectionMarkView.widthAnchor.constraint(equalToConstant: 26),
             selectionMarkView.heightAnchor.constraint(equalToConstant: 26),
             selectionCheckView.centerXAnchor.constraint(equalTo: selectionMarkView.centerXAnchor),
@@ -2636,10 +2651,15 @@ final class VideoCell: UITableViewCell {
         onTrashDelete = nil
         selectionMarkView.isHidden = true
         selectionCheckView.isHidden = true
+        thumbnailLeadingConstraint?.constant = Self.cardContentLeading
     }
 
     /// 複数選択の印を設定する (録画一覧とゴミ箱の両方で使う)。
     /// active が false のときは印自体を出さない。
+    /// 選択中は、丸をサムネイルに重ねず、カードの左側に丸専用の
+    /// 場所を確保して、その分サムネイルと本文を右へ寄せる
+    /// (サムネイルの左上の内容や録画中バッジが丸に隠れないように)。
+    /// 選択中でないときは、今までの寸法のまま。
     func configureSelection(active: Bool, selected: Bool) {
         selectionMarkView.isHidden = !active
         selectionCheckView.isHidden = !(active && selected)
@@ -2647,6 +2667,9 @@ final class VideoCell: UITableViewCell {
             ? AppPalette.accent : UIColor.black.withAlphaComponent(0.45)
         selectionMarkView.layer.borderColor = selected
             ? AppPalette.accent.cgColor : UIColor.white.cgColor
+        thumbnailLeadingConstraint?.constant = active
+            ? Self.cardContentLeading + Self.selectionSlotWidth
+            : Self.cardContentLeading
     }
 
     /// ゴミ箱の画面用の追加表示を設定する (通常の一覧では呼ばない)。
