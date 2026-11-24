@@ -71,11 +71,17 @@ enum APIError: Error {
 final class APIClient {
     static let shared = APIClient()
 
-    private let session: URLSession = {
+    /// 認証の求め (Digest認証) への応答を受け持つ受け手。
+    /// 受け手付きのセッションでも、通常の読み書きは今までどおり行える。
+    private let authDelegate = ServerAuthSessionDelegate()
+
+    private let session: URLSession
+
+    init() {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
-        return URLSession(configuration: config)
-    }()
+        session = URLSession(configuration: config, delegate: authDelegate, delegateQueue: nil)
+    }
 
     private func url(forPath path: String) -> URL? {
         guard let base = SettingsStore.shared.baseURL else { return nil }
@@ -813,7 +819,14 @@ final class APIClient {
 
     /// 認証のヘッダーを付けた AVURLAsset を作る (プレイリストと分割ファイルの両方に同じヘッダーが付く)。
     func playerAsset(url: URL) -> AVURLAsset {
-        AVURLAsset(url: url, options: [
+        // Digest認証は、サーバーからの求めに応答する計算が要るため、
+        // AVPlayer 単独では通せない。アプリ内の中継経由にすると、
+        // 中継側の通信が求めに応答する (中継が使えないときは元の URL)。
+        if SettingsStore.shared.authMethod == .digest,
+           let relayed = StreamRelayServer.shared.relayURL(for: url) {
+            return AVURLAsset(url: relayed)
+        }
+        return AVURLAsset(url: url, options: [
             "AVURLAssetHTTPHeaderFieldsKey": SettingsStore.shared.serverAuthHeaders,
         ])
     }

@@ -1,6 +1,6 @@
 import UIKit
 
-/// 接続先 URL と認証方式 (なし / Cloudflare Access / Basic認証 / カスタムヘッダ)、KonomiTV ログインを設定する画面。
+/// 接続先 URL と認証方式 (なし / Cloudflare Access / Basic認証 / Digest認証 / カスタムヘッダ)、KonomiTV ログインを設定する画面。
 /// 画質まわりは別画面 (「画質」) に分け、入口は設定の分類一覧
 /// (SettingsCategoryViewController) 側に置く (この画面と重複させない)。
 /// 初回起動時 (URL 未設定) の入力画面と、分類一覧の「このアプリの設定」の先で使う。
@@ -30,6 +30,8 @@ final class SettingsViewController: UIViewController {
     private let authMethodButton = RippleButton()
     private let basicUserField = UITextField()
     private let basicPasswordField = UITextField()
+    private let digestUserField = UITextField()
+    private let digestPasswordField = UITextField()
     /// カスタムヘッダの入力欄 (名前と値の組を2組)。
     private let customHeaderName1Field = UITextField()
     private let customHeaderValue1Field = UITextField()
@@ -43,6 +45,8 @@ final class SettingsViewController: UIViewController {
     private var cfSecretGroupView: UIStackView?
     private var basicUserGroupView: UIStackView?
     private var basicPasswordGroupView: UIStackView?
+    private var digestUserGroupView: UIStackView?
+    private var digestPasswordGroupView: UIStackView?
     private var customHeaderName1GroupView: UIStackView?
     private var customHeaderValue1GroupView: UIStackView?
     private var customHeaderName2GroupView: UIStackView?
@@ -77,6 +81,8 @@ final class SettingsViewController: UIViewController {
             fields += [cfIDField, cfSecretField]
         case .basic:
             fields += [basicUserField, basicPasswordField]
+        case .digest:
+            fields += [digestUserField, digestPasswordField]
         case .customHeader:
             fields += [customHeaderName1Field, customHeaderValue1Field,
                        customHeaderName2Field, customHeaderValue2Field]
@@ -363,6 +369,11 @@ final class SettingsViewController: UIViewController {
         configure(basicPasswordField, placeholder: "パスワード", keyboard: .asciiCapable)
         basicPasswordField.isSecureTextEntry = true
         basicPasswordField.textContentType = .password
+        configure(digestUserField, placeholder: "ユーザー名", keyboard: .asciiCapable)
+        digestUserField.textContentType = .username
+        configure(digestPasswordField, placeholder: "パスワード", keyboard: .asciiCapable)
+        digestPasswordField.isSecureTextEntry = true
+        digestPasswordField.textContentType = .password
         // カスタムヘッダは名前と値の組を2組まで。2組目は空でもよい。
         // 値は合言葉なので、パスワードと同じく伏せて入力する。
         configure(customHeaderName1Field, placeholder: "X-Auth-Token", keyboard: .asciiCapable)
@@ -495,6 +506,8 @@ final class SettingsViewController: UIViewController {
         let cfSecretGroup = itemGroup(title: "Access Client Secret", field: cfSecretField)
         let basicUserGroup = itemGroup(title: "Basic認証 ユーザー名", field: basicUserField)
         let basicPasswordGroup = itemGroup(title: "Basic認証 パスワード", field: basicPasswordField)
+        let digestUserGroup = itemGroup(title: "Digest認証 ユーザー名", field: digestUserField)
+        let digestPasswordGroup = itemGroup(title: "Digest認証 パスワード", field: digestPasswordField)
         let customHeaderName1Group = itemGroup(title: "ヘッダ名 1", field: customHeaderName1Field)
         let customHeaderValue1Group = itemGroup(title: "値 1", field: customHeaderValue1Field)
         let customHeaderName2Group = itemGroup(title: "ヘッダ名 2 (任意)", field: customHeaderName2Field)
@@ -503,6 +516,8 @@ final class SettingsViewController: UIViewController {
         cfSecretGroupView = cfSecretGroup
         basicUserGroupView = basicUserGroup
         basicPasswordGroupView = basicPasswordGroup
+        digestUserGroupView = digestUserGroup
+        digestPasswordGroupView = digestPasswordGroup
         customHeaderName1GroupView = customHeaderName1Group
         customHeaderValue1GroupView = customHeaderValue1Group
         customHeaderName2GroupView = customHeaderName2Group
@@ -517,6 +532,8 @@ final class SettingsViewController: UIViewController {
             cfSecretGroup,
             basicUserGroup,
             basicPasswordGroup,
+            digestUserGroup,
+            digestPasswordGroup,
             customHeaderName1Group,
             customHeaderValue1Group,
             customHeaderName2Group,
@@ -584,7 +601,7 @@ final class SettingsViewController: UIViewController {
     /// 認証方式のプルダウンの表示と選択肢を、現在の選択に合わせて付け直す。
     private func updateAuthMethodControls() {
         authMethodButton.setTitle(selectedAuthMethod.displayName, for: .normal)
-        let methods: [ServerAuthMethod] = [.none, .cloudflareAccess, .basic, .customHeader]
+        let methods: [ServerAuthMethod] = [.none, .cloudflareAccess, .basic, .digest, .customHeader]
         authMethodButton.menu = UIMenu(children: methods.map { method in
             UIAction(title: method.displayName,
                      state: method == selectedAuthMethod ? .on : .off) { [weak self] _ in
@@ -602,12 +619,20 @@ final class SettingsViewController: UIViewController {
         cfSecretGroupView?.isHidden = selectedAuthMethod != .cloudflareAccess
         basicUserGroupView?.isHidden = selectedAuthMethod != .basic
         basicPasswordGroupView?.isHidden = selectedAuthMethod != .basic
+        digestUserGroupView?.isHidden = selectedAuthMethod != .digest
+        digestPasswordGroupView?.isHidden = selectedAuthMethod != .digest
         customHeaderName1GroupView?.isHidden = selectedAuthMethod != .customHeader
         customHeaderValue1GroupView?.isHidden = selectedAuthMethod != .customHeader
         customHeaderName2GroupView?.isHidden = selectedAuthMethod != .customHeader
         customHeaderValue2GroupView?.isHidden = selectedAuthMethod != .customHeader
         // 隠れた欄はリターンキーの移動先からも外れるため、表示を付け直す。
         refreshReturnKeyTypes()
+    }
+
+    /// Digest認証の入力欄を保存する (保存とログイン前の保存で共用)。
+    private func storeDigestFields(to store: SettingsStore) {
+        store.digestUsername = digestUserField.text ?? ""
+        store.digestPassword = digestPasswordField.text ?? ""
     }
 
     /// カスタムヘッダの入力欄を保存する (保存とログイン前の保存で共用)。
@@ -652,6 +677,8 @@ final class SettingsViewController: UIViewController {
         cfSecretField.text = store.cfClientSecret
         basicUserField.text = store.basicUsername
         basicPasswordField.text = store.basicPassword
+        digestUserField.text = store.digestUsername
+        digestPasswordField.text = store.digestPassword
         customHeaderName1Field.text = store.customHeaderName1
         customHeaderValue1Field.text = store.customHeaderValue1
         customHeaderName2Field.text = store.customHeaderName2
@@ -705,6 +732,7 @@ final class SettingsViewController: UIViewController {
         store.cfClientSecret = cfSecretField.text ?? ""
         store.basicUsername = basicUserField.text ?? ""
         store.basicPassword = basicPasswordField.text ?? ""
+        storeDigestFields(to: store)
         storeCustomHeaderFields(to: store)
         guard store.isConfigured else {
             loginStatusLabel.text = "先に KonomiTV の URL を入力してください。"
@@ -825,6 +853,7 @@ final class SettingsViewController: UIViewController {
         store.cfClientSecret = cfSecretField.text ?? ""
         store.basicUsername = basicUserField.text ?? ""
         store.basicPassword = basicPasswordField.text ?? ""
+        storeDigestFields(to: store)
         storeCustomHeaderFields(to: store)
         view.endEditing(true)
 

@@ -380,6 +380,13 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
         completionHandler(.allow)
     }
 
+    /// サーバーからの認証の求め (Digest認証) への応答は、共通の仕組みへ委ねる。
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        ServerAuthChallengeResponder.respond(to: challenge, completionHandler: completionHandler)
+    }
+
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         if isPlaylist {
             playlistBody.append(data)

@@ -37,6 +37,33 @@ enum KeychainStore {
         }
     }
 
+    /// バイト列のまま保存する値 (ブラウザでログインの Cookie の控え、
+    /// クライアント証明書のファイルの中身) の読み出し。
+    static func data(forKey key: String) -> Data? {
+        var query = baseQuery(forKey: key)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return data
+    }
+
+    /// バイト列を保存する。nil または空なら削除する。
+    static func setData(_ value: Data?, forKey key: String) {
+        guard let value, !value.isEmpty else {
+            SecItemDelete(baseQuery(forKey: key) as CFDictionary)
+            return
+        }
+        let query = baseQuery(forKey: key)
+        let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: value] as CFDictionary)
+        if status == errSecItemNotFound {
+            var attributes = query
+            attributes[kSecValueData as String] = value
+            SecItemAdd(attributes as CFDictionary, nil)
+        }
+    }
+
     private static func baseQuery(forKey key: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
@@ -52,6 +79,7 @@ enum ServerAuthMethod: String {
     case none = "none"
     case cloudflareAccess = "cloudflare_access"
     case basic = "basic"
+    case digest = "digest"
     case customHeader = "custom_header"
 
     /// プルダウンに出す名前。
@@ -60,6 +88,7 @@ enum ServerAuthMethod: String {
         case .none: return "なし"
         case .cloudflareAccess: return "Cloudflare Access (サービストークン)"
         case .basic: return "Basic認証"
+        case .digest: return "Digest認証"
         case .customHeader: return "カスタムヘッダ"
         }
     }
@@ -90,6 +119,7 @@ final class SettingsStore {
         static let cfClientSecret = "viewer_cf_client_secret"
         static let authMethod = "viewer_auth_method"
         static let basicUsername = "viewer_basic_username"
+        static let digestUsername = "viewer_digest_username"
         static let customHeaderName1 = "viewer_custom_header_name_1"
         static let customHeaderName2 = "viewer_custom_header_name_2"
         static let quality = "viewer_quality"
@@ -204,6 +234,7 @@ final class SettingsStore {
         static let password = "konomi_password"
         static let accessToken = "konomi_access_token"
         static let basicPassword = "basic_auth_password"
+        static let digestPassword = "digest_auth_password"
         static let customHeaderValue1 = "custom_header_value_1"
         static let customHeaderValue2 = "custom_header_value_2"
     }
@@ -1034,6 +1065,20 @@ final class SettingsStore {
         set { KeychainStore.setString(newValue, forKey: KeychainKey.basicPassword) }
     }
 
+    /// Digest認証のユーザー名。
+    var digestUsername: String {
+        get { defaults.string(forKey: Key.digestUsername) ?? "" }
+        set { defaults.set(newValue, forKey: Key.digestUsername) }
+    }
+
+    /// Digest認証のパスワードはキーチェーンに保存する (UserDefaults には置かない)。
+    /// Digest はサーバーからの求め (401) に応じて計算して返す方式なので、
+    /// ヘッダーとしては用意せず、応答は ServerAuthChallengeResponder が行う。
+    var digestPassword: String {
+        get { KeychainStore.string(forKey: KeychainKey.digestPassword) ?? "" }
+        set { KeychainStore.setString(newValue, forKey: KeychainKey.digestPassword) }
+    }
+
     /// カスタムヘッダの名前 (1組目・2組目)。自作のリバースプロキシ等で
     /// 独自の合言葉ヘッダを見ている環境向けで、名前は自由に決められる。
     var customHeaderName1: String {
@@ -1073,6 +1118,11 @@ final class SettingsStore {
             guard !user.isEmpty, !pass.isEmpty else { return [:] }
             let credential = Data("\(user):\(pass)".utf8).base64EncodedString()
             return ["Authorization": "Basic \(credential)"]
+        case .digest:
+            // Digest は先回りで付けるヘッダーが無い (サーバーの求めに
+            // 応じて計算する)。応答は ServerAuthChallengeResponder が行い、
+            // AVPlayer 単独では応答できないため再生は中継経由になる。
+            return [:]
         case .customHeader:
             // 名前と値がそろっている組だけを付ける (1組だけでもよい)。
             var headers: [String: String] = [:]
@@ -1084,5 +1134,50 @@ final class SettingsStore {
             }
             return headers
         }
+    }
+}
+
+/// サーバーからの認証の求め (401 の応答) への応答をまとめたもの。
+/// 先回りでヘッダーを付ける方式 (Basic認証・カスタムヘッダ等) と違い、
+/// Digest認証はサーバーが出す材料をもとに計算して返す必要があるため、
+/// 通信の共通の口 (APIClient とアプリ内の中継) がここへ委ねる。
+enum ServerAuthChallengeResponder {
+    static func respond(to challenge: URLAuthenticationChallenge,
+                        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        let store = SettingsStore.shared
+        let space = challenge.protectionSpace
+        // 接続先サーバー以外への求めには関与しない。
+        // 一度失敗した求めにも出し直さない (間違った合言葉での繰り返しを防ぐ)。
+        guard let base = store.baseURL, space.host == base.host,
+              challenge.previousFailureCount == 0 else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+        switch space.authenticationMethod {
+        case NSURLAuthenticationMethodHTTPDigest, NSURLAuthenticationMethodHTTPBasic:
+            // Digest認証が選ばれているときだけ、ユーザー名とパスワードを渡す。
+            // 計算そのものは通信の仕組み (URLSession) 側が行う。
+            guard store.authMethod == .digest else { break }
+            let user = store.digestUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+            let pass = store.digestPassword
+            guard !user.isEmpty, !pass.isEmpty else { break }
+            completionHandler(.useCredential,
+                              URLCredential(user: user, password: pass, persistence: .none))
+            return
+        default:
+            break
+        }
+        completionHandler(.performDefaultHandling, nil)
+    }
+}
+
+/// URLSession の受け手として、認証の求めへの応答だけを
+/// ServerAuthChallengeResponder へ委ねるための小さな受け口。
+/// APIClient が使う (アプリ内の中継は自分が受け手なので、直接委ねる)。
+final class ServerAuthSessionDelegate: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        ServerAuthChallengeResponder.respond(to: challenge, completionHandler: completionHandler)
     }
 }
