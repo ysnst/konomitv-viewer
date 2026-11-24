@@ -972,7 +972,11 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
         func parse(_ value: String?) -> (main: Int, sub: Int) {
             guard let value else { return (Int.max, Int.max) }
             let parts = value.split(separator: "-", maxSplits: 1)
-            guard let main = Int(parts[0]) else { return (Int.max, Int.max) }
+            // 空文字や「-」だけのときは分割結果自体が空になるため、
+            // 先頭を取りに行く前に確かめる (読めない番号は最後に回す)。
+            guard let first = parts.first, let main = Int(first) else {
+                return (Int.max, Int.max)
+            }
             let sub = parts.count > 1 ? (Int(parts[1]) ?? 0) : 0
             return (main, sub)
         }

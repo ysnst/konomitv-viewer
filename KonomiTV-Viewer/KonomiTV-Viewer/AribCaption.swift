@@ -129,6 +129,11 @@ final class CaptionDisplayEngine {
     private var superimposePlaneHeight = 0
     private var captionState = LayerState()
     private var superimposeState = LayerState()
+    /// 中身を空にしたときに絵があった印。空にした直後の更新で
+    /// その時刻に字幕が無い場合、描画側は「変化なし」を返すため、
+    /// この印で呼び出し側へ「絵が消えた」ことを伝える
+    /// (伝えないと、呼び出し側が古い絵を消す機会を失う)。
+    private var clearedWithImage = false
     /// 文字スーパーを出すかどうか (設定の「ビデオの文字スーパー」)。
     /// 部品の用意のときに読み、再生の途中では変えない。
     private var showSuperimpose = false
@@ -230,6 +235,9 @@ final class CaptionDisplayEngine {
     /// 部品の中身 (読み解きと描画の状態) を空にする。
     /// 蓄えた包みは残るので、次の更新でその位置まで流し直される。
     private func flushPipelines() {
+        if currentImage != nil {
+            clearedWithImage = true
+        }
         if let captionDecoder { aribcc_decoder_flush(captionDecoder) }
         if let superimposeDecoder { aribcc_decoder_flush(superimposeDecoder) }
         if let captionRenderer { aribcc_renderer_flush(captionRenderer) }
@@ -404,6 +412,15 @@ final class CaptionDisplayEngine {
         }
         if changed {
             recomposite()
+        }
+        // 空にした直後で、その時刻に字幕が無い (または絵が組み直されて
+        // いない) 場合は、呼び出し側が古い絵を消せるよう「変わった」と
+        // して返す。今の絵は nil なので、呼び出し側はそれで消せる。
+        if clearedWithImage {
+            clearedWithImage = false
+            if currentImage == nil {
+                return true
+            }
         }
         return changed
     }

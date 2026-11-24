@@ -759,20 +759,25 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
             columnBorder.backgroundColor = UIColor.white.withAlphaComponent(0.1)
             columnView.addSubview(columnBorder)
             gridContentView.addSubview(columnView)
-            // 番組の枠。サブチャンネルの番組は同じ列に重ね、重なる相手が
-            // いる枠同士は列を半分ずつに分ける (Web 版と同じ分け方)。
-            let subPrograms = (entry.subchannels ?? []).flatMap { $0.programs }
-            for program in entry.programs {
-                addProgramCell(
-                    program, columnX: columnX, isSubchannel: false,
-                    others: subPrograms, now: now, channel: entry.channel)
-            }
+            // 番組の枠。本チャンネルとサブチャンネルの番組は同じ列に重ね、
+            // 時刻が重なる枠同士は列を等分して並べる。重なりの判定は
+            // 本チャンネル対サブチャンネルだけでなく、サブチャンネル同士の
+            // 重なりも見る (サブ同士だけが重なる場合に、両方が全幅で
+            // 重なって文字が読めなくなるのを避けるため)。
+            // 並びは開始時刻順で、本チャンネルを先 (左) にする。通常の
+            // 本+サブ1つの重なりでは、今までどおり左半分が本チャンネル、
+            // 右半分がサブチャンネルになる。
+            var items: [(program: TimeTableProgram, isSubchannel: Bool, channel: ChannelInfo)] =
+                entry.programs.map { ($0, false, entry.channel) }
             for subchannel in entry.subchannels ?? [] {
-                for program in subchannel.programs {
-                    addProgramCell(
-                        program, columnX: columnX, isSubchannel: true,
-                        others: entry.programs, now: now, channel: subchannel.channel)
-                }
+                items += subchannel.programs.map { ($0, true, subchannel.channel) }
+            }
+            let placements = Self.lanePlacements(for: items.map { $0.program })
+            for (item, placement) in zip(items, placements) {
+                addProgramCell(
+                    item.program, columnX: columnX,
+                    laneIndex: placement.lane, laneCount: placement.laneCount,
+                    now: now, channel: item.channel)
             }
         }
         updateNowLine()
@@ -864,14 +869,67 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
         }
     }
 
+    /// 時刻が重なる番組どうしの、列の中での並び (何番目の帯かと、
+    /// 帯の総数) を決める。重なり合うまとまり (開始が前のまとまりの
+    /// 終わりより前にある間は同じまとまり) ごとに、同時に重なる
+    /// 最大数だけ列を等分し、開始時刻順 (同点では元の並び順) に
+    /// 左から帯を割り当てる。重なる相手が無い番組は帯1つ (全幅)。
+    private static func lanePlacements(
+        for programs: [TimeTableProgram]
+    ) -> [(lane: Int, laneCount: Int)] {
+        var result = [(lane: Int, laneCount: Int)](
+            repeating: (lane: 0, laneCount: 1), count: programs.count)
+        // 日時が読める番組だけを、開始時刻順に並べてまとまりを作る。
+        let dated = programs.indices
+            .filter { programs[$0].startDate != nil && programs[$0].endDate != nil }
+            .sorted {
+                let a = programs[$0], b = programs[$1]
+                if a.startDate != b.startDate { return a.startDate! < b.startDate! }
+                return $0 < $1
+            }
+        var cluster: [Int] = []
+        var clusterEnd: Date?
+        func assignCluster() {
+            guard !cluster.isEmpty else { return }
+            // 帯の割り当て: 終わりが来た帯から再利用する。
+            var laneEnds: [Date] = []
+            var lanes: [Int: Int] = [:]
+            for index in cluster {
+                let program = programs[index]
+                if let free = laneEnds.firstIndex(where: { $0 <= program.startDate! }) {
+                    laneEnds[free] = program.endDate!
+                    lanes[index] = free
+                } else {
+                    lanes[index] = laneEnds.count
+                    laneEnds.append(program.endDate!)
+                }
+            }
+            for index in cluster {
+                result[index] = (lane: lanes[index] ?? 0, laneCount: max(laneEnds.count, 1))
+            }
+            cluster = []
+            clusterEnd = nil
+        }
+        for index in dated {
+            let program = programs[index]
+            if let end = clusterEnd, program.startDate! >= end {
+                assignCluster()
+            }
+            cluster.append(index)
+            clusterEnd = max(clusterEnd ?? program.endDate!, program.endDate!)
+        }
+        assignCluster()
+        return result
+    }
+
     /// 番組の枠を1つ置く。表示範囲 (その日の 4:00〜翌 4:00) の外側は切り取る。
     /// 枠を押すと番組の詳細が開く (channel はその番組の属する局。
     /// サブチャンネルの番組ではサブチャンネル側の局になる)。
     private func addProgramCell(
         _ program: TimeTableProgram,
         columnX: CGFloat,
-        isSubchannel: Bool,
-        others: [TimeTableProgram],
+        laneIndex: Int,
+        laneCount: Int,
         now: Date,
         channel: ChannelInfo
     ) {
@@ -880,13 +938,9 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
         let clippedStart = max(start, selectedDayStart)
         let clippedEnd = min(end, dayEnd)
         guard clippedEnd > clippedStart else { return }
-        // 重なる相手がいる枠は列を半分にする。サブチャンネルは右半分。
-        let isSplit = others.contains { other in
-            guard let otherStart = other.startDate, let otherEnd = other.endDate else { return false }
-            return otherStart < end && otherEnd > start
-        }
-        let width = isSplit ? channelWidth / 2 : channelWidth
-        let x = columnX + (isSubchannel && isSplit ? channelWidth / 2 : 0)
+        // 重なる相手がいる枠は、列を帯の数で等分した自分の帯に置く。
+        let width = channelWidth / CGFloat(max(laneCount, 1))
+        let x = columnX + width * CGFloat(laneIndex)
         let y = CGFloat(clippedStart.timeIntervalSince(selectedDayStart) / 3600) * hourHeight
         let height = CGFloat(clippedEnd.timeIntervalSince(clippedStart) / 3600) * hourHeight
         let cell = TimeTableProgramCellView(

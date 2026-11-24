@@ -159,6 +159,14 @@ final class TimeTableSettingsStore {
     private var pendingSave: TimeTableDisplaySettings?
     private var isSaving = false
 
+    /// ログアウトで端末内の控えが消されたあと、今の値を既定値に戻す
+    /// (控えが消えた状態は、初期化のときに既定値で受けるのと同じ)。
+    /// 送信待ちの変更も取り下げる。
+    func reloadFromLocalAfterLogout() {
+        pendingSave = nil
+        current = TimeTableDisplaySettings.defaults
+    }
+
     /// 値を差し替える。端末内の控えへはその場で書き、同期が効いている
     /// ときはサーバーへも送る (送信は裏で行い、失敗しても握りつぶす)。
     func update(_ settings: TimeTableDisplaySettings) {

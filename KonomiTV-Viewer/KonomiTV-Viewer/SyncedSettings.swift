@@ -263,6 +263,19 @@ final class SyncedSettingsStore {
     private var preservedCaptionFont: String?
     private var captionFontWhenPreserved: String?
 
+    /// ログアウトで端末内の控えが消されたあと、今の値を控えから
+    /// 読み直す (控えが無くなった項目は既定値に戻る)。送信待ちの
+    /// 変更も取り下げる (前のログインの変更を、次のログインで
+    /// 送らないため)。
+    func reloadFromLocalAfterLogout() {
+        pendingSave = nil
+        preservedMutedKeywordEntries = []
+        preservedMylistEntries = []
+        preservedCaptionFont = nil
+        captionFontWhenPreserved = nil
+        current = Self.loadFromLocal()
+    }
+
     /// 値を差し替える。端末内の控えへはその場で書き、同期が効いている
     /// ときはサーバーへも送る (送信は裏で行い、失敗しても握りつぶす)。
     func update(_ settings: SyncedClientSettings) {
@@ -322,7 +335,16 @@ final class SyncedSettingsStore {
         // 送信待ちの変更があるときは取り込まない。取り込むと、送る前の
         // 変更までサーバーの古い値で上書きされてしまうため。
         guard pendingSave == nil, !isSaving else { return false }
+        let currentAtStart = current
         guard let settings = try? await APIClient.shared.fetchClientSettings() else {
+            return false
+        }
+        // 取り込みの最中に利用者が変更していたら、その変更を古い
+        // サーバー値で上書きしない (画面を開いた直後に字幕設定などを
+        // 変えたときの巻き戻しを防ぐ)。開始時点の確かめだけでは、
+        // 取得の合間に始まった変更を取りこぼすため、取得のあとでも
+        // もう一度確かめる。
+        guard pendingSave == nil, !isSaving, current == currentAtStart else {
             return false
         }
         capturePreservedEntries(from: settings)

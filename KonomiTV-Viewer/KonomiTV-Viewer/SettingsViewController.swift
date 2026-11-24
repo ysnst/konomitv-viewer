@@ -178,12 +178,32 @@ final class SettingsViewController: UIViewController {
     @objc private func rebuildForUIScale() {
         guard !isRebuildScheduled else { return }
         isRebuildScheduled = true
+        // 組み直しの前に、保存前の入力 (接続先 URL・認証方式・各方式の
+        // 入力欄・ログインの入力欄) を控える。組み直しのあとで
+        // 保存済みの値を読み戻すと、編集中の内容が黙って元に戻って
+        // しまうため、控えた編集中の内容を組み直しのあとで戻す。
+        let editingValues: [(UITextField, String?)] = [
+            urlField, cfIDField, cfSecretField,
+            basicUserField, basicPasswordField,
+            digestUserField, digestPasswordField,
+            customHeaderName1Field, customHeaderValue1Field,
+            customHeaderName2Field, customHeaderValue2Field,
+            urlParameterNameField, urlParameterValueField,
+            usernameField, passwordField,
+        ].map { ($0, $0.text) }
+        let editingAuthMethod = selectedAuthMethod
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.isRebuildScheduled = false
             self.view.subviews.forEach { $0.removeFromSuperview() }
             self.buildLayout()
             self.loadValues()
+            for (field, text) in editingValues {
+                field.text = text
+            }
+            self.selectedAuthMethod = editingAuthMethod
+            self.updateAuthMethodControls()
+            self.refreshAuthFieldVisibility()
             self.updateUIScaleControls()
         }
     }

@@ -372,6 +372,10 @@ final class ReservationListViewController: UIViewController, UITableViewDataSour
                 let data = try await APIClient.shared.fetchChannelLogo(channelID: channelID)
                 guard let image = UIImage(data: data) else { return }
                 self.logoCache.setObject(image, forKey: channelID as NSString)
+                // 行がスクロールで別の予約に使い回されていたら入れない
+                // (生放送一覧側と同じ確かめ。次にその行が表示されるときに
+                // キャッシュから出る)。
+                guard cell?.logoChannelID == channelID else { return }
                 cell?.setLogo(image)
             } catch {
                 self.failedLogoIDs.insert(channelID)
@@ -656,6 +660,12 @@ final class ReservationCell: UITableViewCell {
         let dimmed: CGFloat = isEnabled ? 1 : 0.45
         textStack.alpha = dimmed
         priorityBox.alpha = dimmed
+    }
+
+    /// いまこの行が表している予約の局の ID (ロゴの取り込み完了時に、
+    /// 行が別の予約へ使い回されていないかを確かめるために使う)。
+    var logoChannelID: String? {
+        currentReservation?.channel.display_channel_id
     }
 
     func setLogo(_ image: UIImage) {

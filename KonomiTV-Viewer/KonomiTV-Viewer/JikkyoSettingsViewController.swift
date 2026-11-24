@@ -184,6 +184,8 @@ final class JikkyoSettingsViewController: SettingsDetailViewController {
         case loading
         case unlinked
         case linked(name: String)
+        /// 状態確認自体が失敗したとき (連携しているかどうか分からない)。
+        case checkFailed
     }
     private var niconicoState: NiconicoLinkState = .loading {
         didSet { applyNiconicoState() }
@@ -207,7 +209,10 @@ final class JikkyoSettingsViewController: SettingsDetailViewController {
                     self.niconicoState = .unlinked
                 }
             } catch {
-                self?.niconicoState = .unlinked
+                // 確認できなかっただけでは「未連携」とは言えない。
+                // 連携済みの人が不要な連携のやり直しを始めないよう、
+                // 失敗と分かる表示に分ける。
+                self?.niconicoState = .checkFailed
             }
         }
     }
@@ -233,6 +238,10 @@ final class JikkyoSettingsViewController: SettingsDetailViewController {
             niconicoDescriptionLabel.text = "連携を解除すると、コメントは NX-Jikkyo への投稿に戻ります。"
             niconicoActionButton.setTitle("連携を解除する", for: .normal)
             niconicoActionButton.isHidden = false
+        case .checkFailed:
+            niconicoStatusLabel.text = "連携の状態を確認できませんでした"
+            niconicoDescriptionLabel.text = "通信に失敗しました。接続先とネットワークを確認して、画面を開き直してください。"
+            niconicoActionButton.isHidden = true
         }
     }
 
@@ -242,7 +251,7 @@ final class JikkyoSettingsViewController: SettingsDetailViewController {
             openNiconicoAuth()
         case .linked:
             confirmNiconicoLogout()
-        case .notLoggedIn, .loading:
+        case .notLoggedIn, .loading, .checkFailed:
             break
         }
     }

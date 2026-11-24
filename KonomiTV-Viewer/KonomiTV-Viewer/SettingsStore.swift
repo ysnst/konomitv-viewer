@@ -239,6 +239,7 @@ final class SettingsStore {
     }
 
     private enum KeychainKey {
+        static let cfClientSecret = "cf_access_client_secret"
         static let password = "konomi_password"
         static let accessToken = "konomi_access_token"
         static let basicPassword = "basic_auth_password"
@@ -256,6 +257,21 @@ final class SettingsStore {
     private init() {
         migratePlaybackSettingsIfNeeded()
         migrateCustomizedFeaturesIfNeeded()
+        migrateCFClientSecretToKeychainIfNeeded()
+    }
+
+    /// Cloudflare Access の秘密の値を、通常の保存領域から
+    /// キーチェーンへ移す。旧版で保存された値と、設定アプリ側で
+    /// 書き込まれた値のどちらも、値が通常の保存領域に残っていれば
+    /// そのまま引き継ぐ (利用者が入れ直す必要は無い)。移した後は
+    /// 通常の保存領域からは消す。空文字が入っていた場合は
+    /// 「消した」という意味として受け取り、キーチェーン側も消す。
+    private func migrateCFClientSecretToKeychainIfNeeded() {
+        guard let legacy = defaults.object(forKey: Key.cfClientSecret) as? String else {
+            return
+        }
+        KeychainStore.setString(legacy, forKey: KeychainKey.cfClientSecret)
+        defaults.removeObject(forKey: Key.cfClientSecret)
     }
 
     /// 旧まとめトグルから、機能ごとの個別トグルへの引き継ぎ。
@@ -354,9 +370,16 @@ final class SettingsStore {
         set { defaults.set(newValue, forKey: Key.cfClientID) }
     }
 
+    /// Cloudflare Access の秘密の値。他の合言葉と同じく
+    /// キーチェーンに保存する (通常の保存領域には置かない)。
+    /// 設定アプリ側で書き込まれた値が残っていたら、読む前に
+    /// キーチェーンへ移してから返す (引き継ぎ)。
     var cfClientSecret: String {
-        get { defaults.string(forKey: Key.cfClientSecret) ?? "" }
-        set { defaults.set(newValue, forKey: Key.cfClientSecret) }
+        get {
+            migrateCFClientSecretToKeychainIfNeeded()
+            return KeychainStore.string(forKey: KeychainKey.cfClientSecret) ?? ""
+        }
+        set { KeychainStore.setString(newValue, forKey: KeychainKey.cfClientSecret) }
     }
 
     /// 旧「既定の画質」(仮版までの単一の画質設定)。正式な設定への引き継ぎ元
@@ -1029,10 +1052,43 @@ final class SettingsStore {
         self.accessToken = token
     }
 
-    /// ログアウトする。ユーザー名は次回の入力の手間を減らすため残す。
+    /// ログアウトで消す、同期まわりの端末内の控えのキー一式。
+    /// 字幕・実況・全般の共通設定の控えと、番組表の表示設定の控えが
+    /// 対象 (番組表の予約の塗りのような端末だけの設定は対象外)。
+    private static let syncedLocalKeys: [String] = [
+        Key.captionFont, Key.alwaysBorderCaptionText, Key.specifyCaptionOpacity,
+        Key.captionOpacity, Key.tvShowSuperimpose, Key.videoShowSuperimpose,
+        Key.commentSpeedRate, Key.commentFontSize,
+        Key.muteBigSizeComments, Key.muteFixedComments, Key.muteColoredComments,
+        Key.muteConsecutiveSameCharactersComments, Key.muteCommentKeywordsNormalize,
+        Key.mutedCommentKeywords, Key.mutedNiconicoUserIDs,
+        Key.pinnedChannelIDs, Key.mylist, Key.videoWatchedHistoryMaxCount,
+        Key.videoPanelActiveTab,
+        "viewer_prefer_posting_to_nicolive",
+        "viewer_close_comment_form_after_sending",
+        "viewer_tv_panel_active_tab",
+        "viewer_tv_channel_sort_by_jikkyo_force",
+        "viewer_use_28hour_clock",
+        "viewer_show_original_broadcast_time_during_playback",
+        Key.timeTableChannelWidth, Key.timeTableHourHeight,
+        Key.timeTableDimShoppingPrograms, Key.timeTableGenreColors,
+    ]
+
+    /// ログアウトする。ユーザー名は次回の入力の手間を減らすため残す
+    /// (画面にもその旨の説明がある、意図した仕様)。
+    /// あわせて、同期で端末に写された設定の控えと、最後に同期した
+    /// 時刻も消す。残すと、別のアカウントで入ったときに前の
+    /// アカウントの控えがそのまま表示され続けるため。消したあとは
+    /// 控えを持つ側の今の値も、控えから読み直して既定値に戻す。
     func clearLogin() {
         accessToken = ""
         password = ""
+        for key in Self.syncedLocalKeys {
+            defaults.removeObject(forKey: key)
+        }
+        defaults.removeObject(forKey: Key.lastSyncedAt)
+        SyncedSettingsStore.shared.reloadFromLocalAfterLogout()
+        TimeTableSettingsStore.shared.reloadFromLocalAfterLogout()
     }
 
     /// Cloudflare Access のサービストークンが両方そろっていれば、付けるべきヘッダーを返す。
@@ -1153,13 +1209,34 @@ final class SettingsStore {
         KeychainStore.setData(nil, forKey: KeychainKey.browserLoginCookies)
     }
 
+    /// Cookie の送り先の絞り (path) が、送り先のパスに合うかどうか。
+    /// 絞りが「/」なら全てに合う。それ以外は、パスが絞りと一致するか、
+    /// 絞りの下の階層のときだけ合うものとする。
+    static func cookiePath(_ cookiePath: String, matchesRequestPath requestPath: String) -> Bool {
+        let path = cookiePath.isEmpty ? "/" : cookiePath
+        if path == "/" { return true }
+        if requestPath == path { return true }
+        guard requestPath.hasPrefix(path) else { return false }
+        return path.hasSuffix("/") || requestPath.dropFirst(path.count).hasPrefix("/")
+    }
+
     /// 接続先へ送る Cookie ヘッダーの中身。宛先が接続先に合い、
-    /// 期限の切れていない Cookie だけを並べる。送るものが無ければ nil。
+    /// 期限の切れていない Cookie だけを並べる。あわせて、
+    /// 「https のときだけ送る」印が付いた Cookie は接続先が
+    /// https のときだけ送り、送り先の絞り (path) が付いた Cookie は
+    /// 接続先のパスがその絞りに合うときだけ送る。
+    /// 送るものが無ければ nil。
     var browserLoginCookieHeader: String? {
-        guard let host = baseURL?.host else { return nil }
+        guard let base = baseURL, let host = base.host else { return nil }
+        let isSecureConnection = base.scheme?.lowercased() == "https"
+        let requestPath = base.path.isEmpty ? "/" : base.path
         let now = Date()
         let pairs = browserLoginCookies.compactMap { cookie -> String? in
             guard Self.cookieDomain(cookie.domain, matchesHost: host) else { return nil }
+            if cookie.isSecure, !isSecureConnection { return nil }
+            guard Self.cookiePath(cookie.path, matchesRequestPath: requestPath) else {
+                return nil
+            }
             if let expires = cookie.expiresDate, expires <= now { return nil }
             return "\(cookie.name)=\(cookie.value)"
         }
@@ -1383,20 +1460,48 @@ enum ServerAuthChallengeResponder {
                         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         let store = SettingsStore.shared
         let space = challenge.protectionSpace
-        // 接続先サーバー以外への求めには関与しない。
+        // 接続先サーバー以外への求めには関与しない。相手の確かめは
+        // ホスト名だけでなく、ポート番号と通信の保護 (https かどうか)
+        // も見る。ポートが 0 の求めは、その方式の決まったポートとして
+        // 扱う (通常の接続先・通常ポートでは今までどおり通る)。
         // 一度失敗した求めにも出し直さない (間違った合言葉での繰り返しを防ぐ)。
         guard let base = store.baseURL, space.host == base.host,
               challenge.previousFailureCount == 0 else {
             completionHandler(.performDefaultHandling, nil)
             return
         }
+        let baseScheme = base.scheme?.lowercased() ?? "https"
+        if let spaceProtocol = space.protocol?.lowercased(),
+           !spaceProtocol.isEmpty, spaceProtocol != baseScheme {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+        let defaultPort = baseScheme == "https" ? 443 : 80
+        let basePort = base.port ?? defaultPort
+        let spacePort = space.port == 0 ? defaultPort : space.port
+        guard spacePort == basePort else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
         switch space.authenticationMethod {
-        case NSURLAuthenticationMethodHTTPDigest, NSURLAuthenticationMethodHTTPBasic:
-            // Digest認証が選ばれているときだけ、ユーザー名とパスワードを渡す。
+        case NSURLAuthenticationMethodHTTPDigest:
+            // Digest認証が選ばれているときだけ、Digest用の
+            // ユーザー名とパスワードを渡す。
             // 計算そのものは通信の仕組み (URLSession) 側が行う。
             guard store.authMethod == .digest else { break }
             let user = store.digestUsername.trimmingCharacters(in: .whitespacesAndNewlines)
             let pass = store.digestPassword
+            guard !user.isEmpty, !pass.isEmpty else { break }
+            completionHandler(.useCredential,
+                              URLCredential(user: user, password: pass, persistence: .none))
+            return
+        case NSURLAuthenticationMethodHTTPBasic:
+            // Basic認証の求めには、Basic認証が選ばれているときだけ、
+            // Basic用の資格情報を渡す。Digest用のパスワードを
+            // Basic (平文に近い形) で送ることはしない。
+            guard store.authMethod == .basic else { break }
+            let user = store.basicUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+            let pass = store.basicPassword
             guard !user.isEmpty, !pass.isEmpty else { break }
             completionHandler(.useCredential,
                               URLCredential(user: user, password: pass, persistence: .none))

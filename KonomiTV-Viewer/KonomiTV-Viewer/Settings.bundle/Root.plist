@@ -38,7 +38,7 @@
 			<key>Title</key>
 			<string>Cloudflare Access (任意)</string>
 			<key>FooterText</key>
-			<string>サービストークンを設定すると、全ての通信にヘッダーとして付けます。</string>
+			<string>サービストークンを設定すると、全ての通信にヘッダーとして付けます。秘密の値 (Client Secret) は、秘密の値を入れる場所 (キーチェーン) に置くため、ここには置かず、アプリ内の設定画面で入力してください。以前ここに入れた値は、アプリが自動で移して引き継ぎます。</string>
 		</dict>
 		<dict>
 			<key>Type</key>
@@ -51,24 +51,6 @@
 			<string></string>
 			<key>IsSecure</key>
 			<false/>
-			<key>KeyboardType</key>
-			<string>AsciiCapable</string>
-			<key>AutocapitalizationType</key>
-			<string>None</string>
-			<key>AutocorrectionType</key>
-			<string>No</string>
-		</dict>
-		<dict>
-			<key>Type</key>
-			<string>PSTextFieldSpecifier</string>
-			<key>Title</key>
-			<string>Access Client Secret</string>
-			<key>Key</key>
-			<string>viewer_cf_client_secret</string>
-			<key>DefaultValue</key>
-			<string></string>
-			<key>IsSecure</key>
-			<true/>
 			<key>KeyboardType</key>
 			<string>AsciiCapable</string>
 			<key>AutocapitalizationType</key>

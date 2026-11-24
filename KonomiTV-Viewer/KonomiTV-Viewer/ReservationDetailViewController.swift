@@ -54,8 +54,12 @@ final class ReservationDetailViewController: UIViewController {
     /// 画面を開いたあとで本体を取り直す。
     private var reservation: Reservation?
     private var reservationID: Int?
-    /// 土台が EDCB かどうか。nil はまだ分からない状態。
+    /// 土台が EDCB かどうか。nil はまだ分からない状態
+    /// (確認中、または確認自体が失敗したとき)。
     private var backendIsEDCB: Bool?
+    /// 土台の確認が通信の失敗などでできなかったかどうか。
+    /// 「EDCB でない」と取り違えて案内しないために分けて持つ。
+    private var backendCheckFailed = false
     /// 予約本体の取り直しに失敗したかどうか。
     private var reservationLoadFailed = false
     private var isWorking = false
@@ -186,7 +190,7 @@ final class ReservationDetailViewController: UIViewController {
     private func loadBackendAndReservation() {
         Task { [weak self] in
             guard let self else { return }
-            async let backend = APIClient.shared.fetchServerBackend()
+            async let backend = APIClient.shared.fetchServerBackendResult()
             async let channels = APIClient.shared.fetchChannels()
             if let reservationID = self.reservationID, self.reservation == nil {
                 if let fetched = try? await APIClient.shared.fetchReservation(id: reservationID) {
@@ -195,7 +199,15 @@ final class ReservationDetailViewController: UIViewController {
                     self.reservationLoadFailed = true
                 }
             }
-            self.backendIsEDCB = await backend == "EDCB"
+            switch await backend {
+            case .backend(let value):
+                self.backendIsEDCB = value == "EDCB"
+                self.backendCheckFailed = false
+            case .unavailable:
+                // 取れなかっただけでは「EDCB でない」とは言えない。
+                self.backendIsEDCB = nil
+                self.backendCheckFailed = true
+            }
             if let response = try? await channels {
                 self.liveChannel = response.groups
                     .flatMap { $0.channels }
@@ -247,7 +259,11 @@ final class ReservationDetailViewController: UIViewController {
                     color: UIColor(red: 0xFF / 255, green: 0x52 / 255, blue: 0x52 / 255, alpha: 1)))
             }
         }
-        if backendIsEDCB == false && !isPast {
+        if backendCheckFailed && !isPast {
+            contentStack.addArrangedSubview(makeBanner(
+                text: "サーバーの土台を確認できませんでした。接続先とネットワークを確認してください。",
+                color: AppPalette.warning))
+        } else if backendIsEDCB == false && !isPast {
             contentStack.addArrangedSubview(makeBanner(
                 text: "録画予約機能は EDCB バックエンド選択時のみ利用できます。",
                 color: AppPalette.accent))
@@ -482,7 +498,10 @@ final class ReservationDetailViewController: UIViewController {
     /// 並びは Web 版の引き出しの下端と同じで、左から「視聴」→
     /// 「予約を削除」→「予約を追加」の順の右寄せ横並び
     /// (削除と追加は同時には出ない)。
-    /// 終了済みの番組と、予約本体の取り直し中・失敗時は帯ごと隠す。
+    /// 終了済みの番組と、予約本体の取り直し中は帯ごと隠す。
+    /// 取り直しに失敗したときは、予約の情報が無くても出せる操作
+    /// (放送中なら「視聴」) だけを出す。予約の追加・削除・シリーズ
+    /// 予約は、予約が本当にあるかどうか分からない間は出さない。
     private func rebuildActions(isPast: Bool) {
         for view in actionsStack.arrangedSubviews {
             actionsStack.removeArrangedSubview(view)
@@ -494,8 +513,22 @@ final class ReservationDetailViewController: UIViewController {
         seriesButton = nil
 
         let isLoadingReservation = reservation == nil && reservationID != nil
+            && !reservationLoadFailed
         guard !isPast, !isLoadingReservation else {
             setActionsBarVisible(false)
+            return
+        }
+        if reservationLoadFailed, reservation == nil, reservationID != nil {
+            if canWatchNow {
+                let button = makeActionButton(
+                    title: "視聴", systemImage: "play.fill", filled: true,
+                    action: #selector(watchTapped))
+                watchButton = button
+                actionsStack.addArrangedSubview(button)
+                setActionsBarVisible(true)
+            } else {
+                setActionsBarVisible(false)
+            }
             return
         }
 

@@ -582,11 +582,34 @@ final class APIClient {
     /// サーバー設定の取得口はログイン不要。取れなかった場合は nil。
     /// 録画予約が使えるかどうかの判定はこの値で行う (Web 版と同じ)。
     func fetchServerBackend() async -> String? {
-        guard let request = try? request(forPath: "/api/settings/server") else { return nil }
+        if case .backend(let backend) = await fetchServerBackendResult() {
+            return backend
+        }
+        return nil
+    }
+
+    /// 土台確認の結果。「取れた (値つき)」と「取れなかった」を分ける。
+    /// 通信の失敗と「EDCB でない」を取り違えないよう、呼び出し側で
+    /// 案内を出し分けるときはこちらを使う。
+    enum ServerBackendResult {
+        case backend(String)
+        case unavailable
+    }
+
+    /// サーバーの土台を取り、通信の失敗や読み解きの失敗は
+    /// 「取れなかった」として返す (値が無いことと区別する)。
+    func fetchServerBackendResult() async -> ServerBackendResult {
+        guard let request = try? request(forPath: "/api/settings/server") else {
+            return .unavailable
+        }
         guard let (data, response) = try? await session.data(for: request),
               let http = response as? HTTPURLResponse,
-              (200..<300).contains(http.statusCode) else { return nil }
-        return try? JSONDecoder().decode(ServerBackendResponse.self, from: data).general.backend
+              (200..<300).contains(http.statusCode),
+              let backend = try? JSONDecoder().decode(
+                ServerBackendResponse.self, from: data).general.backend else {
+            return .unavailable
+        }
+        return .backend(backend)
     }
 
     /// 予約一覧を取る。

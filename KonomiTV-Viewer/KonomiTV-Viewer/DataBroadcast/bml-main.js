@@ -284,27 +284,40 @@
                         var concatData = new Uint8Array(archived.length + addData.length);
                         concatData.set(archived);
                         concatData.set(addData, archived.length);
-                        var rest = readPSIArchivedDataChunk(ctx, concatData.buffer, 0, function (second, packets, pid) {
-                            // PCR (Packet Clock Reference) を取得して送信
-                            var pcr = Math.floor(second * 90000);
-                            if (lastPcr !== pcr) {
-                                onMessage({
-                                    type: 'pcr',
-                                    pcrBase: pcr,
-                                    pcrExtension: 0,
-                                });
-                                lastPcr = pcr;
-                            }
-                            // TS パケットのヘッダを設定してデコード
-                            // (解読で例外が出ても、材料の受け取り全体を
-                            // 失敗にしないための守り)
-                            setTSPacketHeader(counters, packets, pid);
-                            try {
-                                tsStream.parse(packets);
-                            } catch (e) {
-                                // この包みの解読だけを飛ばして続ける
-                            }
-                        });
+                        var rest = null;
+                        try {
+                            rest = readPSIArchivedDataChunk(ctx, concatData.buffer, 0, function (second, packets, pid) {
+                                // PCR (Packet Clock Reference) を取得して送信
+                                var pcr = Math.floor(second * 90000);
+                                if (lastPcr !== pcr) {
+                                    onMessage({
+                                        type: 'pcr',
+                                        pcrBase: pcr,
+                                        pcrExtension: 0,
+                                    });
+                                    lastPcr = pcr;
+                                }
+                                // TS パケットのヘッダを設定してデコード
+                                // (材料が崩れていて包みが無い・解読で例外が
+                                // 出ても、その包みだけを飛ばして続ける)
+                                if (!packets) {
+                                    return;
+                                }
+                                try {
+                                    setTSPacketHeader(counters, packets, pid);
+                                    tsStream.parse(packets);
+                                } catch (e) {
+                                    // この包みの解読だけを飛ばして続ける
+                                }
+                            });
+                        } catch (e) {
+                            // 読み解きの段で例外が出ても、受け取り全体を
+                            // 失敗扱いにしない。崩れた分は捨て、途中経過も
+                            // 空に戻して、次の塊から読み直す。
+                            ctx = {};
+                            archived = new Uint8Array(0);
+                            continue;
+                        }
                         if (rest) {
                             archived = new Uint8Array(rest);
                         }
@@ -666,8 +679,20 @@
         },
     };
 
-    function start(config) {
-        stopInternal();
+    async function start(config) {
+        try {
+            await startInternal(config);
+        } catch (e) {
+            // 開始の途中で例外が出ても、読み込み中のまま固まらないよう、
+            // 失敗をアプリ側へ知らせる。
+            postStatus('error');
+        }
+    }
+
+    async function startInternal(config) {
+        // 前回の後片付けが終わってから新しい置き場を作る
+        // (終わる前に作ると、後片付けが新しい置き場まで消してしまう)。
+        await stopInternal();
         postStatus('loading');
         availability = null;
 
@@ -878,6 +903,10 @@
             decoder.destroy();
             decoder = null;
         }
+        // 置き場は最初に控えておき、破棄を待っている間に新しい開始が
+        // 作った置き場は消さない (控えた置き場だけを消す)。
+        var targetContainer = container;
+        container = null;
         if (browser !== null) {
             var target = browser;
             browser = null;
@@ -887,9 +916,8 @@
                 // 破棄の失敗で止め直しが詰まらないようにする
             }
         }
-        if (container !== null) {
-            container.remove();
-            container = null;
+        if (targetContainer !== null) {
+            targetContainer.remove();
         }
     }
 
