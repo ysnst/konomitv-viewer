@@ -26,7 +26,7 @@ import UIKit
 /// 見出し帯は設定まわりの画面・視聴履歴と同じ形: 高さ 60px・地は
 /// background-lighten-1、左端は矢印だけの戻るボタン、ページ名 22px。
 /// 端からの横スワイプでも戻れる。
-final class TrashViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+final class TrashViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UIGestureRecognizerDelegate {
     /// 並び順 (Web 版のゴミ箱の並び替えと同じ4通り)。
     /// 既定は「録画が新しい順」で、画面を開くたびに既定に戻る
     /// (端末への保存はしない。Web 版と同じ)。
@@ -90,10 +90,28 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
     /// なぞり始める前に各項目が選択されていたかどうか。範囲から
     /// 外れたときに、なぞる前の状態へ戻すために持つ。
     private var dragBaseline: [Int: Bool] = [:]
-    /// なぞり選択専用の指の動きの受け口。一覧のスクロールとは
-    /// 切り離してあり、なぞっている間は一覧を指に付いて動かさず、
-    /// 指が画面の端に来たときだけ自動で少しずつ流す。
+    /// なぞり選択専用の指の動きの受け口。選択中だけ有効にし、
+    /// 選択中でないときは一覧のスクロールに一切触れない (有効なまま
+    /// だと、選択中でないときでも受け口が指の動きを横取りして、
+    /// 普通のスクロールができなくなった)。
+    /// 選択中は一覧のスクロールと同時に動きを見て、指の勢いで
+    /// 使い分ける: 速い動き (フリック) はスクロールに譲り、
+    /// ゆっくりした動きはなぞり選択として取り込む。なぞり選択に
+    /// 決まったら一覧を指に付いて動かさず、指が画面の端に来た
+    /// ときだけ自動で少しずつ流す。
     private let dragSelectionGesture = UIPanGestureRecognizer()
+    /// 触れた行の控え。スクロールか なぞり選択か決まるまで、
+    /// 起点の行はここに置く (決まった時点で dragAnchorRow へ移す)。
+    private var dragPendingAnchorRow: Int?
+    /// この指の動きをなぞり選択として取り込んだかどうか。
+    private var dragCommitted = false
+    /// この指の動きをスクロールに譲ったかどうか。譲ったあとは
+    /// 指を離すまで、なぞり選択には切り替えない。
+    private var dragAbandoned = false
+    /// スクロールか なぞり選択かを決めるまでの、指の移動量。
+    private static let dragDecisionDistance: CGFloat = 16
+    /// これより速い指の動きはスクロールとして扱う速さ (1秒あたり)。
+    private static let dragScrollSpeedThreshold: CGFloat = 600
     /// 指の位置 (画面全体での座標)。端に近いかの判定に使う。
     private var dragFingerPoint: CGPoint?
     /// 端での自動スクロールを進めるための、表示の刻み。
@@ -154,10 +172,14 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
         refreshControl.addTarget(self, action: #selector(refresh), for: .valueChanged)
         tableView.refreshControl = refreshControl
         // 選択中になぞって連続で選べるよう、なぞり選択専用の
-        // 指の動きの受け口を付ける。一覧自体のスクロールとは
-        // 切り離してある (handleDragSelection を参照)。
+        // 指の動きの受け口を付ける。選択中だけ有効にし、それ以外
+        // では一覧のスクロールに触れない。選択中は一覧のスクロール
+        // と同時に動きを見て、勢いで使い分ける
+        // (handleDragSelection を参照)。
         dragSelectionGesture.addTarget(
             self, action: #selector(handleDragSelection(_:)))
+        dragSelectionGesture.delegate = self
+        dragSelectionGesture.isEnabled = false
         tableView.addGestureRecognizer(dragSelectionGesture)
         view.addSubview(tableView)
 
@@ -572,13 +594,51 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
     /// 震えて見えた。今は指が項目の上を移動した分だけで範囲を広げ、
     /// 画面の端に指を持っていったときだけ、端からの近さに応じた
     /// 速さで一覧が少しずつ流れる (stepDragAutoScroll)。
+    ///
+    /// ただし、触れた直後はスクロールか なぞり選択か決めない。
+    /// 一覧のスクロールと同時に指の動きを見て (同時の見守りは
+    /// gestureRecognizer(_:shouldRecognizeSimultaneouslyWith:) で
+    /// 許可)、指がある程度動いた時点で勢いを見る。速ければ
+    /// スクロールに譲ってこの指には最後まで関わらず、ゆっくりなら
+    /// なぞり選択として取り込む。取り込むまでは一覧が指に付いて
+    /// 少し流れるが、決まるまでの動きはわずかなので、範囲の起点は
+    /// 触れた行のまま保てる。
     @objc private func handleDragSelection(_ gesture: UIPanGestureRecognizer) {
         switch gesture.state {
         case .began:
             guard isSelectionMode, !isBulkRunning, !isLoading else { return }
             guard let row = dragRow(at: gesture.location(in: tableView)) else { return }
-            dragAnchorRow = row
-            dragSelecting = !selectedIDs.contains(displayItems[row].program.id)
+            // ここでは起点の行を控えるだけにし、スクロールは止めない。
+            dragPendingAnchorRow = row
+            dragCommitted = false
+            dragAbandoned = false
+        case .changed:
+            guard isSelectionMode else { return }
+            if dragCommitted {
+                guard dragAnchorRow != nil else { return }
+                dragFingerPoint = gesture.location(in: view)
+                if let row = dragRow(at: gesture.location(in: tableView)) {
+                    applyDragSelection(toRow: row)
+                }
+                return
+            }
+            guard !dragAbandoned, let anchorRow = dragPendingAnchorRow else { return }
+            let translation = gesture.translation(in: view)
+            guard hypot(translation.x, translation.y) >= Self.dragDecisionDistance
+            else { return }
+            let velocity = gesture.velocity(in: view)
+            if hypot(velocity.x, velocity.y) > Self.dragScrollSpeedThreshold {
+                // 速い動きはスクロール。一覧側がそのまま流すので、
+                // この指にはもう関わらない。
+                dragAbandoned = true
+                dragPendingAnchorRow = nil
+                return
+            }
+            // ゆっくりした動きは、なぞり選択として取り込む。
+            dragCommitted = true
+            dragPendingAnchorRow = nil
+            dragAnchorRow = anchorRow
+            dragSelecting = !selectedIDs.contains(displayItems[anchorRow].program.id)
             dragRangeIDs = []
             dragBaseline = [:]
             dragFingerPoint = gesture.location(in: view)
@@ -587,14 +647,10 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
             tableView.isScrollEnabled = false
             tableView.setContentOffset(tableView.contentOffset, animated: false)
             refreshControl.isEnabled = false
-            applyDragSelection(toRow: row)
-            startDragAutoScroll()
-        case .changed:
-            guard isSelectionMode, dragAnchorRow != nil else { return }
-            dragFingerPoint = gesture.location(in: view)
             if let row = dragRow(at: gesture.location(in: tableView)) {
                 applyDragSelection(toRow: row)
             }
+            startDragAutoScroll()
         default:
             finishDragSelection()
         }
@@ -606,11 +662,25 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
         dragScrollLink?.invalidate()
         dragScrollLink = nil
         dragAnchorRow = nil
+        dragPendingAnchorRow = nil
+        dragCommitted = false
+        dragAbandoned = false
         dragRangeIDs = []
         dragBaseline = [:]
         dragFingerPoint = nil
         tableView.isScrollEnabled = true
         refreshControl.isEnabled = true
+    }
+
+    /// なぞり選択の受け口は、一覧のスクロールと同時に指の動きを
+    /// 見られるようにする (スクロールかどうかの見分けに使う)。
+    /// それ以外の受け口とは同時に動かさない。
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        gestureRecognizer === dragSelectionGesture
+            && otherGestureRecognizer === tableView.panGestureRecognizer
     }
 
     /// 端での自動スクロールの刻みを始める。
@@ -851,6 +921,8 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
             exitSelectionMode()
         } else {
             isSelectionMode = true
+            // なぞり選択の受け口は、選択中だけ有効にする。
+            dragSelectionGesture.isEnabled = true
             selectButton.setTitle("選択を終える", for: .normal)
             updateControlsVisibility()
             tableView.reloadData()
@@ -860,6 +932,7 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
     /// 選択中を終える。選んでいた内容は破棄する。
     private func exitSelectionMode() {
         isSelectionMode = false
+        dragSelectionGesture.isEnabled = false
         finishDragSelection()
         selectedIDs = []
         selectButton.setTitle("選択する", for: .normal)
