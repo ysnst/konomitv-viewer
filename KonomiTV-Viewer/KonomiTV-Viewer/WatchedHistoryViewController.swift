@@ -409,7 +409,7 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
                     self?.markWatched(program: program)
                 })
             }
-            if AppEdition.isHousehold {
+            if AppEdition.protectionEnabled {
                 let protected = program.isProtected
                 actions.append(UIAction(
                     title: protected ? "保護を外す" : "保護する",

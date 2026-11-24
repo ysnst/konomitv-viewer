@@ -993,7 +993,7 @@ final class LivePlayerViewController: UIViewController {
     /// チャンネルの再生画面に入れ替える (再生は作り直しになる)。
     private func switchChannel(to target: LiveChannel) {
         guard target.id != channel.id else { return }
-        if AppEdition.isHousehold, !target.isTunerViewable {
+        if AppEdition.tunerInUseEnabled, !target.isTunerViewable {
             setChannelStatus("チューナーに空きがないため、このチャンネルは視聴できません。録画中のチャンネルは視聴できます。")
             return
         }

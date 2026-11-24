@@ -1034,10 +1034,11 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
         tableView.deselectRow(at: indexPath, animated: true)
         let channel = channels(forGroupAt: tableView.tag)[indexPath.row]
         // チューナーに空きがなく受信中でもないチャンネルは視聴できないため、
-        // 再生画面へは移らず理由を知らせる (Web 版と同じ。拡張版だけ)。
+        // 再生画面へは移らず理由を知らせる (Web 版と同じ。チューナー
+        // 使用中のチャンネル表示のトグルがオンのときだけ)。
         // 録画中のチャンネルはチューナーを共有して視聴できるため、
         // サーバー側の判定で視聴可になっている。
-        if AppEdition.isHousehold, !channel.isTunerViewable {
+        if AppEdition.tunerInUseEnabled, !channel.isTunerViewable {
             showNotice("チューナーに空きがないため、このチャンネルは視聴できません。録画中のチャンネルは視聴できます。")
             return
         }
@@ -1354,12 +1355,13 @@ final class LiveChannelCell: UITableViewCell {
 
     func configure(with channel: LiveChannel, isPinned: Bool) {
         // チューナーに空きがなく視聴できないチャンネルは、Web 版と同じく
-        // カード全体を薄くして (不透明度 0.55) 案内を出す (拡張版だけ。
-        // 通常のサーバーの応答には判定の項目自体が無く、その場合は
-        // 視聴できるものとして扱うため表示は変わらない)。
+        // カード全体を薄くして (不透明度 0.55) 案内を出す (チューナー
+        // 使用中のチャンネル表示のトグルがオンのときだけ。通常の
+        // サーバーの応答には判定の項目自体が無く、その場合は視聴できる
+        // ものとして扱うため表示は変わらない)。
         // Web 版は色味も落とす (grayscale) が、アプリでは部品の集まりに
         // そのまま効かせる手段がないため、薄さだけで近似する。
-        let tunerUnavailable = AppEdition.isHousehold && !channel.isTunerViewable
+        let tunerUnavailable = AppEdition.tunerInUseEnabled && !channel.isTunerViewable
         tunerUnavailableWrap.isHidden = !tunerUnavailable
         cardView.alpha = tunerUnavailable ? 0.55 : 1
         // ピンの色と読み上げ名は、ピン留めの状態で切り替える (Web 版の

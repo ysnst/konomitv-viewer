@@ -149,10 +149,19 @@ final class SettingsStore {
         // 表示の大きさ (Web 版うち改造の ui_scale に相当)。Web 版と同じく
         // 端末ごとに持つ設定で、デバイス間同期の対象にはしない。
         static let uiScale = "viewer_ui_scale"
-        // 改造版サーバーの機能を使うかどうかと、その区分の解放状態。
-        // どちらも端末ごとに持つ設定で、デバイス間同期の対象にはしない。
+        // 改造版サーバーの機能の区分の解放状態と、機能ごとのトグル。
+        // どれも端末ごとに持つ設定で、デバイス間同期の対象にはしない。
+        // customizedFeaturesEnabled は旧まとめトグルの値で、個別トグルへ
+        // 引き継いだあとは読み書きしない (切り戻し用に残す)。
         static let customizedFeaturesEnabled = "viewer_customized_features_enabled"
         static let customizedFeaturesUnlocked = "viewer_customized_features_unlocked"
+        static let customizedProtectionEnabled = "viewer_customized_protection_enabled"
+        static let customizedTrashEnabled = "viewer_customized_trash_enabled"
+        static let customizedEpisodesEnabled = "viewer_customized_episodes_enabled"
+        static let customizedBookmarksScenesEnabled = "viewer_customized_bookmarks_scenes_enabled"
+        static let customizedRecordingResultsEnabled = "viewer_customized_recording_results_enabled"
+        static let customizedTunerInUseEnabled = "viewer_customized_tuner_in_use_enabled"
+        static let customizedFeaturesSplitDone = "viewer_customized_features_split_done"
         // データ放送の設定 (Web 版の設定 → データ放送の項目)。Web 版でも
         // どれもデバイス間同期の対象外 (端末ごとに持つ) のため、
         // こちらも端末にだけ置く。
@@ -177,6 +186,23 @@ final class SettingsStore {
 
     private init() {
         migratePlaybackSettingsIfNeeded()
+        migrateCustomizedFeaturesIfNeeded()
+    }
+
+    /// 旧まとめトグル「改造版サーバーの機能を使う」から、機能ごとの
+    /// 個別トグルへの引き継ぎ。初回だけ行う。まとめトグルをオンにして
+    /// 使ってきた端末では、個別トグルが全部オンの状態で引き継がれる
+    /// (設定が消えたように見せないため)。旧キーは切り戻し用に残す。
+    private func migrateCustomizedFeaturesIfNeeded() {
+        guard !defaults.bool(forKey: Key.customizedFeaturesSplitDone) else { return }
+        let wasEnabled = defaults.bool(forKey: Key.customizedFeaturesEnabled)
+        defaults.set(wasEnabled, forKey: Key.customizedProtectionEnabled)
+        defaults.set(wasEnabled, forKey: Key.customizedTrashEnabled)
+        defaults.set(wasEnabled, forKey: Key.customizedEpisodesEnabled)
+        defaults.set(wasEnabled, forKey: Key.customizedBookmarksScenesEnabled)
+        defaults.set(wasEnabled, forKey: Key.customizedRecordingResultsEnabled)
+        defaults.set(wasEnabled, forKey: Key.customizedTunerInUseEnabled)
+        defaults.set(true, forKey: Key.customizedFeaturesSplitDone)
     }
 
     /// 旧「既定の画質」と旧通信節約トグル (仮版) から、正式な画質設定への引き継ぎ。
@@ -759,16 +785,56 @@ final class SettingsStore {
 
     // MARK: - 改造版サーバーの機能 (端末ごとの設定)
 
-    /// 改造版サーバーの機能 (録画の保護・ゴミ箱など、konomitv-customizations を
-    /// 適用したサーバーが持つ受け口を使う機能) を使うかどうか。
-    /// 端末ごとに持つ設定で、同期対象ではない。既定はオフで、そのときの
-    /// 出し分けは以前の「一般版」と同じになる。オンのときは以前の「拡張版」
-    /// と同じになる。出し分けの参照は AppEdition 側。
-    /// 置き場所は「このアプリの設定」の「改造版サーバーの機能」の区分で、
-    /// 区分自体は下の解放が済むまで設定画面に出ない。
+    /// 旧まとめトグル「改造版サーバーの機能を使う」の値。機能ごとの
+    /// 個別トグルに組み替えたため、今は引き継ぎ (上の
+    /// migrateCustomizedFeaturesIfNeeded) でのみ読み、画面からは
+    /// 読み書きしない。切り戻し用に残してある。
     var customizedServerFeaturesEnabled: Bool {
         get { defaults.bool(forKey: Key.customizedFeaturesEnabled) }
         set { defaults.set(newValue, forKey: Key.customizedFeaturesEnabled) }
+    }
+
+    /// 改造版サーバーの機能ごとのトグル (録画の保護・ゴミ箱など、
+    /// konomitv-customizations を適用したサーバーが持つ受け口を使う
+    /// 機能)。端末ごとに持つ設定で、同期対象ではない。既定はどれも
+    /// オフ。出し分けの参照は AppEdition 側。置き場所は「このアプリの
+    /// 設定」の「改造版サーバーの機能」の行から入る専用画面で、
+    /// その行自体は下の解放が済むまで設定画面に出ない。
+
+    /// 録画の保護を使うかどうか。
+    var customizedProtectionEnabled: Bool {
+        get { defaults.bool(forKey: Key.customizedProtectionEnabled) }
+        set { defaults.set(newValue, forKey: Key.customizedProtectionEnabled) }
+    }
+
+    /// ゴミ箱を使うかどうか。
+    var customizedTrashEnabled: Bool {
+        get { defaults.bool(forKey: Key.customizedTrashEnabled) }
+        set { defaults.set(newValue, forKey: Key.customizedTrashEnabled) }
+    }
+
+    /// 前の話・次の話ボタンと、次の話の自動再生を使うかどうか。
+    var customizedEpisodesEnabled: Bool {
+        get { defaults.bool(forKey: Key.customizedEpisodesEnabled) }
+        set { defaults.set(newValue, forKey: Key.customizedEpisodesEnabled) }
+    }
+
+    /// しおりと場面一覧を使うかどうか。
+    var customizedBookmarksScenesEnabled: Bool {
+        get { defaults.bool(forKey: Key.customizedBookmarksScenesEnabled) }
+        set { defaults.set(newValue, forKey: Key.customizedBookmarksScenesEnabled) }
+    }
+
+    /// 録画結果一覧を使うかどうか。
+    var customizedRecordingResultsEnabled: Bool {
+        get { defaults.bool(forKey: Key.customizedRecordingResultsEnabled) }
+        set { defaults.set(newValue, forKey: Key.customizedRecordingResultsEnabled) }
+    }
+
+    /// チューナー使用中のチャンネル表示を使うかどうか。
+    var customizedTunerInUseEnabled: Bool {
+        get { defaults.bool(forKey: Key.customizedTunerInUseEnabled) }
+        set { defaults.set(newValue, forKey: Key.customizedTunerInUseEnabled) }
     }
 
     /// 「改造版サーバーの機能」の区分が解放済みかどうか。

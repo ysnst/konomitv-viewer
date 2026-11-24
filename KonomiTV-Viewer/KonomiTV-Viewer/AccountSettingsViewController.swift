@@ -187,7 +187,7 @@ final class AccountSettingsViewController: SettingsDetailViewController {
         // 並びは本家 (Account.vue) に合わせる: カード → 同期 →
         // ユーザー名 → 新しいパスワード。
         for view in [
-            makeDescriptionLabel(AppEdition.isHousehold
+            makeDescriptionLabel(AppEdition.protectionEnabled
                 ? "KonomiTV アカウントにログインすると、録画の保護の切り替えや、設定・視聴履歴のデバイス間同期が使えるようになります。"
                 : "KonomiTV アカウントにログインすると、設定・視聴履歴のデバイス間同期が使えるようになります。"),
             loginForm,

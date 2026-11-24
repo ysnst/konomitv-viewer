@@ -542,10 +542,10 @@ final class PlayerViewController: UIViewController {
         applyCaptionDisplayState()
         loadJikkyoComments()
         // 再生画面まわりの用意。前の話・次の話 (と自動再生) は改造版
-        // サーバーが要るためトグルの対象のまま。それ以外 (長押しの
+        // サーバーが要るため個別トグルの対象。それ以外 (長押しの
         // 高速シーク、ハイライト横断再生の用意、追いかけ再生の先端
         // 追従) はアプリだけで完結するため常時有効。
-        if AppEdition.isHousehold {
+        if AppEdition.episodeNavigationEnabled {
             loadEpisodeNeighbors()
         }
         setupFastSeek()
@@ -1207,19 +1207,21 @@ final class PlayerViewController: UIViewController {
         buttonsFlowView.verticalSpacing = 16
         // ボタンの出し分け (2026-11-24 の分類の見直し後):
         // 前の話・次の話、場面一覧、しおり、保護は改造版サーバーが
-        // 要るためトグルの対象のまま。ダイジェスト再生とコメント検索は
-        // アプリだけで完結するため常時出す。次回を予約とシリーズ予約は
-        // 予約機能と同じ条件 (後ろ側が EDCB のとき) に寄せ、常時出す
-        // (EDCB でないときは、実行時に予約機能と同じ知らせ文が出る)。
-        // 並び順は見直し前と変えない。
+        // 要るため、それぞれの個別トグルの対象。ダイジェスト再生と
+        // コメント検索はアプリだけで完結するため常時出す。次回を予約と
+        // シリーズ予約は予約機能と同じ条件 (後ろ側が EDCB のとき) に
+        // 寄せ、常時出す (EDCB でないときは、実行時に予約機能と同じ
+        // 知らせ文が出る)。並び順は見直し前と変えない。
         var infoButtons: [UIButton] = [qualityButton, audioOnlyButton, fullscreenButton, rateButton]
-        if AppEdition.isHousehold {
-            infoButtons += [prevEpisodeButton, nextEpisodeButton, sceneListButton,
-                            addBookmarkButton]
+        if AppEdition.episodeNavigationEnabled {
+            infoButtons += [prevEpisodeButton, nextEpisodeButton]
+        }
+        if AppEdition.bookmarksAndScenesEnabled {
+            infoButtons += [sceneListButton, addBookmarkButton]
         }
         infoButtons += [digestButton, commentSearchButton,
                         nextReserveButton, seriesReserveButton]
-        if AppEdition.isHousehold {
+        if AppEdition.protectionEnabled {
             infoButtons += [protectButton]
         }
         infoButtons += [mylistButton, watchedButton, profileButton, sleepTimerButton]
@@ -2896,7 +2898,7 @@ final class PlayerViewController: UIViewController {
             showPlayerNotice("おやすみタイマーのため、ここで停止します")
             return
         }
-        guard AppEdition.isHousehold, let nextID = nextEpisodeID else { return }
+        guard AppEdition.episodeNavigationEnabled, let nextID = nextEpisodeID else { return }
         Task { [weak self] in
             guard let self else { return }
             guard let next = await APIClient.shared.fetchVideo(videoID: nextID) else { return }

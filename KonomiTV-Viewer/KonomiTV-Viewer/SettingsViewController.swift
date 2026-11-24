@@ -37,9 +37,9 @@ final class SettingsViewController: UIViewController {
     /// 表示の大きさのプリセットを選ぶボタンと、数値を直接入れる欄。
     private let uiScaleButton = RippleButton()
     private let uiScaleField = UITextField()
-    /// 「改造版サーバーの機能を使う」のスイッチ。区分自体は、マイページの
-    /// App version の行を7回タップして解放するまで出さない。
-    private let customizedFeaturesSwitch = WebToggle()
+    /// 「改造版サーバーの機能」の専用画面を開くボタン。区分自体は、
+    /// マイページの App version の行を7回タップして解放するまで出さない。
+    private let customizedFeaturesButton = RippleButton()
     /// 見出し帯の戻るボタン。マイページから押し込まれたときだけ出す
     /// (この画面はナビゲーションバーを隠すため、帯側で戻り口を用意する)。
     private let backButton = RippleButton()
@@ -340,10 +340,10 @@ final class SettingsViewController: UIViewController {
         statusLabel.textColor = AppPalette.metaText
         statusLabel.numberOfLines = 0
 
-        // 改造版サーバーの機能がオフでは保護の機能が無いので、
+        // 録画の保護がオフでは保護の機能が無いので、
         // ログインの目的は設定の同期だけになる。
         let usernameGroup = itemGroup(
-            title: AppEdition.isHousehold ? "KonomiTV ユーザー名 (保護の切り替え用)" : "KonomiTV ユーザー名",
+            title: AppEdition.protectionEnabled ? "KonomiTV ユーザー名 (保護の切り替え用)" : "KonomiTV ユーザー名",
             field: usernameField)
         let passwordGroup = itemGroup(title: "KonomiTV パスワード", field: passwordField)
         usernameFieldGroup = usernameGroup
@@ -410,31 +410,22 @@ final class SettingsViewController: UIViewController {
 
         // 改造版サーバーの機能の区分。録画の保護・ゴミ箱など、
         // konomitv-customizations を適用したサーバーが持つ受け口を使う
-        // 機能の出し入れをするトグルを置く。区分自体は、マイページの
-        // App version の行を7回タップして解放するまで出さない
-        // (解放の状態は端末ごとに保存される)。切り替えはその場で保存し、
-        // 設定は端末だけに残る (同期しない)。
-        customizedFeaturesSwitch.isOn = SettingsStore.shared.customizedServerFeaturesEnabled
-        customizedFeaturesSwitch.addTarget(
-            self, action: #selector(customizedFeaturesChanged), for: .valueChanged)
-        let customizedDescription = makeDescriptionLabel("オンにすると、録画の保護やゴミ箱など、konomitv-customizations を適用した改造版サーバー向けの機能が使えるようになります。素の KonomiTV サーバーでは使えません。この設定はこの端末だけに保存されます。")
-        customizedDescription.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        customizedDescription.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        customizedFeaturesSwitch.setContentCompressionResistancePriority(.required, for: .horizontal)
-        customizedFeaturesSwitch.setContentHuggingPriority(.required, for: .horizontal)
-        let customizedRow = UIStackView(arrangedSubviews: [
-            customizedDescription,
-            customizedFeaturesSwitch,
+        // 機能の出し入れは、1つ下の階層の専用画面
+        // (CustomizedFeaturesSettingsViewController) で機能ごとに
+        // 行うため、ここには専用画面への入口だけを置く。区分自体は、
+        // マイページの App version の行を7回タップして解放するまで
+        // 出さない (解放の状態は端末ごとに保存される)。
+        customizedFeaturesButton.setTitle("改造版サーバーの機能を開く", for: .normal)
+        customizedFeaturesButton.addTarget(
+            self, action: #selector(openCustomizedFeatures), for: .touchUpInside)
+        styleActionButton(customizedFeaturesButton)
+        let customizedField = UIStackView(arrangedSubviews: [
+            makeDescriptionLabel("録画の保護やゴミ箱など、konomitv-customizations を適用した改造版サーバー向けの機能を、機能ごとに切り替えます。素の KonomiTV サーバーでは使えません。この設定はこの端末だけに保存されます。"),
+            customizedFeaturesButton,
         ])
-        customizedRow.axis = .horizontal
-        customizedRow.alignment = .center
-        customizedRow.spacing = 12
-        let customizedGroup = UIStackView(arrangedSubviews: [
-            makeItemHeading("改造版サーバーの機能"),
-            makeSpacer(14),
-            itemGroup(title: "改造版サーバーの機能を使う", field: customizedRow),
-        ])
-        customizedGroup.axis = .vertical
+        customizedField.axis = .vertical
+        customizedField.spacing = 14
+        let customizedGroup = itemGroup(title: "改造版サーバーの機能", field: customizedField)
         customizedGroup.isHidden = !SettingsStore.shared.customizedServerFeaturesUnlocked
 
         // 項目どうしの間隔は Web 版の項目の margin-top と同じ 24px。
@@ -544,7 +535,7 @@ final class SettingsViewController: UIViewController {
         if loggedIn {
             loginStatusLabel.text = "ログイン中: \(store.username)"
         } else {
-            loginStatusLabel.text = AppEdition.isHousehold
+            loginStatusLabel.text = AppEdition.protectionEnabled
                 ? "未ログインです。保護の切り替えにはログインが必要です。"
                 : "未ログインです。設定の同期にはログインが必要です。"
         }
@@ -606,10 +597,11 @@ final class SettingsViewController: UIViewController {
         SettingsStore.shared.syncSettings = syncSettingsSwitch.isOn
     }
 
-    /// 改造版サーバーの機能の切り替えも、その場で保存する。
-    /// 保存先は端末ごとで、同期はしない。
-    @objc private func customizedFeaturesChanged() {
-        SettingsStore.shared.customizedServerFeaturesEnabled = customizedFeaturesSwitch.isOn
+    /// 「改造版サーバーの機能」の専用画面を開く (機能ごとのトグルは
+    /// 専用画面側で、その場で保存する)。
+    @objc private func openCustomizedFeatures() {
+        navigationController?.pushViewController(
+            CustomizedFeaturesSettingsViewController(), animated: true)
     }
 
     // MARK: - 表示の大きさ

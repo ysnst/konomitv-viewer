@@ -67,12 +67,13 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     private let storageIconView = UIImageView()
     private let storageLabel = UILabel()
     /// 録画結果への入口 (Web 版の「ビデオをみる」先頭の左側のボタンに
-    /// 相当)。容量行の左端に置く。拡張版だけに出すため、容量情報が
-    /// 取れていないときでも拡張版では容量行自体を出す。
+    /// 相当)。容量行の左端に置く。録画結果一覧のトグルがオンのとき
+    /// だけに出すため、容量情報が取れていないときでもオンなら
+    /// 容量行自体を出す。
     private let recordingResultsButton = RippleButton()
-    /// 容量行を出すかどうか。容量が取れたとき、または拡張版
-    /// (録画結果の入口を出すため) のとき。
-    private var showsStorageRow: Bool { storageStatus != nil || AppEdition.isHousehold }
+    /// 容量行を出すかどうか。容量が取れたとき、または録画結果一覧の
+    /// トグルがオン (録画結果の入口を出すため) のとき。
+    private var showsStorageRow: Bool { storageStatus != nil || AppEdition.recordingResultsEnabled }
     /// 取得できた容量情報。nil の間は容量行を出さない。
     private var storageStatus: StorageStatus?
     /// 容量情報の定期取得 (Web 版と同じ30秒間隔) 用。
@@ -93,7 +94,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     /// ゴミ箱まわりは管理者だけに出す)。
     private var isAdminUser = false
     /// ゴミ箱の入口の行を出すかどうか。
-    private var showsTrashLink: Bool { AppEdition.isHousehold && isAdminUser }
+    private var showsTrashLink: Bool { AppEdition.trashEnabled && isAdminUser }
     /// ゴミ箱の入口の行の高さ (出すときだけ)。
     private static let trashLinkRowHeight: CGFloat = 26
     /// 一覧の上に置くページ送り (見出し行の下に固定表示)。
@@ -212,7 +213,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         recordingResultsButton.titleEdgeInsets = UIEdgeInsets(top: 0, left: 3, bottom: 0, right: -3)
         recordingResultsButton.contentEdgeInsets = UIEdgeInsets(top: 2, left: 6, bottom: 2, right: 6)
         recordingResultsButton.addTarget(self, action: #selector(openRecordingResults), for: .touchUpInside)
-        recordingResultsButton.isHidden = !AppEdition.isHousehold
+        recordingResultsButton.isHidden = !AppEdition.recordingResultsEnabled
         storageRowView.addSubview(recordingResultsButton)
 
         // 見出し行。Web 版と同じく「録画番組一覧」の右に全件数を出し、
@@ -372,7 +373,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         storageRowView.frame = CGRect(x: 0, y: SPHeaderView.height, width: width, height: storageHeight)
         // 録画結果の入口は容量行の左端 (左に 8px)。容量の表示は右寄せで、
         // 容量が取れていないときは容量側だけ隠す。
-        if AppEdition.isHousehold {
+        if AppEdition.recordingResultsEnabled {
             recordingResultsButton.sizeToFit()
             let buttonWidth = recordingResultsButton.frame.width
             recordingResultsButton.frame = CGRect(
@@ -407,10 +408,11 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     }
 
     /// 管理者かどうかを取り直す。ゴミ箱まわり (改造サーバー前提の機能) の
-    /// 出し分けに使うため、拡張版でログインしているときだけ通信する。
+    /// 出し分けに使うため、ゴミ箱のトグルがオンでログインしているとき
+    /// だけ通信する。
     /// 変わっていたら先頭まわりを組み直して、入口の行の出し隠しを反映する。
     private func refreshAdminState() {
-        guard AppEdition.isHousehold, SettingsStore.shared.isLoggedIn else {
+        guard AppEdition.trashEnabled, SettingsStore.shared.isLoggedIn else {
             if isAdminUser {
                 isAdminUser = false
                 refreshHeadContainer()
@@ -724,8 +726,9 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             self?.changeSortOrder("asc")
         }
         // まとまりごとに区切りを入れるため、内側のメニューで分ける。
-        // 「保護中のみ」は拡張版だけ (一般版では保護の機能自体を出さない)。
-        let filterActions: [UIAction] = AppEdition.isHousehold
+        // 「保護中のみ」は録画の保護のトグルがオンのときだけ
+        // (オフでは保護の機能自体を出さない)。
+        let filterActions: [UIAction] = AppEdition.protectionEnabled
             ? [unwatchedAction, protectedAction]
             : [unwatchedAction]
         var groups: [UIMenuElement] = [
@@ -846,8 +849,8 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             sortOrder = order
         }
         unwatchedOnly = state["unwatched_only"] as? Bool ?? false
-        // 一般版では保護中のみフィルタは無いものとして扱う。
-        protectedOnly = AppEdition.isHousehold && (state["protected_only"] as? Bool ?? false)
+        // 録画の保護がオフでは、保護中のみフィルタは無いものとして扱う。
+        protectedOnly = AppEdition.protectionEnabled && (state["protected_only"] as? Bool ?? false)
         if let page = state["page"] as? Int, page > 1 {
             pendingRestorePage = page
         }
@@ -1057,7 +1060,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             ) { _ in
                 self?.toggleMylist(program: program)
             })
-            if AppEdition.isHousehold {
+            if AppEdition.protectionEnabled {
                 let protected = program.isProtected
                 actions.append(UIAction(
                     title: protected ? "保護を外す" : "保護する",
@@ -1066,7 +1069,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                     self?.toggleProtection(program: program)
                 })
             }
-            if AppEdition.isHousehold, isAdmin {
+            if AppEdition.trashEnabled, isAdmin {
                 let trashAction = UIAction(
                     title: "ゴミ箱に移動する",
                     image: UIImage(systemName: "archivebox")
@@ -1799,8 +1802,9 @@ final class VideoCell: UITableViewCell {
         let dimmed = program.isRecording || program.recorded_video.status == "AnalysisFailed"
         thumbnailView.alpha = dimmed ? 0.65 : 1
         textStackView.alpha = dimmed ? 0.65 : 1
-        // 保護中ピルは拡張版だけ出す (一般版では保護の機能自体を出さない)。
-        let showsProtected = AppEdition.isHousehold && program.isProtected
+        // 保護中ピルは録画の保護のトグルがオンのときだけ出す
+        // (オフでは保護の機能自体を出さない)。
+        let showsProtected = AppEdition.protectionEnabled && program.isProtected
         protectBadge.isHidden = !showsProtected
         unwatchedBadge.isHidden = !program.isUnwatched
         // 未視聴ピルは、保護中ピルがあるときはその上に積む (Web 版: bottom 8px → 30px)。
