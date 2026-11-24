@@ -50,6 +50,8 @@ enum AppPalette {
 /// フィルタと並び替えは Web 版のスマホ縦の形に合わせ、「フィルタ」
 /// ボタンから開くメニューで切り替える。ボタンの置き場所は、ゴミ箱の
 /// 入口が出るときは見出し行の下の行の右端、出ないときは見出し行の右端。
+/// 検索は Web 版のヘッダーと同じく、ロゴ帯の右端の虫眼鏡から開く欄で
+/// 題名とシリーズ名をその場で絞り込む (絞り込みの扱いはフィルタと同じ)。
 final class VideoListViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     /// 1ページの件数。サーバー側の固定値 (PAGE_SIZE = 30) に合わせる。
     private static let pageSize = 30
@@ -98,6 +100,22 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     private var filterInRowConstraints: [NSLayoutConstraint] = []
     /// フィルタの印の制約。ボタンと一緒に付け替えるため、組にして持つ。
     private var filterBadgeConstraints: [NSLayoutConstraint] = []
+    /// 検索の入り口 (虫眼鏡のボタン)。Web 版のヘッダーと同じく、ロゴ帯の
+    /// 右端に置く。この画面だけの部品なので、共通のロゴ帯 (SPHeaderView)
+    /// には足さず、先頭まわり一式の上に重ねる。
+    private let searchButton = RippleButton()
+    /// 開いた検索欄。ロゴ帯の行全体を覆う形で出す (Web 版のヘッダーが
+    /// 検索中は欄だけの姿になるのと同じ)。中身は虫眼鏡の印・入力欄・
+    /// 閉じる印 (×)。
+    private let searchBarView = UIView()
+    private let searchIconView = UIImageView()
+    private let searchField = UITextField()
+    private let searchCloseButton = RippleButton()
+    /// 検索欄が開いているか。
+    private var isSearchBarOpen = false
+    /// 検索中に画面左端から右へなぞると検索を閉じるための受け口。
+    /// 一覧の縦スクロールとはぶつからない形 (画面端からの横の動き)。
+    private let searchEdgePanGesture = UIScreenEdgePanGestureRecognizer()
     /// ゴミ箱への入口 (Web 版の録画番組一覧にある「ゴミ箱を開く」の
     /// リンクに相当)。見出し行の右端に置く。拡張版かつ管理者で
     /// ログインしているときだけ出す。
@@ -194,10 +212,23 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     private var scrollRestoreTicks = 0
     /// スクロール中の保存の間引き用。
     private var lastScrollSaveAt: TimeInterval = 0
-    /// フィルタが1つでも有効か。
-    private var isFilterActive: Bool { unwatchedOnly || protectedOnly }
+    /// フィルタか検索が1つでも有効か。有効なときは全件取得して
+    /// 端末側で絞り込む (サーバー側のページ分けは使わない)。
+    private var isFilterActive: Bool { unwatchedOnly || protectedOnly || !searchText.isEmpty }
     /// フィルタ中に全件取得して絞り込んだ結果。ページ表示はここから切り出す。
     private var filteredPrograms: [RecordedProgram] = []
+    /// 検索の言葉 (前後の空白を除いたもの)。空なら検索していない。
+    /// 画面の中だけに持ち、保存はしない (Web 版の一覧の検索欄と同じ)。
+    private var searchText = ""
+    /// 絞り込み用に取得した全件の控え。検索の言葉が変わるたびに
+    /// 通信し直さず、この控えから絞り直すために持つ。
+    private var allCollectedPrograms: [RecordedProgram] = []
+    /// 全件の控えが今の並び順で使えるか。並び替えや読み直しでは
+    /// 並びが変わるため、そのたびに false に戻す。
+    private var hasCollectedAllPrograms = false
+    /// 読み込み中に検索の言葉が変わったときの控え。読み込みが終わって
+    /// から絞り直す。
+    private var pendingSearchReload = false
 
     private let thumbnailCache = NSCache<NSNumber, UIImage>()
 
@@ -398,6 +429,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             filterBadgeLabel.centerYAnchor.constraint(equalTo: filterButton.topAnchor, constant: 2),
         ]
         installHeadContainer()
+        buildSearchBar()
 
         statusLabel.textAlignment = .center
         statusLabel.textColor = AppPalette.secondaryText
@@ -505,6 +537,57 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         ])
     }
 
+    /// 検索の入り口と検索欄を作る。入り口 (虫眼鏡) はロゴ帯の右端に重ね、
+    /// 検索欄はロゴ帯の行全体を覆う形で重ねる (並びは
+    /// refreshHeadContainer で決める)。検索欄の中身は Web 版のヘッダーと
+    /// 同じ並び: 左に虫眼鏡の印、入力欄、右端に閉じる印 (×)。
+    private func buildSearchBar() {
+        searchButton.setImage(
+            UIImage(systemName: "magnifyingglass",
+                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 24))?
+                .withTintColor(AppPalette.text, renderingMode: .alwaysOriginal),
+            for: .normal)
+        searchButton.accessibilityLabel = "検索"
+        searchButton.addTarget(self, action: #selector(openSearch), for: .touchUpInside)
+        headContainerView.addSubview(searchButton)
+
+        searchBarView.backgroundColor = AppPalette.background
+        searchBarView.isHidden = true
+        searchIconView.image = UIImage(
+            systemName: "magnifyingglass",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 20))?
+            .withTintColor(AppPalette.text, renderingMode: .alwaysOriginal)
+        searchIconView.contentMode = .scaleAspectFit
+        searchBarView.addSubview(searchIconView)
+        // 案内文は Web 版と同じ「録画番組やシリーズを検索...」。
+        searchField.attributedPlaceholder = NSAttributedString(
+            string: "録画番組やシリーズを検索...",
+            attributes: [.foregroundColor: AppPalette.secondaryText])
+        searchField.font = .scaledSystemFont(ofSize: 15)
+        searchField.textColor = AppPalette.text
+        searchField.tintColor = AppPalette.accent
+        searchField.returnKeyType = .search
+        searchField.autocorrectionType = .no
+        searchField.addTarget(self, action: #selector(searchFieldChanged), for: .editingChanged)
+        searchBarView.addSubview(searchField)
+        searchCloseButton.setImage(
+            UIImage(systemName: "xmark",
+                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 22))?
+                .withTintColor(AppPalette.text, renderingMode: .alwaysOriginal),
+            for: .normal)
+        searchCloseButton.accessibilityLabel = "検索を閉じる"
+        searchCloseButton.addTarget(self, action: #selector(closeSearch), for: .touchUpInside)
+        searchBarView.addSubview(searchCloseButton)
+        headContainerView.addSubview(searchBarView)
+
+        // 検索中は、画面左端からの右へのなぞりでも検索を閉じられる
+        // ようにする (「×」と同じ動き)。検索欄が開いている間だけ有効。
+        searchEdgePanGesture.edges = .left
+        searchEdgePanGesture.addTarget(self, action: #selector(searchEdgePanned(_:)))
+        searchEdgePanGesture.isEnabled = false
+        tableView.addGestureRecognizer(searchEdgePanGesture)
+    }
+
     /// 先頭まわり一式の高さ。容量行は取得できたときだけ 22 (文字の行 18 + 下の余白 4)。
     /// 見出し行は 44、その下の選択とフィルタの行は出すときだけ高さを取る。
     private var headContainerHeight: CGFloat {
@@ -581,6 +664,20 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         topPaginationView.frame = CGRect(
             x: 0, y: selectFilterRowY + selectFilterRowHeight,
             width: width, height: PaginationView.preferredHeight)
+        // 検索の入り口はロゴ帯の右端 (Web 版のヘッダーと同じ位置)。
+        // 縦位置はロゴの中央 (上端から 31px) に合わせる。
+        searchButton.frame = CGRect(x: width - 16 - 44, y: 31 - 22, width: 44, height: 44)
+        searchButton.isHidden = isSearchBarOpen
+        // 検索欄はロゴ帯の行全体を覆う。左の虫眼鏡の印 (20px)、
+        // 右端の閉じる印、その間が入力欄。
+        searchBarView.frame = CGRect(x: 0, y: 0, width: width, height: SPHeaderView.height)
+        searchBarView.isHidden = !isSearchBarOpen
+        searchIconView.frame = CGRect(x: 18, y: 31 - 10, width: 20, height: 20)
+        searchCloseButton.frame = CGRect(x: width - 16 - 44, y: 31 - 22, width: 44, height: 44)
+        searchField.frame = CGRect(
+            x: 46, y: 31 - 18, width: max(0, width - 16 - 44 - 46 - 4), height: 36)
+        // 端からのなぞりで閉じる受け口は、検索欄が開いている間だけ。
+        searchEdgePanGesture.isEnabled = isSearchBarOpen
         headContainerView.frame = CGRect(x: 0, y: 0, width: width, height: headContainerHeight)
         tableView.tableHeaderView = headContainerView
     }
@@ -707,6 +804,9 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         super.viewWillDisappear(animated)
         // 再生画面など、押し込んだ先ではナビゲーションバーを元に戻す。
         navigationController?.setNavigationBarHidden(false, animated: animated)
+        // 検索欄を開いたまま離れたら、キーボードだけは閉じる
+        // (検索欄と絞り込みは戻ってきたときのために残す)。
+        searchField.resignFirstResponder()
         storageTimer?.invalidate()
         storageTimer = nil
         // 離れる前に、いまのスクロール位置を目印として保存する
@@ -783,6 +883,9 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                     self.loadedBaseURLString = SettingsStore.shared.baseURL?.absoluteString
                     self.total = response.total
                     self.programs = response.recorded_programs
+                    // サーバー側のページ分けで読んだので、全件の控えは使えない。
+                    self.hasCollectedAllPrograms = false
+                    self.allCollectedPrograms = []
                     self.applyLoadedPage()
                     self.saveViewState()
                     self.restoreScrollPositionIfNeeded()
@@ -794,6 +897,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                 self.isLoading = false
                 self.refreshControl.endRefreshing()
                 self.updatePagination()
+                self.applyPendingSearchReloadIfNeeded()
             }
         }
     }
@@ -816,7 +920,13 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                     if response.recorded_programs.isEmpty { break }
                     page += 1
                 }
-                self.filteredPrograms = collected.filter { self.matchesFilters($0) }
+                // 取得した全件は控えておき、検索の言葉が変わったときは
+                // 通信し直さず手元で絞り直せるようにする。
+                self.allCollectedPrograms = collected
+                self.hasCollectedAllPrograms = true
+                self.filteredPrograms = collected.filter {
+                    self.matchesFilters($0) && self.matchesSearch($0)
+                }
                 // Web 版と同じく、件数表示は絞り込み後の件数にする。
                 self.total = self.filteredPrograms.count
                 // 復元したページが絞り込み後のページ数を超えていたら、最後のページにする。
@@ -832,6 +942,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             self.isLoading = false
             self.refreshControl.endRefreshing()
             self.updatePagination()
+            self.applyPendingSearchReloadIfNeeded()
         }
     }
 
@@ -848,7 +959,14 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
 
     /// 読み込み後の共通の反映。一覧を先頭に戻し、件数表示を更新する。
     private func applyLoadedPage() {
-        statusLabel.text = programs.isEmpty ? "録画番組がありません。" : nil
+        if programs.isEmpty {
+            // 検索中で1件も無いときは、Web 版の検索結果と同じ文面にする。
+            statusLabel.text = searchText.isEmpty
+                ? "録画番組がありません。"
+                : "「\(searchText)」に一致する録画番組は見つかりませんでした。"
+        } else {
+            statusLabel.text = nil
+        }
         countLabel.text = total > 0 ? "\(total)件" : nil
         // 一覧の中身が変わると「選択する」のピルの出し分けも変わるため、
         // 先頭まわりを組み直す。
@@ -970,6 +1088,9 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         if isSelectionMode { exitSelectionMode() }
         updateFilterButtonAppearance()
         filteredPrograms = []
+        // 並び順が変わると全件の控えの並びも合わなくなるため、捨てる。
+        allCollectedPrograms = []
+        hasCollectedAllPrograms = false
         total = 0
         pendingRestorePage = nil
         saveViewState(page: 1)
@@ -996,6 +1117,90 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             filterBadgeLabel.isHidden = true
         }
         filterButton.menu = makeFilterMenu()
+    }
+
+    // MARK: - 検索
+
+    /// 検索欄を開く。開いたらそのまま入力に移る (Web 版と同じ)。
+    @objc private func openSearch() {
+        guard !isSearchBarOpen else { return }
+        isSearchBarOpen = true
+        refreshHeadContainer()
+        searchField.becomeFirstResponder()
+    }
+
+    /// 検索欄を閉じる。Web 版の「×」と同じく、入れた言葉を消して
+    /// 欄を閉じる。アプリでは言葉そのものが絞り込みなので、
+    /// 絞り込みも解けて全件に戻る。
+    @objc private func closeSearch() {
+        guard isSearchBarOpen else { return }
+        isSearchBarOpen = false
+        searchField.text = ""
+        searchField.resignFirstResponder()
+        refreshHeadContainer()
+        if !searchText.isEmpty {
+            searchText = ""
+            applySearchChange()
+        }
+    }
+
+    /// 画面左端からの右へのなぞり。検索を閉じる (「×」と同じ)。
+    @objc private func searchEdgePanned(_ gesture: UIScreenEdgePanGestureRecognizer) {
+        guard gesture.state == .began else { return }
+        closeSearch()
+    }
+
+    /// 入力のたびに呼ばれる。今の言葉でその場で絞り直す。
+    /// 日本語の変換中は、確定してから反映する。
+    @objc private func searchFieldChanged() {
+        guard searchField.markedTextRange == nil else { return }
+        let newText = (searchField.text ?? "").trimmingCharacters(in: .whitespaces)
+        guard newText != searchText else { return }
+        searchText = newText
+        applySearchChange()
+    }
+
+    /// 検索の言葉が変わったあとの共通の手続き。読み直しやフィルタの
+    /// 変更と同じく、選択中なら終える。全件の控えが使えるときは
+    /// 通信せず手元で絞り直し、無いときは1ページ目から読み直す。
+    private func applySearchChange() {
+        if isSelectionMode { exitSelectionMode() }
+        pendingRestorePage = nil
+        guard !isLoading else {
+            pendingSearchReload = true
+            return
+        }
+        if hasCollectedAllPrograms, isFilterActive {
+            filteredPrograms = allCollectedPrograms.filter {
+                matchesFilters($0) && matchesSearch($0)
+            }
+            total = filteredPrograms.count
+            currentPage = 1
+            showFilteredPage()
+            updatePagination()
+        } else {
+            hasCollectedAllPrograms = false
+            allCollectedPrograms = []
+            loadPage(1)
+        }
+    }
+
+    /// 読み込みが終わった時点で、読み込み中に変わった検索が残って
+    /// いたら絞り直す (読み込みの完了側から呼ばれる)。
+    private func applyPendingSearchReloadIfNeeded() {
+        guard pendingSearchReload else { return }
+        pendingSearchReload = false
+        applySearchChange()
+    }
+
+    /// 検索の判定。題名とシリーズ名への部分一致 (大文字と小文字は
+    /// 区別しない)。シリーズ名は、題名とは別に持っている番組だけ。
+    private func matchesSearch(_ program: RecordedProgram) -> Bool {
+        guard !searchText.isEmpty else { return true }
+        if program.title.localizedCaseInsensitiveContains(searchText) { return true }
+        if let seriesTitle = program.series_title,
+           seriesTitle.localizedCaseInsensitiveContains(searchText) { return true }
+        return false
     }
 
     // MARK: - 表示状態の保存と復元
