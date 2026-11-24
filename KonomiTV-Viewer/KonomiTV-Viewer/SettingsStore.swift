@@ -898,15 +898,6 @@ final class SettingsStore {
 
     // MARK: - 拡張オプション (端末ごとの設定)
 
-    /// 旧まとめトグルの値。機能ごとの
-    /// 個別トグルに組み替えたため、今は引き継ぎ (上の
-    /// migrateCustomizedFeaturesIfNeeded) でのみ読み、画面からは
-    /// 読み書きしない。切り戻し用に残してある。
-    var customizedServerFeaturesEnabled: Bool {
-        get { defaults.bool(forKey: Key.customizedFeaturesEnabled) }
-        set { defaults.set(newValue, forKey: Key.customizedFeaturesEnabled) }
-    }
-
     /// 拡張オプションの機能ごとのトグル (録画の保護・ゴミ箱など、
     /// konomitv-customizations を適用したサーバーが持つ受け口を使う
     /// 機能)。端末ごとに持つ設定で、同期対象ではない。既定はどれも

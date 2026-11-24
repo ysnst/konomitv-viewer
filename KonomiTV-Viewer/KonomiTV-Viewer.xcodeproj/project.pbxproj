@@ -23,7 +23,6 @@
 		200000000000000000000046 /* MainTabBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000028 /* MainTabBarController.swift */; };
 		200000000000000000000047 /* SPHeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000029 /* SPHeaderView.swift */; };
 		200000000000000000000055 /* MyPageViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000053 /* MyPageViewController.swift */; };
-		200000000000000000000056 /* ComingSoonViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000054 /* ComingSoonViewController.swift */; };
 		200000000000000000000061 /* NetworkMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000057 /* NetworkMonitor.swift */; };
 		200000000000000000000062 /* PlaybackSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000058 /* PlaybackSettingsViewController.swift */; };
 		200000000000000000000063 /* StreamRelayServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000059 /* StreamRelayServer.swift */; };
@@ -92,7 +91,6 @@
 		200000000000000000000028 /* MainTabBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabBarController.swift; sourceTree = "<group>"; };
 		200000000000000000000029 /* SPHeaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SPHeaderView.swift; sourceTree = "<group>"; };
 		200000000000000000000053 /* MyPageViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyPageViewController.swift; sourceTree = "<group>"; };
-		200000000000000000000054 /* ComingSoonViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComingSoonViewController.swift; sourceTree = "<group>"; };
 		200000000000000000000057 /* NetworkMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkMonitor.swift; sourceTree = "<group>"; };
 		200000000000000000000058 /* PlaybackSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackSettingsViewController.swift; sourceTree = "<group>"; };
 		200000000000000000000059 /* StreamRelayServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamRelayServer.swift; sourceTree = "<group>"; };
@@ -205,7 +203,6 @@
 				200000000000000000000028 /* MainTabBarController.swift */,
 				200000000000000000000029 /* SPHeaderView.swift */,
 				200000000000000000000053 /* MyPageViewController.swift */,
-				200000000000000000000054 /* ComingSoonViewController.swift */,
 				200000000000000000000057 /* NetworkMonitor.swift */,
 				200000000000000000000058 /* PlaybackSettingsViewController.swift */,
 				200000000000000000000059 /* StreamRelayServer.swift */,
@@ -348,7 +345,6 @@
 				200000000000000000000046 /* MainTabBarController.swift in Sources */,
 				200000000000000000000047 /* SPHeaderView.swift in Sources */,
 				200000000000000000000055 /* MyPageViewController.swift in Sources */,
-				200000000000000000000056 /* ComingSoonViewController.swift in Sources */,
 				200000000000000000000061 /* NetworkMonitor.swift in Sources */,
 				200000000000000000000062 /* PlaybackSettingsViewController.swift in Sources */,
 				200000000000000000000063 /* StreamRelayServer.swift in Sources */,
