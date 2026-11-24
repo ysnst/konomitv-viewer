@@ -223,7 +223,9 @@ final class LivePlayerViewController: UIViewController {
             rawValue: SyncedSettingsStore.shared.current.tvPanelActiveTab) ?? .program
         buildLayout()
         applyCaptionDisplayState()
-        applyPanelTab(selectedPanelTab, save: false)
+        // 【切り分け用の版】パネルの組立て自体をやめているため、
+        // パネルの切り替えは行わない (情報欄だけの形。0.14までと同じ)。
+        // 原因が切り分けできたら戻す。
         // 実況コメントの流れる表示の用意 (録画と同じ描き手・同じ設定)。
         commentOverlay.positionProvider = { [weak self] in self?.liveCommentNow() ?? 0 }
         let synced = SyncedSettingsStore.shared.current
@@ -576,22 +578,12 @@ final class LivePlayerViewController: UIViewController {
             playPauseButton.centerYAnchor.constraint(equalTo: videoArea.centerYAnchor),
             playPauseButton.widthAnchor.constraint(equalToConstant: 64),
             playPauseButton.heightAnchor.constraint(equalToConstant: 64),
-            panelTabBar.topAnchor.constraint(equalTo: videoArea.bottomAnchor),
-            panelTabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            panelTabBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            panelTabBar.heightAnchor.constraint(equalToConstant: 50),
-            scrollView.topAnchor.constraint(equalTo: panelTabBar.bottomAnchor),
+            // 【切り分け用の版】パネルの切り替え帯と各パネルは
+            // 組み立てないため、情報欄は映像のすぐ下に置く (0.14までの形)。
+            scrollView.topAnchor.constraint(equalTo: videoArea.bottomAnchor),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            channelPanel.topAnchor.constraint(equalTo: panelTabBar.bottomAnchor),
-            channelPanel.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            channelPanel.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            channelPanel.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            commentPanel.topAnchor.constraint(equalTo: panelTabBar.bottomAnchor),
-            commentPanel.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            commentPanel.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            commentPanel.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             infoStack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
             infoStack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
             infoStack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
@@ -600,9 +592,11 @@ final class LivePlayerViewController: UIViewController {
         ])
 
         // MARK: パネルのタブと、チャンネル/コメントのパネル
-        buildPanelTabBar()
-        buildChannelPanel()
-        buildCommentPanel()
+        // 【切り分け用の版】生放送へ入ると落ちる症状の切り分けのため、
+        // パネルの切り替え帯と、チャンネル/コメントのパネルの組立ては
+        // 行わない。映像の下は情報欄だけの形 (0.14まで) に戻す。
+        // 0.19で止めた実況の接続と字幕の抜き取りも、止めたままにする。
+        // 原因が切り分けできたら戻す。
 
         // リモコンの浮きボタンは情報欄の右下に浮かせる (映像には重ねない)。
         view.addSubview(remoteFloatingButton)
@@ -1584,6 +1578,11 @@ final class LivePlayerViewController: UIViewController {
     /// 再生部品の時計に合わせて字幕の絵を進め、確かめるための数字を
     /// 更新する (0.25秒ごとのタイマーから呼ばれる)。
     private func refreshLiveCaptions() {
+        // 【切り分け用の版】字幕の用意 (startLiveCaptions) を止めても、
+        // この更新は字幕の表示切り替え (applyCaptionDisplayState) からも
+        // 呼ばれる経路が残っていたため、この版では更新自体も止める。
+        // 原因が切り分けできたら戻す。
+        return
         let vlcSeconds = currentVLCTimeSeconds()
         if !captionOverlayView.isHidden {
             if captionEngine.update(position: vlcSeconds + Self.liveCaptionTimeOffset) {
