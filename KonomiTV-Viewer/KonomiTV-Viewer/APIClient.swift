@@ -355,6 +355,29 @@ final class APIClient {
         return result.is_protected ?? next
     }
 
+    /// 保護状態を指定した状態にする (管理者ログイン必須)。
+    /// 切り替え (toggleProtection) と同じ受け口で、まとめて保護する
+    /// ときのように目的の状態が決まっている場合に使う。
+    /// すでに目的の状態なら通信しない。
+    func setProtection(videoID: Int, protected: Bool) async throws {
+        let current = try await fetchProtection(videoID: videoID)
+        if current.enabled == false {
+            throw APIError.protectionUnavailable
+        }
+        if (current.is_protected ?? false) == protected {
+            return
+        }
+        var request = try request(forPath: "/api/videos/\(videoID)/protection", method: "PUT", authorized: true)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let epgstationID: Any = current.epgstation_id.map { $0 as Any } ?? NSNull()
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "epgstation_id": epgstationID,
+            "is_protected": protected,
+        ])
+        let (_, response) = try await session.data(for: request)
+        try check(response)
+    }
+
     // MARK: - ゴミ箱 (ローカル改造の口、拡張版だけが使う)
 
     /// ゴミ箱の中身を取る (ログイン必須)。

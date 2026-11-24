@@ -97,6 +97,38 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     private var showsTrashLink: Bool { AppEdition.trashEnabled && isAdminUser }
     /// ゴミ箱の入口の行の高さ (出すときだけ)。
     private static let trashLinkRowHeight: CGFloat = 26
+    /// 複数選択の入り口のピルの行 (見出し行の下、右寄せ。ゴミ箱の
+    /// 「選択する」のピルと同じ置き方)。
+    private let selectRowView = UIView()
+    private let selectButton = RippleButton()
+    /// ピルの行の高さ (出すときだけ)。
+    private static let selectRowHeight: CGFloat = 38
+    /// 「選択する」のピルを出すかどうか。複数選択で使える操作が
+    /// 1つでもあるとき (保護のトグルがオン、またはゴミ箱のトグルが
+    /// オンで管理者) に、一覧が空でないときだけ出す。選択中は、
+    /// 終えるためのピルが要るため常に出す。
+    private var showsSelectRow: Bool {
+        isSelectionMode
+            || ((AppEdition.protectionEnabled || (AppEdition.trashEnabled && isAdminUser))
+                && !programs.isEmpty)
+    }
+    /// 選択中の下部に固定で出す操作帯とその中身 (ゴミ箱と同じ作り)。
+    private let bulkBar = UIView()
+    private let bulkCountLabel = UILabel()
+    private let bulkSelectAllButton = RippleButton()
+    private let bulkClearButton = RippleButton()
+    private let bulkProtectButton = RippleButton()
+    private let bulkUnprotectButton = RippleButton()
+    private let bulkTrashButton = RippleButton()
+    /// 操作帯の高さ (2段組み。ゴミ箱と同じ)。
+    private static let bulkBarHeight: CGFloat = 104
+    /// 複数選択の状態 (この画面の中だけに持ち、保存はしない)。
+    /// ページをまたいで選べるよう、選んだ録画そのものを ID で
+    /// 引ける形で持つ。
+    private var isSelectionMode = false
+    private var selectedProgramsByID: [Int: RecordedProgram] = [:]
+    /// まとめて操作の実行中かどうか (二重実行の防止)。
+    private var isBulkRunning = false
     /// 一覧の上に置くページ送り (見出し行の下に固定表示)。
     private let topPaginationView = PaginationView()
     private let tableView = UITableView(frame: .zero, style: .plain)
@@ -272,6 +304,18 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         trashLinkButton.addTarget(self, action: #selector(openTrash), for: .touchUpInside)
         trashLinkRowView.addSubview(trashLinkButton)
         trashLinkRowView.isHidden = true
+        // 複数選択の入り口。ゴミ箱の「選択する」のピルと同じ見た目で、
+        // 見出し行の下の行に右寄せで置く (行の組み立ては refreshHeadContainer)。
+        selectButton.setTitle("選択する", for: .normal)
+        selectButton.setTitleColor(AppPalette.text, for: .normal)
+        selectButton.titleLabel?.font = .scaledSystemFont(ofSize: 13, weight: .semibold)
+        selectButton.contentEdgeInsets = UIEdgeInsets(top: 5, left: 14, bottom: 5, right: 14)
+        selectButton.layer.cornerRadius = 15
+        selectButton.layer.borderWidth = 1
+        selectButton.layer.borderColor = AppPalette.fieldBorder.cgColor
+        selectButton.addTarget(self, action: #selector(toggleSelectionMode), for: .touchUpInside)
+        selectRowView.addSubview(selectButton)
+        selectRowView.isHidden = true
         // 前回保存した表示状態 (ページ・並び順・両フィルタ) を復元する。
         restoreViewState()
         updateFilterButtonAppearance()
@@ -321,6 +365,8 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(statusLabel)
 
+        buildBulkBar()
+
         NSLayoutConstraint.activate([
             listTitleLabel.leadingAnchor.constraint(equalTo: listHeaderView.leadingAnchor, constant: 12),
             listTitleLabel.centerYAnchor.constraint(equalTo: listHeaderView.centerYAnchor),
@@ -345,11 +391,88 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         updatePagination()
     }
 
+    /// 選択中の操作帯を作る (画面の下部に固定、タブバーの上。ゴミ箱と同じ作り)。
+    /// 並びはゴミ箱と同じ: 上の段に選んだ件数・すべて選択・選択を解除、
+    /// 下の段に操作のボタン。操作のボタンは、使える機能のものだけを出す
+    /// (出し分けは updateBulkBar)。幅の都合で2段に分ける。
+    private func buildBulkBar() {
+        bulkBar.backgroundColor = AppPalette.panel
+        bulkBar.translatesAutoresizingMaskIntoConstraints = false
+        bulkBar.isHidden = true
+        let topBorder = UIView()
+        topBorder.backgroundColor = AppPalette.pressed
+        topBorder.translatesAutoresizingMaskIntoConstraints = false
+        bulkBar.addSubview(topBorder)
+
+        bulkCountLabel.font = .scaledSystemFont(ofSize: 13.5, weight: .semibold)
+        bulkCountLabel.textColor = AppPalette.text
+        bulkSelectAllButton.setTitle("すべて選択", for: .normal)
+        bulkClearButton.setTitle("選択を解除", for: .normal)
+        for button in [bulkSelectAllButton, bulkClearButton] {
+            button.setTitleColor(AppPalette.text, for: .normal)
+            button.titleLabel?.font = .scaledSystemFont(ofSize: 13)
+            button.contentEdgeInsets = UIEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
+        }
+        bulkSelectAllButton.addTarget(self, action: #selector(selectAllItems), for: .touchUpInside)
+        bulkClearButton.addTarget(self, action: #selector(clearSelection), for: .touchUpInside)
+        // 操作のボタンの見た目は、ゴミ箱の操作帯のボタンと揃える。
+        bulkProtectButton.setTitle("保護する", for: .normal)
+        bulkUnprotectButton.setTitle("保護を外す", for: .normal)
+        bulkTrashButton.setTitle("ゴミ箱に移動する", for: .normal)
+        for button in [bulkProtectButton, bulkUnprotectButton, bulkTrashButton] {
+            button.setTitleColor(AppPalette.text, for: .normal)
+            button.titleLabel?.font = .scaledSystemFont(ofSize: 13.5, weight: .semibold)
+            button.contentEdgeInsets = UIEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+            button.layer.cornerRadius = 4
+            button.layer.borderWidth = 1
+            button.layer.borderColor = AppPalette.fieldBorder.cgColor
+        }
+        bulkProtectButton.addTarget(self, action: #selector(bulkProtect), for: .touchUpInside)
+        bulkUnprotectButton.addTarget(self, action: #selector(bulkUnprotect), for: .touchUpInside)
+        bulkTrashButton.addTarget(self, action: #selector(bulkMoveToTrash), for: .touchUpInside)
+
+        let topRow = UIStackView(arrangedSubviews: [
+            bulkCountLabel, UIView(), bulkSelectAllButton, bulkClearButton,
+        ])
+        topRow.axis = .horizontal
+        topRow.alignment = .center
+        topRow.spacing = 4
+        let bottomRow = UIStackView(arrangedSubviews: [
+            UIView(), bulkProtectButton, bulkUnprotectButton, bulkTrashButton,
+        ])
+        bottomRow.axis = .horizontal
+        bottomRow.alignment = .center
+        bottomRow.spacing = 8
+        let stack = UIStackView(arrangedSubviews: [topRow, bottomRow])
+        stack.axis = .vertical
+        stack.spacing = 6
+        stack.isLayoutMarginsRelativeArrangement = true
+        stack.layoutMargins = UIEdgeInsets(top: 8, left: 16, bottom: 10, right: 16)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        bulkBar.addSubview(stack)
+        view.addSubview(bulkBar)
+        NSLayoutConstraint.activate([
+            bulkBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            bulkBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            bulkBar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            bulkBar.heightAnchor.constraint(equalToConstant: Self.bulkBarHeight),
+            topBorder.topAnchor.constraint(equalTo: bulkBar.topAnchor),
+            topBorder.leadingAnchor.constraint(equalTo: bulkBar.leadingAnchor),
+            topBorder.trailingAnchor.constraint(equalTo: bulkBar.trailingAnchor),
+            topBorder.heightAnchor.constraint(equalToConstant: 1),
+            stack.topAnchor.constraint(equalTo: bulkBar.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bulkBar.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: bulkBar.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: bulkBar.trailingAnchor),
+        ])
+    }
+
     /// 先頭まわり一式の高さ。容量行は取得できたときだけ 22 (文字の行 18 + 下の余白 4)、
-    /// ゴミ箱の入口の行は出すときだけ 26。
+    /// ゴミ箱の入口の行は出すときだけ 26、複数選択のピルの行は出すときだけ 38。
     private var headContainerHeight: CGFloat {
         SPHeaderView.height + (showsStorageRow ? 22 : 0)
-            + (showsTrashLink ? Self.trashLinkRowHeight : 0) + 44 + PaginationView.preferredHeight
+            + (showsTrashLink ? Self.trashLinkRowHeight : 0) + 44
+            + (showsSelectRow ? Self.selectRowHeight : 0) + PaginationView.preferredHeight
     }
 
     /// 先頭まわり一式をテーブルの先頭に付ける。テーブルの先頭に付けたビューは
@@ -359,13 +482,15 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         headContainerView.addSubview(headerView)
         headContainerView.addSubview(storageRowView)
         headContainerView.addSubview(trashLinkRowView)
+        headContainerView.addSubview(selectRowView)
         refreshHeadContainer()
     }
 
     /// 先頭まわり一式の並びと大きさを決め直して、テーブルへ付け直す。
     /// 並びは Web 版と同じ ロゴ帯 → 容量行 → 見出し行 → 上のページ送りで、
     /// ゴミ箱の入口の行は Web 版の置き場所 (一覧の見出しの上、右寄せ) に
-    /// 合わせて容量行と見出し行の間に入れる。
+    /// 合わせて容量行と見出し行の間に入れる。複数選択のピルの行は
+    /// 見出し行と上のページ送りの間に入れる。
     private func refreshHeadContainer() {
         let width = tableView.bounds.width
         let storageHeight: CGFloat = showsStorageRow ? 22 : 0
@@ -401,8 +526,22 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         storageRowView.isHidden = !showsStorageRow
         let listHeaderY = SPHeaderView.height + storageHeight + trashHeight
         listHeaderView.frame = CGRect(x: 0, y: listHeaderY, width: width, height: 44)
+        // 複数選択のピルの行は見出し行の下 (ゴミ箱で見出し帯の下に
+        // 置くのと同じ置き方)。ピルは右寄せで、右端は他の行に合わせる。
+        let selectHeight: CGFloat = showsSelectRow ? Self.selectRowHeight : 0
+        selectRowView.frame = CGRect(
+            x: 0, y: listHeaderY + 44, width: width, height: selectHeight)
+        selectRowView.isHidden = !showsSelectRow
+        if showsSelectRow {
+            selectButton.sizeToFit()
+            let buttonWidth = selectButton.frame.width
+            let buttonHeight = selectButton.frame.height
+            selectButton.frame = CGRect(
+                x: width - 16 - buttonWidth, y: (selectHeight - buttonHeight) / 2,
+                width: buttonWidth, height: buttonHeight)
+        }
         topPaginationView.frame = CGRect(
-            x: 0, y: listHeaderY + 44, width: width, height: PaginationView.preferredHeight)
+            x: 0, y: listHeaderY + 44 + selectHeight, width: width, height: PaginationView.preferredHeight)
         headContainerView.frame = CGRect(x: 0, y: 0, width: width, height: headContainerHeight)
         tableView.tableHeaderView = headContainerView
     }
@@ -548,6 +687,9 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             refreshControl.endRefreshing()
             return
         }
+        // 読み直しでは選択中を終える (選んでいた録画が残っているとは
+        // 限らないため)。
+        if isSelectionMode { exitSelectionMode() }
         // 接続先が変わっていたら、前の接続先のロゴは使い回さない (生放送一覧と同じ)。
         if SettingsStore.shared.baseURL?.absoluteString != loadedBaseURLString {
             logoCache.removeAllObjects()
@@ -669,6 +811,9 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     private func applyLoadedPage() {
         statusLabel.text = programs.isEmpty ? "録画番組がありません。" : nil
         countLabel.text = total > 0 ? "\(total)件" : nil
+        // 一覧の中身が変わると「選択する」のピルの出し分けも変わるため、
+        // 先頭まわりを組み直す。
+        refreshHeadContainer()
         tableView.reloadData()
         // ページの切り替えでは一覧の先頭に戻る。
         tableView.setContentOffset(.zero, animated: false)
@@ -783,6 +928,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     /// フィルタや並び順を変えたあとの共通の手続き。
     /// ボタンの見た目とメニューを作り直し、状態を保存して、1ページ目から読み直す。
     private func reloadFromFirstPage() {
+        if isSelectionMode { exitSelectionMode() }
         updateFilterButtonAppearance()
         filteredPrograms = []
         total = 0
@@ -969,6 +1115,9 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         let cell = tableView.dequeueReusableCell(withIdentifier: VideoCell.reuseID, for: indexPath) as! VideoCell
         let program = programs[indexPath.row]
         cell.configure(with: program)
+        cell.configureSelection(
+            active: isSelectionMode,
+            selected: selectedProgramsByID[program.id] != nil)
         loadThumbnail(for: program, at: indexPath)
         // 局ロゴはキャッシュにあればその場で出し、無ければ行ごとに後から読み込む
         // (一覧の表示をロゴの取得で待たせない)。
@@ -1025,7 +1174,22 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
+        guard programs.indices.contains(indexPath.row) else { return }
         let program = programs[indexPath.row]
+        if isSelectionMode {
+            // 選択中は、カードを選ぶと選択の付け外しになる (ゴミ箱と同じ)。
+            if selectedProgramsByID[program.id] != nil {
+                selectedProgramsByID[program.id] = nil
+            } else {
+                selectedProgramsByID[program.id] = program
+            }
+            if let cell = tableView.cellForRow(at: indexPath) as? VideoCell {
+                cell.configureSelection(
+                    active: true, selected: selectedProgramsByID[program.id] != nil)
+            }
+            updateBulkBar()
+            return
+        }
         let player = PlayerViewController(program: program)
         navigationController?.pushViewController(player, animated: true)
     }
@@ -1041,6 +1205,8 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         contextMenuConfigurationForRowAt indexPath: IndexPath,
         point: CGPoint
     ) -> UIContextMenuConfiguration? {
+        // 選択中は長押しメニューを出さない (タップでの付け外しに一本化する)。
+        guard !isSelectionMode else { return nil }
         let program = programs[indexPath.row]
         let isAdmin = isAdminUser
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
@@ -1186,6 +1352,209 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                 self.showAlert(title: error.moveToTrashFailureMessage, message: nil)
             } catch {
                 self.showAlert(title: "ゴミ箱に移動できませんでした", message: nil)
+            }
+        }
+    }
+
+    // MARK: - 複数選択とまとめて操作
+
+    /// 「選択する／選択を終える」のピルの切り替え。
+    /// まとめて操作の実行中は切り替えない (ゴミ箱と同じ)。
+    @objc private func toggleSelectionMode() {
+        guard !isBulkRunning else { return }
+        if isSelectionMode {
+            exitSelectionMode()
+        } else {
+            isSelectionMode = true
+            selectButton.setTitle("選択を終える", for: .normal)
+            updateSelectionChrome()
+            tableView.reloadData()
+        }
+    }
+
+    /// 選択中を終える。選んでいた内容は破棄する。
+    private func exitSelectionMode() {
+        guard isSelectionMode else { return }
+        isSelectionMode = false
+        selectedProgramsByID = [:]
+        selectButton.setTitle("選択する", for: .normal)
+        updateSelectionChrome()
+        tableView.reloadData()
+    }
+
+    /// 選択まわりの出し分け (操作帯と一覧下の余白) を現在の状態に合わせる。
+    /// ピルの行の出し分けは先頭まわりの組み直しで反映する。
+    private func updateSelectionChrome() {
+        refreshHeadContainer()
+        bulkBar.isHidden = !isSelectionMode
+        if isSelectionMode {
+            // 操作帯は一覧より前面に出す。
+            view.bringSubviewToFront(bulkBar)
+        }
+        // 選択中は、操作帯の分だけ一覧の下に余白を空ける (ゴミ箱と同じ)。
+        tableView.contentInset.bottom = isSelectionMode ? Self.bulkBarHeight + 10 : 10
+        updateBulkBar()
+    }
+
+    /// 操作帯の表示 (件数・各ボタンの出し分けと有効・無効) を合わせる。
+    /// 操作のボタンは、使える機能のものだけを出す: 保護する／保護を
+    /// 外すは保護のトグルがオンのとき、ゴミ箱に移動はゴミ箱のトグルが
+    /// オンで管理者のとき (1件のときの出し分けと同じ)。
+    private func updateBulkBar() {
+        bulkCountLabel.text = "\(selectedProgramsByID.count) 件選択中"
+        let selected = Array(selectedProgramsByID.values)
+        bulkProtectButton.isHidden = !AppEdition.protectionEnabled
+        bulkUnprotectButton.isHidden = !AppEdition.protectionEnabled
+        bulkTrashButton.isHidden = !(AppEdition.trashEnabled && isAdminUser)
+        // 保護するは未保護の録画が、保護を外すは保護中の録画が
+        // 選ばれているときだけ押せる。
+        bulkProtectButton.isEnabled = !isBulkRunning && selected.contains { !$0.isProtected }
+        bulkUnprotectButton.isEnabled = !isBulkRunning && selected.contains { $0.isProtected }
+        bulkTrashButton.isEnabled = !isBulkRunning && !selected.isEmpty
+        for button in [bulkProtectButton, bulkUnprotectButton, bulkTrashButton] {
+            button.alpha = button.isEnabled ? 1 : 0.5
+        }
+        bulkSelectAllButton.isEnabled = !isBulkRunning
+        bulkClearButton.isEnabled = !selected.isEmpty && !isBulkRunning
+        bulkClearButton.alpha = bulkClearButton.isEnabled ? 1 : 0.5
+    }
+
+    /// 表示中のページの録画をすべて選択に加える。
+    @objc private func selectAllItems() {
+        guard !isBulkRunning else { return }
+        for program in programs {
+            selectedProgramsByID[program.id] = program
+        }
+        tableView.reloadData()
+        updateBulkBar()
+    }
+
+    @objc private func clearSelection() {
+        guard !isBulkRunning else { return }
+        selectedProgramsByID = [:]
+        tableView.reloadData()
+        updateBulkBar()
+    }
+
+    /// 選んだ録画を、録画が新しい順に整えたもの (結果の表示用)。
+    private var selectedProgramsInOrder: [RecordedProgram] {
+        selectedProgramsByID.values.sorted {
+            ($0.startDate ?? .distantPast) > ($1.startDate ?? .distantPast)
+        }
+    }
+
+    @objc private func bulkProtect() {
+        bulkSetProtection(toProtected: true)
+    }
+
+    @objc private func bulkUnprotect() {
+        bulkSetProtection(toProtected: false)
+    }
+
+    /// 選んだ分をまとめて保護する／保護を外す。1件ずつのときと同じ
+    /// 受け口を、目的の状態に合わせて順に使う。すでに目的の状態の
+    /// 録画は対象から外す。終わったら選択中を終えて読み直し、
+    /// 失敗分は件数と題名入りの警告を出す (ゴミ箱のまとめて操作と同じ)。
+    private func bulkSetProtection(toProtected: Bool) {
+        guard !isBulkRunning else { return }
+        let targets = selectedProgramsInOrder.filter { $0.isProtected != toProtected }
+        guard !targets.isEmpty else { return }
+        guard SettingsStore.shared.isLoggedIn else {
+            // 未ログインなら、実行せずログインへ案内する (1件のときと同じ)。
+            let alert = UIAlertController(
+                title: "ログインが必要です",
+                message: "保護の切り替えには、設定タブで KonomiTV へのログインが必要です。",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "キャンセル", style: .cancel))
+            alert.addAction(UIAlertAction(title: "設定を開く", style: .default) { [weak self] _ in
+                self?.mainTabBarController?.selectedIndex = 3
+            })
+            present(alert, animated: true)
+            return
+        }
+        isBulkRunning = true
+        updateBulkBar()
+        Task { [weak self] in
+            guard let self else { return }
+            var failed: [RecordedProgram] = []
+            for program in targets {
+                do {
+                    try await APIClient.shared.setProtection(
+                        videoID: program.id, protected: toProtected)
+                } catch {
+                    failed.append(program)
+                }
+            }
+            self.isBulkRunning = false
+            self.exitSelectionMode()
+            self.refresh()
+            if !failed.isEmpty {
+                self.showAlert(
+                    title: toProtected
+                        ? "\(failed.count) 件を保護できませんでした"
+                        : "\(failed.count) 件の保護を外せませんでした",
+                    message: failed.map { $0.title }.joined(separator: "\n"))
+            }
+        }
+    }
+
+    /// 選んだ分をまとめてゴミ箱へ移動する。まず対象の件数と題名を
+    /// 出して確認する (説明文は1件のときと同じ)。録画中と保護中は
+    /// 1件のときと同じく移動できないため対象から外し、結果の
+    /// 警告で分かるようにする。
+    @objc private func bulkMoveToTrash() {
+        guard !isBulkRunning, !selectedProgramsByID.isEmpty else { return }
+        let targets = selectedProgramsInOrder
+        let ineligible = targets.filter { $0.isRecording || $0.isProtected }
+        let eligible = targets.filter { !($0.isRecording || $0.isProtected) }
+        guard !eligible.isEmpty else {
+            showAlert(
+                title: "ゴミ箱に移動できません",
+                message: "選択した録画はすべて録画中または保護中です。\n"
+                    + ineligible.map { $0.title }.joined(separator: "\n"))
+            return
+        }
+        var message = "\(eligible.count) 件の録画をゴミ箱に移動します。\n\n"
+            + eligible.map { $0.title }.joined(separator: "\n")
+            + "\n\n一覧や検索から隠します。ファイル自体は削除されず、保持期間内はゴミ箱から復元できます。\n"
+            + "期間を過ぎると自動的に完全に削除されます。"
+        if !ineligible.isEmpty {
+            message += "\n\n録画中または保護中の \(ineligible.count) 件は移動できません。"
+        }
+        let alert = UIAlertController(
+            title: "ゴミ箱に移動しますか？", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "キャンセル", style: .cancel))
+        alert.addAction(UIAlertAction(title: "ゴミ箱に移動", style: .default) { [weak self] _ in
+            self?.performBulkMoveToTrash(eligible: eligible, ineligible: ineligible)
+        })
+        present(alert, animated: true)
+    }
+
+    private func performBulkMoveToTrash(
+        eligible: [RecordedProgram], ineligible: [RecordedProgram]
+    ) {
+        guard !isBulkRunning else { return }
+        isBulkRunning = true
+        updateBulkBar()
+        Task { [weak self] in
+            guard let self else { return }
+            var failed: [RecordedProgram] = []
+            for program in eligible {
+                do {
+                    try await APIClient.shared.moveToTrash(videoID: program.id)
+                } catch {
+                    failed.append(program)
+                }
+            }
+            self.isBulkRunning = false
+            self.exitSelectionMode()
+            self.refresh()
+            let notMoved = failed + ineligible
+            if !notMoved.isEmpty {
+                self.showAlert(
+                    title: "\(notMoved.count) 件をゴミ箱に移動できませんでした",
+                    message: notMoved.map { $0.title }.joined(separator: "\n"))
             }
         }
     }
@@ -1384,9 +1753,8 @@ final class VideoCell: UITableViewCell {
     /// ゴミ箱の操作ボタンを押したときの受け先。再利用時に外す。
     private var onTrashRestore: (() -> Void)?
     private var onTrashDelete: (() -> Void)?
-    /// ゴミ箱の複数選択のときにカードの左上に出す選択の印
-    /// (Web 版のチェックボックスに相当)。通常の一覧と、選択中でない
-    /// ゴミ箱では隠したまま。
+    /// 複数選択のときにカードの左上に出す選択の印
+    /// (Web 版のチェックボックスに相当)。選択中でないときは隠したまま。
     private let selectionMarkView = UIView()
     private let selectionCheckView = UIImageView()
     /// 押したときの波紋 (共通部品)。本家 Web 版のカードと同じく、
@@ -1720,7 +2088,7 @@ final class VideoCell: UITableViewCell {
         selectionCheckView.isHidden = true
     }
 
-    /// ゴミ箱の複数選択の印を設定する (通常の一覧では呼ばない)。
+    /// 複数選択の印を設定する (録画一覧とゴミ箱の両方で使う)。
     /// active が false のときは印自体を出さない。
     func configureSelection(active: Bool, selected: Bool) {
         selectionMarkView.isHidden = !active
