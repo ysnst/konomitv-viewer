@@ -389,6 +389,53 @@
         return null;
     }
 
+    // MARK: - 映像の窓の場所を Swift 側へ知らせる (字幕を窓の中に収めるため)
+
+    // 直近に分かった映像の窓の四角 (body からの相対)。
+    var lastVideoRect = null;
+
+    // 窓の四角を、画面 (WebView の表示範囲) の大きさに対する割合の
+    // 四角に直して Swift 側へ送る。Swift 側はこの割合で、字幕の
+    // 重ね物を窓の中だけに収める (本物のテレビで、字幕が映像と
+    // 一緒に縮んで窓の中に出る扱いに合わせる)。
+    // rect が null のときは「窓の指定なし (映像全体に戻す)」として送る。
+    function postVideoRect(rect) {
+        if (!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.bmlVideoRect)) {
+            return;
+        }
+        if (rect === null) {
+            window.webkit.messageHandlers.bmlVideoRect.postMessage(null);
+            return;
+        }
+        if (window.innerWidth <= 0 || window.innerHeight <= 0) {
+            return;
+        }
+        // 文書の座標から画面の座標への写し方は、置き場の拡大率の計算
+        // (calculateScaleFactor) と同じ。置き場は画面の中央に置かれ、
+        // 文書の中心が画面の中心に重なる。
+        var scaleFactor = Math.min(
+            window.innerWidth / (bmlHeight * 16 / 9),
+            window.innerHeight / bmlHeight);
+        var sx = scaleFactor * ((bmlHeight * 16 / 9) / bmlWidth);
+        var sy = scaleFactor;
+        var originX = (window.innerWidth - bmlWidth * sx) / 2;
+        var originY = (window.innerHeight - bmlHeight * sy) / 2;
+        window.webkit.messageHandlers.bmlVideoRect.postMessage({
+            left: (originX + rect.left * sx) / window.innerWidth,
+            top: (originY + rect.top * sy) / window.innerHeight,
+            width: ((rect.right - rect.left) * sx) / window.innerWidth,
+            height: ((rect.bottom - rect.top) * sy) / window.innerHeight,
+        });
+    }
+
+    // 画面の大きさが変わったら (回転や全画面への貸し出し)、
+    // 同じ窓の四角で割合を送り直す。
+    window.addEventListener('resize', function () {
+        if (lastVideoRect !== null) {
+            postVideoRect(lastVideoRect);
+        }
+    });
+
     // 地の要素と背景の静止画の要素へ、切り抜きを入れ直す。
     // knownRect には、videochanged の知らせに含まれる窓の四角
     // (body からの相対) があればそれを使う。無ければ要素の場所から数える。
@@ -412,6 +459,10 @@
                 return;
             }
             var videoRect = knownRect || getRectFromBody(body, videoElement);
+            // 窓の場所が分かったので、字幕を窓の中に収めるために
+            // Swift 側へも知らせる。
+            lastVideoRect = videoRect;
+            postVideoRect(videoRect);
             setClipPathBoth(aribBG, buildVideoPlaneClipPath(videoRect));
             // 背景の静止画 (映像より後ろにある image/jpeg の object) にも、
             // 窓と重なる部分だけ同じ切り抜きを入れ直す (web-bml と同じ選び方)。
@@ -791,6 +842,13 @@
             if (container !== null) {
                 container.style.display = event.detail === true ? 'none' : 'block';
             }
+            // データ放送が見えていない間は、字幕は映像全体に戻す。
+            // また見えるようになったら、窓の場所を取り直して知らせる。
+            if (event.detail === true) {
+                postVideoRect(null);
+            } else {
+                reapplyVideoPlaneClip(null);
+            }
         });
 
         decoder = createDecoder(config.serviceId, function (message) {
@@ -813,6 +871,9 @@
     }
 
     async function stopInternal() {
+        // 止めるときは、字幕を映像全体に戻す。
+        lastVideoRect = null;
+        postVideoRect(null);
         if (decoder !== null) {
             decoder.destroy();
             decoder = null;

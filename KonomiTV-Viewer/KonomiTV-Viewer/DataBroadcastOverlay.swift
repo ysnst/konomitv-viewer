@@ -21,10 +21,20 @@ import WebKit
 /// 映像の真上に組み込み、開始・終了とリモコンのキー送信をここへ頼む。
 /// 状態 (読み込み中・データ放送の有無・失敗) は onStatus にキー文字列で
 /// 届くので、表示は呼び出し側の知らせ表示に任せる。
+/// 映像の窓 (データ放送の文書が映像用に開けている穴) の場所は
+/// onVideoRect に、WebView の表示範囲に対する割合の四角で届く。
+/// 呼び出し側はこれで字幕の重ね物を窓の中に収める。nil は
+/// 「窓の指定なし (字幕は映像全体に戻す)」。
 final class DataBroadcastOverlay: NSObject {
     /// 状態の知らせ。届く値は "loading" / "loaded" / "available" /
     /// "unavailable" / "error" / "netbusy" / "netidle" のいずれか。
     var onStatus: ((String) -> Void)?
+
+    /// 映像の窓の場所の知らせ。届く四角は、WebView の表示範囲に
+    /// 対する割合 (左・上・幅・高さがそれぞれ 0〜1)。
+    /// 文書が開くたびと窓が変わるたびに届き、データ放送を止めた
+    /// ときと見えなくなったときは nil が届く。
+    var onVideoRect: ((CGRect?) -> Void)?
 
     /// 開始時にページ側のつなぎへ渡す決め事。
     struct StartConfig {
@@ -57,6 +67,7 @@ final class DataBroadcastOverlay: NSObject {
         let configuration = WKWebViewConfiguration()
         configuration.userContentController.add(self, name: "bmlStatus")
         configuration.userContentController.add(self, name: "bmlNvram")
+        configuration.userContentController.add(self, name: "bmlVideoRect")
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
         webView.isOpaque = false
@@ -96,6 +107,7 @@ final class DataBroadcastOverlay: NSObject {
             webView.navigationDelegate = nil
             webView.configuration.userContentController.removeScriptMessageHandler(forName: "bmlStatus")
             webView.configuration.userContentController.removeScriptMessageHandler(forName: "bmlNvram")
+            webView.configuration.userContentController.removeScriptMessageHandler(forName: "bmlVideoRect")
             webView.removeFromSuperview()
         }
         webView = nil
@@ -160,6 +172,20 @@ extension DataBroadcastOverlay: WKScriptMessageHandler {
         // 控えとして保存する。
         if message.name == "bmlNvram", let nvram = message.body as? [String: String] {
             SettingsStore.shared.dataBroadcastingNvram = nvram
+            return
+        }
+        // 映像の窓の場所 (割合の四角)。本文が辞書でないとき
+        // (ページ側が null を送ったとき) は、指定なしとして渡す。
+        if message.name == "bmlVideoRect" {
+            if let rect = message.body as? [String: Any],
+               let left = (rect["left"] as? NSNumber)?.doubleValue,
+               let top = (rect["top"] as? NSNumber)?.doubleValue,
+               let width = (rect["width"] as? NSNumber)?.doubleValue,
+               let height = (rect["height"] as? NSNumber)?.doubleValue {
+                onVideoRect?(CGRect(x: left, y: top, width: width, height: height))
+            } else {
+                onVideoRect?(nil)
+            }
         }
     }
 }

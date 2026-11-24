@@ -12,18 +12,35 @@ import libaribcaption
 final class CaptionOverlayView: UIView {
     private let imageView = UIImageView()
 
+    /// 字幕を出す範囲の指定 (この重ね物の大きさに対する割合の四角)。
+    /// nil のときは全体に出す。生放送でデータ放送を表示している間は、
+    /// データ放送の文書が映像用に開けている穴の割合が入り、字幕と
+    /// 文字スーパーはその穴の中だけに出る (本物のテレビで、字幕が
+    /// 映像と一緒に縮んで窓の中に出る扱いに合わせる)。録画側は
+    /// 指定しないので、今までどおり全体に出る。
+    var displayRectFractions: CGRect? {
+        didSet { setNeedsLayout() }
+    }
+
     init() {
         super.init(frame: .zero)
         isUserInteractionEnabled = false
         imageView.contentMode = .scaleAspectFit
-        imageView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(imageView)
-        NSLayoutConstraint.activate([
-            imageView.topAnchor.constraint(equalTo: topAnchor),
-            imageView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            imageView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            imageView.trailingAnchor.constraint(equalTo: trailingAnchor),
-        ])
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if let fractions = displayRectFractions, fractions.width > 0, fractions.height > 0 {
+            imageView.frame = CGRect(
+                x: bounds.minX + bounds.width * fractions.minX,
+                y: bounds.minY + bounds.height * fractions.minY,
+                width: bounds.width * fractions.width,
+                height: bounds.height * fractions.height
+            )
+        } else {
+            imageView.frame = bounds
+        }
     }
 
     @available(*, unavailable)

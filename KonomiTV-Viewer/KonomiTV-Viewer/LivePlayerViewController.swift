@@ -2297,6 +2297,9 @@ final class LivePlayerViewController: UIViewController {
         overlay.onStatus = { [weak self] status in
             self?.handleDataBroadcastStatus(status)
         }
+        overlay.onVideoRect = { [weak self] rect in
+            self?.applyDataBroadcastVideoRect(rect)
+        }
         dataBroadcastOverlay = overlay
         let webView = overlay.prepareWebView()
         videoArea.insertSubview(webView, aboveSubview: videoView)
@@ -2356,7 +2359,28 @@ final class LivePlayerViewController: UIViewController {
         bmlBorrowConstraints = []
         dataBroadcastOverlay?.teardown()
         dataBroadcastOverlay = nil
+        // データ放送を閉じたら、字幕は映像全体の表示に戻す。
+        captionOverlayView.displayRectFractions = nil
         updateRemotePanelState()
+    }
+
+    /// データ放送の文書が映像用に開けている穴に、字幕の重ね物を
+    /// 合わせる。rect は映像の枠に対する割合の四角 (ページ側から
+    /// 届く)。字幕と文字スーパーは穴の中だけに出し、データ放送の
+    /// 画面の上には重ならないようにする。nil は指定なし
+    /// (映像全体に戻す)。ほぼ全体を覆う穴も、全体表示と同じ
+    /// として扱う。
+    private func applyDataBroadcastVideoRect(_ rect: CGRect?) {
+        guard isDataBroadcastActive else { return }
+        guard let rect, rect.width > 0.01, rect.height > 0.01 else {
+            captionOverlayView.displayRectFractions = nil
+            return
+        }
+        if rect.minX <= 0.005, rect.minY <= 0.005, rect.width >= 0.995, rect.height >= 0.995 {
+            captionOverlayView.displayRectFractions = nil
+            return
+        }
+        captionOverlayView.displayRectFractions = rect
     }
 
     /// リモコンのボタン。ボタンの tag に ARIB のキーコードが入っている。
