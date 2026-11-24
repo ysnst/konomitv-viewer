@@ -87,6 +87,9 @@ jobs:
 
       # 取り方の本線は「固定タグのリリースに IPA をそのまま置く」形。
       # 毎回のビルドで同じリリースの中身 (IPA と説明) を差し替える。
+      # あわせて、公開の最後に固定タグ自体をこの実行のコミットへ進める。
+      # タグが動かないと、リリースページに自動で付くソースコード (zip) が
+      # タグの指す古い版のままになり、中身の IPA と版が合わなくなるため。
       # IPA のファイル名には版番号が入るため、--clobber では名前違いの古い IPA が
       # 差し替わらずに残ってしまう。そのため、新しい IPA を先に上げてから、
       # 名前が違う古い IPA 資産を消し、最終的に「最新の IPA が1つだけ」に
@@ -140,7 +143,7 @@ jobs:
           if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
             gh release edit "$RELEASE_TAG" --title "$TITLE" --notes "$NOTES" --prerelease
           else
-            gh release create "$RELEASE_TAG" --title "$TITLE" --notes "$NOTES" --prerelease
+            gh release create "$RELEASE_TAG" --target "${{ github.sha }}" --title "$TITLE" --notes "$NOTES" --prerelease
           fi
           gh release upload "$RELEASE_TAG" "$IPA" --clobber
           gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name | select(endswith(".ipa"))' | while IFS= read -r asset; do
@@ -149,4 +152,8 @@ jobs:
               gh release delete-asset "$RELEASE_TAG" "$asset"
             fi
           done
+          # 固定タグを、この実行のコミットへ進める (上のコメント参照)。
+          # リリースの編集だけではタグは動かないため、参照を直接書き換える。
+          gh api -X PATCH "repos/${{ github.repository }}/git/refs/tags/$RELEASE_TAG" -f sha="${{ github.sha }}" -F force=true > /dev/null
+          echo "タグ $RELEASE_TAG を ${{ github.sha }} へ更新しました。"
           gh release view "$RELEASE_TAG"
