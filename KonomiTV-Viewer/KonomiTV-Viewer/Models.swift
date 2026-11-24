@@ -32,6 +32,10 @@ struct RecordedVideoInfo: Codable {
     let id: Int
     let status: String  // "Recording" / "Recorded" など
     let duration: Double
+    /// 録画ファイルの容量 (バイト)。サーバーの応答に含まれる値で、
+    /// Web 版の録画ファイル情報やダウンロードの表示でも同じ値を使っている。
+    /// 応答に無いことがあるため任意。
+    let file_size: Int64?
     let cm_sections: [CMSection]?
     /// 実際に録画された期間 (API が返す)。本番 Web 版カードの時刻表示はこちらを使う。
     let recording_start_time: String?
@@ -41,6 +45,31 @@ struct RecordedVideoInfo: Codable {
 
     var recordingStartDate: Date? { recording_start_time.flatMap(DateParser.parse) }
     var recordingEndDate: Date? { recording_end_time.flatMap(DateParser.parse) }
+
+    /// 容量の表示文 ("3.2 GB" など)。値が無い・0 のときは nil (出さない)。
+    var fileSizeText: String? {
+        guard let file_size, file_size > 0 else { return nil }
+        return FileSizeFormat.text(bytes: file_size)
+    }
+}
+
+/// 容量の表記。Web 版の formatBytes と同じく 1024 ごとに単位を
+/// 切り替え (B / KB / MB / GB / TB)、小数1桁で出す (例: "3.2 GB")。
+/// バイト単位のときだけ整数で出す。
+enum FileSizeFormat {
+    static func text(bytes: Int64) -> String {
+        let units = ["B", "KB", "MB", "GB", "TB"]
+        var value = Double(bytes)
+        var unitIndex = 0
+        while value >= 1024 && unitIndex < units.count - 1 {
+            value /= 1024
+            unitIndex += 1
+        }
+        if unitIndex == 0 {
+            return "\(bytes) B"
+        }
+        return String(format: "%.1f \(units[unitIndex])", value)
+    }
 }
 
 struct ChannelInfo: Codable {

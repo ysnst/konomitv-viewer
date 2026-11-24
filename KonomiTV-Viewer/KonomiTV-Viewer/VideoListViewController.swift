@@ -2072,6 +2072,8 @@ final class VideoCell: UITableViewCell {
     private let logoView = UIImageView()
     private let channelLabel = UILabel()
     private let timeLabel = UILabel()
+    /// 容量の表示。日時の行の後ろに続けて出す (値が無い番組では隠す)。
+    private let fileSizeLabel = UILabel()
     private let descriptionLabel = UILabel()
     private let statusBadge = BadgeLabel()
     private let durationBadge = BadgeLabel()
@@ -2148,6 +2150,17 @@ final class VideoCell: UITableViewCell {
         timeLabel.numberOfLines = 1
         timeLabel.lineBreakMode = .byTruncatingTail
 
+        // 容量は時刻と同じ 11px で、日時の行の後ろに続ける。
+        // 行が窮屈なときは容量を落とさず、時刻側を末尾で省略する
+        // (時刻の省略は今までの表示と同じ扱い)。
+        fileSizeLabel.font = .scaledSystemFont(ofSize: 11)
+        fileSizeLabel.textColor = AppPalette.metaText
+        fileSizeLabel.numberOfLines = 1
+        fileSizeLabel.isHidden = true
+        fileSizeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        fileSizeLabel.setContentHuggingPriority(.required, for: .horizontal)
+        timeLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
         // 説明文は Web 版 (スマホ縦) に合わせ 10px、最大2行。
         descriptionLabel.font = .scaledSystemFont(ofSize: 10)
         descriptionLabel.textColor = AppPalette.metaText
@@ -2168,8 +2181,15 @@ final class VideoCell: UITableViewCell {
         metaRow.spacing = 8
         metaRow.translatesAutoresizingMaskIntoConstraints = false
 
+        // 日時の行は、時刻の後ろに容量を続ける横並びにする。
+        let timeRow = UIStackView(arrangedSubviews: [timeLabel, fileSizeLabel])
+        timeRow.axis = .horizontal
+        timeRow.alignment = .center
+        timeRow.spacing = 0
+        timeRow.translatesAutoresizingMaskIntoConstraints = false
+
         // 局名行と時刻行の間は Web 版どおり 1px (時刻の margin-top)。
-        let metaStack = UIStackView(arrangedSubviews: [metaRow, timeLabel])
+        let metaStack = UIStackView(arrangedSubviews: [metaRow, timeRow])
         metaStack.axis = .vertical
         metaStack.spacing = 1
         metaStack.translatesAutoresizingMaskIntoConstraints = false
@@ -2415,6 +2435,8 @@ final class VideoCell: UITableViewCell {
         protectBadge.isHidden = true
         unwatchedBadge.isHidden = true
         progressView.isHidden = true
+        fileSizeLabel.text = nil
+        fileSizeLabel.isHidden = true
         descriptionLabel.text = nil
         noticeLabel.text = nil
         noticeLabel.isHidden = true
@@ -2481,6 +2503,15 @@ final class VideoCell: UITableViewCell {
             end: program.recorded_video.recordingEndDate ?? program.endDate,
             durationSeconds: program.recorded_video.duration
         )
+        // 容量は日時の行の後ろに続けて出す (常時表示)。
+        // 値が取れない番組では出さない。録画中はその時点の値になる。
+        if let fileSizeText = program.recorded_video.fileSizeText {
+            fileSizeLabel.text = " ・ " + fileSizeText
+            fileSizeLabel.isHidden = false
+        } else {
+            fileSizeLabel.text = nil
+            fileSizeLabel.isHidden = true
+        }
         // 説明文。無い番組では行ごと隠す。
         let description = program.description ?? ""
         descriptionLabel.text = description
