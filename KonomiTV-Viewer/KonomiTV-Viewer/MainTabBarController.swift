@@ -110,6 +110,38 @@ final class MainTabBarController: UIViewController {
         NotificationCenter.default.addObserver(
             self, selector: #selector(uiScaleDidChange),
             name: .uiScaleDidChange, object: nil)
+        // 共通設定のサーバー保存に失敗したら知らせる (端末内には
+        // 保存されるため、黙っていると気づけない)。設定の各画面に
+        // 共通の親であるここで受け、一番手前の画面から出す
+        // (番組表の表示設定の失敗通知と同じ考え方)。
+        NotificationCenter.default.addObserver(
+            forName: .syncedSettingsSaveFailed, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self, let presenter = self.topmostViewController(),
+                  presenter.view.window != nil else { return }
+            let alert = UIAlertController(
+                title: "設定をサーバーへ保存できませんでした",
+                message: "この端末には保存されていますが、他の端末や Web 版には反映されていません。接続先とネットワークを確認してください。次に設定を変更したときや、一覧を開いたときに送り直します。",
+                preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            presenter.present(alert, animated: true)
+        }
+    }
+
+    /// いま一番手前にいる画面 (選択中のタブの画面から、重ねて
+    /// 開かれた画面の順にたどる)。
+    private func topmostViewController() -> UIViewController? {
+        var candidate: UIViewController = selectedTabViewController ?? self
+        while true {
+            if let presented = candidate.presentedViewController {
+                candidate = presented
+            } else if let navigation = candidate as? UINavigationController,
+                      let top = navigation.topViewController {
+                candidate = top
+            } else {
+                return candidate
+            }
+        }
     }
 
     /// 表示の大きさの変更を受けたときの追随。

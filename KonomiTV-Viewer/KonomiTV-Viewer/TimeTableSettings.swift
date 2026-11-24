@@ -158,16 +158,44 @@ final class TimeTableSettingsStore {
         SettingsStore.shared.isLoggedIn && SettingsStore.shared.syncSettings
     }
 
-    /// サーバーへの送信待ちの最新値と、送信中かどうかの控え。
+    /// サーバーへの送信待ちと、送信中かどうかの控え。
     /// 変更が短時間に重なっても、古い内容の送信が新しい内容を
     /// 上書きしないよう、送信は1つずつ順番に行う。
-    /// 送信待ちには、変更が起きた時点の認証の世代と同期の世代も
-    /// 持たせる。認証の世代が今と違う送信待ちは、前のログインの
-    /// 変更なので送らない。同期の世代が違う送信待ちは、同期の
-    /// オン・オフが切り替わる前の変更なので送らない (共通設定の
-    /// 同期と同じ扱い)。通し番号は、送り直しの待ちの間に新しい
+    /// 送信待ちには、編集の前後の値 (差分の元と先) と、変更が起きた
+    /// 時点の認証の世代と同期の世代を持たせる。保存のときは、編集で
+    /// 変わった項目だけを最新のサーバー値へ適用する (共通設定の
+    /// 同期と同じ差分方式)。認証の世代が今と違う送信待ちは、前の
+    /// ログインの変更なので送らない。同期の世代が違う送信待ちは、
+    /// 同期のオン・オフが切り替わる前の変更なので送らない (共通設定
+    /// の同期と同じ扱い)。通し番号は、送り直しの待ちの間に新しい
     /// 変更に置き換わったかどうかの判定に使う。
-    private var pendingSave: (id: Int, settings: TimeTableDisplaySettings, generation: Int, syncGeneration: Int)?
+    private struct PendingSave {
+        /// 通し番号。送り直しの待ちの間に、新しい変更に置き換わった
+        /// かどうかの判定に使う。
+        let id: Int
+        /// 編集が起きる直前の値 (差分の元)。
+        let base: TimeTableDisplaySettings
+        /// 編集後の値 (差分の先)。
+        let settings: TimeTableDisplaySettings
+        /// 変更が起きた時点の認証の世代。
+        let generation: Int
+        /// 変更が起きた時点の同期の世代。
+        let syncGeneration: Int
+    }
+
+    private var pendingSave: PendingSave?
+    /// 自動の送り直しの上限に達して、まだサーバーへ届いていない変更。
+    /// 捨てずに保持し、次の変更や取り込みのときに差分へ合成して
+    /// 送り直す (共通設定の同期と同じ扱い)。世代が変わったら前の
+    /// 状態の変更なので、その時点で捨てる。
+    private var unsentSave: PendingSave?
+
+    /// サーバーへ届いていない変更が残っているか (世代が今と合う分だけ)。
+    var hasUnsentChanges: Bool {
+        guard let unsent = unsentSave else { return false }
+        return unsent.generation == SettingsStore.shared.authGeneration
+            && unsent.syncGeneration == SettingsStore.shared.syncGeneration
+    }
     /// 送信待ちの通し番号の払い出し用。
     private var pendingSaveSequence = 0
     private var isSaving = false
@@ -181,6 +209,7 @@ final class TimeTableSettingsStore {
     /// 送信待ちの変更も取り下げる。
     func reloadFromLocalAfterLogout() {
         pendingSave = nil
+        unsentSave = nil
         consecutiveSaveFailures = 0
         current = TimeTableDisplaySettings.defaults
     }
@@ -191,13 +220,40 @@ final class TimeTableSettingsStore {
     /// 値を差し替える。端末内の控えへはその場で書き、同期が効いている
     /// ときはサーバーへも送る (送信は裏で行い、失敗したら通知で知らせる)。
     func update(_ settings: TimeTableDisplaySettings) {
+        let previous = current
         current = settings
         saveToLocal(settings)
         guard Self.isSyncEnabled else { return }
         // 世代は変更が起きたこの時点で確定させる (設定の同期と同じ理由)。
+        let generation = SettingsStore.shared.authGeneration
+        let syncGeneration = SettingsStore.shared.syncGeneration
         pendingSaveSequence += 1
-        pendingSave = (pendingSaveSequence, settings, SettingsStore.shared.authGeneration,
-                       SettingsStore.shared.syncGeneration)
+        // まだ送れていない変更が残っていれば、差分の元はその変更の
+        // 直前の値のまま引き継ぐ (間の編集も含めた差分にするため。
+        // 共通設定の同期と同じ扱い)。送り直しの上限に達して未送信
+        // として残っている分も同じく、ここで差分の元として引き継ぐ。
+        // 世代の違う残りは前の状態のものなので引き継がない。
+        var carriedBase: TimeTableDisplaySettings?
+        if let unsent = unsentSave {
+            unsentSave = nil
+            if unsent.generation == generation,
+               unsent.syncGeneration == syncGeneration {
+                carriedBase = unsent.base
+            }
+        }
+        let base: TimeTableDisplaySettings
+        if let pending = pendingSave,
+           pending.generation == generation,
+           pending.syncGeneration == syncGeneration {
+            base = pending.base
+        } else if let carriedBase {
+            base = carriedBase
+        } else {
+            base = previous
+        }
+        pendingSave = PendingSave(
+            id: pendingSaveSequence, base: base, settings: settings,
+            generation: generation, syncGeneration: syncGeneration)
         consecutiveSaveFailures = 0
         guard !isSaving else { return }
         isSaving = true
@@ -218,7 +274,8 @@ final class TimeTableSettingsStore {
             guard item.generation == SettingsStore.shared.authGeneration,
                   item.syncGeneration == SettingsStore.shared.syncGeneration
             else { continue }
-            if await saveToServer(item.settings, expectedGeneration: item.generation,
+            if await saveToServer(base: item.base, desired: item.settings,
+                                  expectedGeneration: item.generation,
                                   expectedSyncGeneration: item.syncGeneration) {
                 consecutiveSaveFailures = 0
                 continue
@@ -232,23 +289,50 @@ final class TimeTableSettingsStore {
             // (共通設定の同期と同じ扱い)。
             guard item.syncGeneration == SettingsStore.shared.syncGeneration,
                   Self.isSyncEnabled else { continue }
-            // その間に新しい変更が来ていたら、そちらが最新なので
-            // 古い分は戻さず、新しい分を続けて送る。
-            guard pendingSave == nil else { continue }
-            pendingSave = item
             consecutiveSaveFailures += 1
+            // その間に新しい変更が来ていたら、失敗した分の差分を
+            // 新しい分の差分へ合成してから送る。新しい分の差分の元は
+            // 「失敗した変更が入った後の値」なので、そのまま送ると
+            // 失敗した分の項目は差分に現れず、サーバーへ届かない
+            // (共通設定の同期と同じ扱い)。
+            if let pending = pendingSave {
+                if pending.generation == item.generation,
+                   pending.syncGeneration == item.syncGeneration {
+                    let merged = PendingSave(
+                        id: pending.id, base: item.base, settings: pending.settings,
+                        generation: pending.generation,
+                        syncGeneration: pending.syncGeneration)
+                    if consecutiveSaveFailures > 3 {
+                        // 送り直しの上限。合成した分は捨てずに未送信
+                        // として残し、失敗したことは画面側へ知らせる。
+                        unsentSave = merged
+                        pendingSave = nil
+                        await MainActor.run {
+                            NotificationCenter.default.post(
+                                name: .timeTableSettingsSaveFailed, object: nil)
+                        }
+                        continue
+                    }
+                    pendingSave = merged
+                }
+                // 世代の違う新しい変更がある場合は、失敗した分は
+                // 前の状態のものなので合成せず、新しい分を続けて送る。
+                continue
+            }
             guard consecutiveSaveFailures <= 3 else {
-                // 送り直しの上限。戻した分は取り下げ、失敗したことは
-                // 画面側へ知らせる (端末内には保存されているため、
-                // 黙っていると他の端末で変わっていないことに
-                // 気づけない)。
-                pendingSave = nil
+                // 送り直しの上限。諦めた分は捨てずに未送信として
+                // 残し、次の変更や取り込みのときに送り直す。
+                // あわせて、失敗したことは画面側へ知らせる (端末内に
+                // は保存されているため、黙っていると他の端末で
+                // 変わっていないことに気づけない)。
+                unsentSave = item
                 await MainActor.run {
                     NotificationCenter.default.post(
                         name: .timeTableSettingsSaveFailed, object: nil)
                 }
                 continue
             }
+            pendingSave = item
             // 少し間を置いてから送り直す (通信が戻るのを待つ)。
             // 待ちは取り消せる形にし、待っている間に新しい変更が
             // 来たり、状態が変わったりしたら、待ちを打ち切って
@@ -266,9 +350,7 @@ final class TimeTableSettingsStore {
     /// 状態を確かめる。待ちの対象が新しい変更に置き換わっていたり、
     /// ログインや同期の状態が変わっていたりしたら、すぐに起きて
     /// 呼び出し側の次の周に任せる。
-    private func waitBeforeRetry(
-        of item: (id: Int, settings: TimeTableDisplaySettings, generation: Int, syncGeneration: Int)
-    ) async {
+    private func waitBeforeRetry(of item: PendingSave) async {
         // 15秒を 0.2秒 × 75回に分ける。
         for _ in 0..<75 {
             if pendingSave?.id != item.id { return }
@@ -300,6 +382,34 @@ final class TimeTableSettingsStore {
     /// 同期を切った後に取得済みの値が反映されてしまうのも防ぐ)。
     func refreshFromServer() async -> Bool {
         guard Self.isSyncEnabled else { return false }
+        // 未送信の変更が残っていたら、先に送り直す。取り込みを先に
+        // すると、届いていない端末の値がサーバーの古い値で上書き
+        // されてしまうため、取り込み自体は送り直しの後の回に回す
+        // (共通設定の同期と同じ扱い)。世代の違う未送信分は前の
+        // 状態のものなので捨てる。
+        if let unsent = unsentSave {
+            unsentSave = nil
+            if unsent.generation == SettingsStore.shared.authGeneration,
+               unsent.syncGeneration == SettingsStore.shared.syncGeneration {
+                if let pending = pendingSave,
+                   pending.generation == unsent.generation,
+                   pending.syncGeneration == unsent.syncGeneration {
+                    // 送信待ちがある間は、その差分の元へ合成して引き継ぐ。
+                    pendingSave = PendingSave(
+                        id: pending.id, base: unsent.base, settings: pending.settings,
+                        generation: pending.generation,
+                        syncGeneration: pending.syncGeneration)
+                } else if pendingSave == nil {
+                    pendingSave = unsent
+                    if !isSaving {
+                        isSaving = true
+                        consecutiveSaveFailures = 0
+                        Task { await self.drainSaveQueue() }
+                    }
+                }
+                return false
+            }
+        }
         guard pendingSave == nil, !isSaving else { return false }
         let currentAtStart = current
         let generationAtStart = SettingsStore.shared.authGeneration
@@ -338,14 +448,15 @@ final class TimeTableSettingsStore {
     }
 
     /// 変更をサーバーへ送る。手順は視聴履歴の書き戻しと同じ:
-    /// 送る直前に最新を取得 → 番組表の4項目だけ差し替え →
-    /// last_synced_at を今に更新して送る。422 (その間に他の端末が先に
-    /// 更新した) が返ったら、1回だけ取り直してやり直す。
-    /// ジャンル色は、サーバー側にある分を土台にアプリが知っている
-    /// ジャンルだけを上書きする (知らないジャンルがあっても落とさない)。
+    /// 送る直前に最新を取得 → 編集で変わった項目だけを最新の値へ
+    /// 適用する → last_synced_at を今に更新して送る。422 (その間に
+    /// 他の端末が先に更新した) が返ったら、1回だけ取り直して、
+    /// 同じ差分を新しい最新へ適用し直す。
+    /// ジャンル色はジャンルごとに比べ、変わった分だけをサーバー側の
+    /// 割り当てへ上書きする (知らないジャンルがあっても落とさない)。
     private func saveToServer(
-        _ settings: TimeTableDisplaySettings, expectedGeneration: Int,
-        expectedSyncGeneration: Int
+        base: TimeTableDisplaySettings, desired: TimeTableDisplaySettings,
+        expectedGeneration: Int, expectedSyncGeneration: Int
     ) async -> Bool {
         // 他の保存 (視聴履歴・各種設定) と重なって互いを上書きしないよう、
         // 保存の順番待ちに並んでから本体を行う。
@@ -354,15 +465,15 @@ final class TimeTableSettingsStore {
         let box = BoolResultBox()
         await ClientSettingsSaveQueue.shared.run {
             box.value = await self.saveToServerSerial(
-                settings, expectedGeneration: expectedGeneration,
+                base: base, desired: desired, expectedGeneration: expectedGeneration,
                 expectedSyncGeneration: expectedSyncGeneration)
         }
         return box.value
     }
 
     private func saveToServerSerial(
-        _ settings: TimeTableDisplaySettings, expectedGeneration: Int,
-        expectedSyncGeneration: Int
+        base: TimeTableDisplaySettings, desired: TimeTableDisplaySettings,
+        expectedGeneration: Int, expectedSyncGeneration: Int
     ) async -> Bool {
         // 照合は、変更が起きた時点の世代で行う。順番待ちの間に
         // ログインし直していたら、この回の保存は打ち切る。
@@ -380,14 +491,31 @@ final class TimeTableSettingsStore {
                       SettingsStore.shared.syncGeneration == expectedSyncGeneration,
                       SettingsStore.shared.syncSettings,
                       SettingsStore.shared.isLoggedIn else { return false }
-                clientSettings["timetable_channel_width"] = settings.channelWidth
-                clientSettings["timetable_hour_height"] = settings.hourHeight
-                clientSettings["timetable_dim_shopping_programs"] = settings.dimShoppingPrograms
-                var genreColors = clientSettings["timetable_genre_colors"] as? [String: Any] ?? [:]
-                for (genre, name) in settings.genreColors {
-                    genreColors[genre] = name
+                // 編集の前後で変わった項目だけを、取得した最新の
+                // サーバー値へ適用する。変わっていない項目は最新の
+                // 値のまま触らないため、他の端末が変えた幅・高さ・
+                // ジャンル色が、無関係な保存で消えることはない。
+                if base.channelWidth != desired.channelWidth {
+                    clientSettings["timetable_channel_width"] = desired.channelWidth
                 }
-                clientSettings["timetable_genre_colors"] = genreColors
+                if base.hourHeight != desired.hourHeight {
+                    clientSettings["timetable_hour_height"] = desired.hourHeight
+                }
+                if base.dimShoppingPrograms != desired.dimShoppingPrograms {
+                    clientSettings["timetable_dim_shopping_programs"] =
+                        desired.dimShoppingPrograms
+                }
+                let changedGenreColors = desired.genreColors.filter {
+                    base.genreColors[$0.key] != $0.value
+                }
+                if !changedGenreColors.isEmpty {
+                    var genreColors =
+                        clientSettings["timetable_genre_colors"] as? [String: Any] ?? [:]
+                    for (genre, name) in changedGenreColors {
+                        genreColors[genre] = name
+                    }
+                    clientSettings["timetable_genre_colors"] = genreColors
+                }
                 clientSettings["last_synced_at"] = Date().timeIntervalSince1970
                 try await APIClient.shared.updateClientSettings(
                     clientSettings, expectedAuthGeneration: generation)

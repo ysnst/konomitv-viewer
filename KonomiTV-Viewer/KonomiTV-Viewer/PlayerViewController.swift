@@ -3516,14 +3516,22 @@ final class PlayerViewController: UIViewController {
         scheduleHideControls()
     }
 
-    private func seek(to seconds: Double) {
+    /// 位置を動かす。
+    /// isUserInitiated が false の移動は、開始位置の指定に伴う内部の
+    /// 位置合わせ (再生部品が開始位置を効かせなかった場合の受け皿)
+    /// で、「利用者が動かした」印は付けない。印が付くと、保留中の
+    /// 確定した続き位置まで「利用者が動かした」扱いになり、捨て
+    /// られてしまうため。
+    private func seek(to seconds: Double, isUserInitiated: Bool = true) {
         // 位置が動いたら「終わった」出来事は古くなる。終わった直後の
         // 次の話の取り込みが終わっても、自動再生は始めない。
         playbackEndEventID += 1
         // 利用者 (または自動の移動) が位置を動かした印。開始直後に
         // 並行して確かめている続きの位置が遅れて返ってきても、
         // 動かした後の位置を上書きしないために使う。
-        userSeekedSinceStart = true
+        if isUserInitiated {
+            userSeekedSinceStart = true
+        }
         let clamped = max(0, min(seconds, effectiveDuration))
         // CM自動スキップの判定は移動先から見張る
         // (シークで CM 区間の真ん中へ入った直後は発動させないため)。
@@ -3917,24 +3925,32 @@ extension PlayerViewController: VLCMediaPlayerDelegate {
                 if self.messageLabel.text == "再生を開始できませんでした。" {
                     self.messageLabel.text = nil
                 }
-                if let start = self.vlcPendingStartPosition {
+                // 保留していた開始位置の補正 (サーバーで確定した続き
+                // 位置) があれば、仮の開始位置の受け皿より優先する。
+                // 準備が終わった時点の移動は、どちらか一方にまとめる
+                // (両方効かせると二度飛んで見えるうえ、先に効いた
+                // 受け皿の移動が「利用者が動かした」扱いになり、
+                // 補正が捨てられてしまうため)。
+                if let correction = self.vlcPendingStartCorrection {
+                    self.vlcPendingStartCorrection = nil
+                    self.vlcPendingStartPosition = nil
+                    // 保留の間に利用者が自分で位置を動かしていたら、
+                    // その位置を優先して移らない。
+                    if !self.userSeekedSinceStart {
+                        self.seek(to: correction)
+                    }
+                } else if let start = self.vlcPendingStartPosition {
                     self.vlcPendingStartPosition = nil
                     // 開始位置はメディアの指定で最初から渡してある。
                     // 指定が効いて、その位置から始まっているときは
                     // 移り直さない (二重に飛んで見えるため)。指定が
                     // 効かず先頭から始まっているときだけ、今まで
-                    // どおりここで移る。
+                    // どおりここで移る。この移動は開始位置の指定に
+                    // 伴う内部の位置合わせなので、「利用者が動かした」
+                    // 印は付けない (後から届く確定した続き位置が、
+                    // 利用者の操作と間違われて捨てられないため)。
                     if start > 0, abs(self.currentPosition() - start) > 3 {
-                        self.seek(to: start)
-                    }
-                }
-                if let correction = self.vlcPendingStartCorrection {
-                    self.vlcPendingStartCorrection = nil
-                    // 保留していた開始位置の補正を、準備が終わった
-                    // ここで効かせる。保留の間に利用者が自分で位置を
-                    // 動かしていたら、その位置を優先して移らない。
-                    if !self.userSeekedSinceStart {
-                        self.seek(to: correction)
+                        self.seek(to: start, isUserInitiated: false)
                     }
                 }
                 if let pending = self.pendingQualityWriteBack,

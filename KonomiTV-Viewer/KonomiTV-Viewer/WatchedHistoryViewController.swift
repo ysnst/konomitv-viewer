@@ -213,6 +213,15 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
     /// 読み込み中に来た読み直しの控え (捨てず、終わったあとで行う)。
     private var pendingReloadPage: Int?
 
+    /// 読み込みを始めた時点の認証・同期の世代。一覧の読み込み全体
+    /// (履歴 ID の取得と、その後の録画情報の取得) を通して保持し、
+    /// 各取得の後と、画面へ反映する前に照合する。間に同期の
+    /// 切り替えやアカウントの変更、接続先の変更 (ログインの失効を
+    /// 伴う) があったら、その読み込みの結果は今の状態のものでは
+    /// ないため反映しない。
+    private var loadAuthGeneration = 0
+    private var loadSyncGeneration = 0
+
     private func reloadHistory(page: Int) {
         guard !isLoading else {
             pendingReloadPage = page
@@ -232,10 +241,28 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
         }
         failedLogoIDs.removeAll()
         isLoading = true
+        loadAuthGeneration = SettingsStore.shared.authGeneration
+        loadSyncGeneration = SettingsStore.shared.syncGeneration
         updatePagination()
         Task { [weak self] in
             guard let self else { return }
             guard let ids = await WatchedHistorySync.historyVideoIDs() else {
+                // 取れなかった理由が「取得の間に状態が変わって無効に
+                // なった」のか「通信の失敗」なのかを区別する。無効化の
+                // ときは失敗の表示を出さず、今の状態で読み直す
+                // (同期が切れていれば案内になり、別のログインなら
+                // その履歴が読み込まれる)。
+                if SettingsStore.shared.authGeneration != self.loadAuthGeneration
+                    || SettingsStore.shared.syncGeneration != self.loadSyncGeneration
+                    || !WatchedHistorySync.isEnabled {
+                    self.isLoading = false
+                    self.refreshControl.endRefreshing()
+                    self.updatePagination()
+                    let next = self.pendingReloadPage ?? page
+                    self.pendingReloadPage = nil
+                    self.reloadHistory(page: next)
+                    return
+                }
                 self.statusLabel.text = "読み込めませんでした。\n接続先とネットワークを確認してください。"
                 self.isLoading = false
                 self.refreshControl.endRefreshing()
@@ -258,15 +285,51 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
         }
     }
 
+    /// 読み込みが今の状態のまま有効か (ログイン・同期・接続先が
+    /// 読み込み開始時点と同じで、履歴 ID の並びも差し替わっていないか)。
+    private func isLoadValid(authGeneration: Int, syncGeneration: Int, ids: [Int]) -> Bool {
+        WatchedHistorySync.isEnabled
+            && SettingsStore.shared.authGeneration == authGeneration
+            && SettingsStore.shared.syncGeneration == syncGeneration
+            && historyIDs == ids
+    }
+
+    /// 読み込みの途中で状態が変わって、この読み込みが無効になった
+    /// ときの後始末。結果は反映せず、今の状態で読み直す (同期が
+    /// 切れていれば案内になり、別のログインならその履歴になる)。
+    private func abandonLoad() {
+        isLoading = false
+        refreshControl.endRefreshing()
+        updatePagination()
+        let next = pendingReloadPage ?? 1
+        pendingReloadPage = nil
+        reloadHistory(page: next)
+    }
+
     /// 履歴の ID の並びのまま、指定ページの番組を取る。
     private func loadPage(_ page: Int) async {
+        // 取得の間に状態が変わっていたら、返ってきた番組は今の
+        // 状態のものではないため、反映する前に照合する。
+        let authAtStart = loadAuthGeneration
+        let syncAtStart = loadSyncGeneration
+        let idsAtStart = historyIDs
         do {
-            var response = try await APIClient.shared.fetchVideos(page: page, ids: historyIDs)
+            var response = try await APIClient.shared.fetchVideos(page: page, ids: idsAtStart)
+            guard isLoadValid(authGeneration: authAtStart, syncGeneration: syncAtStart,
+                              ids: idsAtStart) else {
+                abandonLoad()
+                return
+            }
             // 指定ページが総ページ数を超えていたら、最後のページを取り直す
             // (履歴から消してページが無くなっている場合。録画一覧と同じ)。
             let lastPage = max(1, Int(ceil(Double(response.total) / Double(Self.pageSize))))
             if page > lastPage {
-                response = try await APIClient.shared.fetchVideos(page: lastPage, ids: historyIDs)
+                response = try await APIClient.shared.fetchVideos(page: lastPage, ids: idsAtStart)
+                guard isLoadValid(authGeneration: authAtStart, syncGeneration: syncAtStart,
+                                  ids: idsAtStart) else {
+                    abandonLoad()
+                    return
+                }
                 currentPage = lastPage
             } else {
                 currentPage = page
@@ -278,6 +341,11 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
             tableView.reloadData()
             tableView.setContentOffset(.zero, animated: false)
         } catch {
+            guard isLoadValid(authGeneration: authAtStart, syncGeneration: syncAtStart,
+                              ids: idsAtStart) else {
+                abandonLoad()
+                return
+            }
             if programs.isEmpty {
                 statusLabel.text = "読み込めませんでした。\n接続先とネットワークを確認してください。"
             }
@@ -296,6 +364,8 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
     private func goToPage(_ page: Int) {
         guard page != currentPage, !isLoading, !historyIDs.isEmpty else { return }
         isLoading = true
+        loadAuthGeneration = SettingsStore.shared.authGeneration
+        loadSyncGeneration = SettingsStore.shared.syncGeneration
         updatePagination()
         Task { [weak self] in
             guard let self else { return }

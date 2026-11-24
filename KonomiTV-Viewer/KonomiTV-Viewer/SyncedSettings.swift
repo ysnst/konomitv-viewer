@@ -1,5 +1,11 @@
 import Foundation
 
+extension Notification.Name {
+    /// 共通設定のサーバー保存に失敗し、自動の送り直しでも届かなかった
+    /// ときの通知 (番組表の表示設定の timeTableSettingsSaveFailed と同じ作り)。
+    static let syncedSettingsSaveFailed = Notification.Name("SyncedSettingsSaveFailed")
+}
+
 /// 字幕・ニコニコ実況・全般の設定のうち、サーバーに保存される利用者設定と
 /// 共通の項目一式。項目名・値の形・既定値は Web 版の利用者設定
 /// (caption_font など) とそのまま同じにしてある。
@@ -271,6 +277,21 @@ final class SyncedSettingsStore {
     }
 
     private var pendingSave: PendingSave?
+    /// 自動の送り直しの上限に達して、まだサーバーへ届いていない変更。
+    /// 捨ててしまうと、その項目はサーバーへ二度と送られず、次の
+    /// 取り込みで端末の値まで巻き戻ってしまうため、保持しておいて
+    /// 次の変更や取り込みのときに差分へ合成して送り直す。
+    /// 世代が変わったら (ログアウト・同期の切り替え) 前の状態の
+    /// 変更なので、その時点で捨てる。
+    private var unsentSave: PendingSave?
+
+    /// サーバーへ届いていない変更が残っているか (世代が今と合う分だけ)。
+    var hasUnsentChanges: Bool {
+        guard let unsent = unsentSave else { return false }
+        return unsent.generation == SettingsStore.shared.authGeneration
+            && unsent.syncGeneration == SettingsStore.shared.syncGeneration
+    }
+
     /// 送信待ちの通し番号の払い出し用。
     private var pendingSaveSequence = 0
     private var isSaving = false
@@ -287,6 +308,7 @@ final class SyncedSettingsStore {
     /// 送らないため)。
     func reloadFromLocalAfterLogout() {
         pendingSave = nil
+        unsentSave = nil
         current = Self.loadFromLocal()
     }
 
@@ -307,11 +329,24 @@ final class SyncedSettingsStore {
         // まだ送れていない変更が残っていれば、差分の元はその変更の
         // 直前の値のまま引き継ぐ (間の編集も含めた差分にするため)。
         // 世代の違う残りは前の状態のものなので引き継がない。
+        // 送り直しの上限に達して未送信として残っている分も同じ扱いで、
+        // ここで差分の元として引き継ぎ、新しい変更と一緒に送る
+        // (引き継がないと、未送信分の項目がサーバーへ届かないままになる)。
+        var carriedBase: SyncedClientSettings?
+        if let unsent = unsentSave {
+            unsentSave = nil
+            if unsent.generation == generation,
+               unsent.syncGeneration == syncGeneration {
+                carriedBase = unsent.base
+            }
+        }
         let base: SyncedClientSettings
         if let pending = pendingSave,
            pending.generation == generation,
            pending.syncGeneration == syncGeneration {
             base = pending.base
+        } else if let carriedBase {
+            base = carriedBase
         } else {
             base = previous
         }
@@ -353,17 +388,46 @@ final class SyncedSettingsStore {
             // その間ずっと待たされてしまうため。
             guard item.syncGeneration == SettingsStore.shared.syncGeneration,
                   Self.isSyncEnabled else { continue }
-            // その間に新しい変更が来ていたら、そちらが最新 (差分の
-            // 元は引き継がれているため、新しい分に失敗した分の変更も
-            // 含まれる) ため、古い分は戻さず、新しい分を続けて送る。
-            guard pendingSave == nil else { continue }
-            pendingSave = item
             consecutiveSaveFailures += 1
-            guard consecutiveSaveFailures <= 3 else {
-                // 試し直しの上限。諦めた分は待ちに残さない。
-                pendingSave = nil
+            // その間に新しい変更が来ていたら、失敗した分の差分を
+            // 新しい分の差分へ合成してから送る。新しい分の差分の元は
+            // 「失敗した変更が入った後の値」なので、そのまま送ると
+            // 失敗した分の項目は差分に現れず、サーバーへ届かない。
+            // 元を失敗した分の元へ差し替えると、両方の編集を含めた
+            // 差分になる (送信中に値を元へ戻す編集も、元と先が同じ
+            // 値になって差分から消えるため、正しく扱える)。
+            if let pending = pendingSave {
+                if pending.generation == item.generation,
+                   pending.syncGeneration == item.syncGeneration {
+                    let merged = PendingSave(
+                        id: pending.id, base: item.base, desired: pending.desired,
+                        generation: pending.generation,
+                        syncGeneration: pending.syncGeneration)
+                    if consecutiveSaveFailures > 3 {
+                        // 試し直しの上限。合成した分は捨てずに未送信
+                        // として残し、失敗したことを画面側へ知らせる。
+                        unsentSave = merged
+                        pendingSave = nil
+                        await notifySaveFailed()
+                        continue
+                    }
+                    pendingSave = merged
+                }
+                // 世代の違う新しい変更がある場合は、失敗した分は
+                // 前の状態のものなので合成せず、新しい分を続けて送る。
                 continue
             }
+            guard consecutiveSaveFailures <= 3 else {
+                // 試し直しの上限。諦めた分は捨てずに未送信として
+                // 残し、次の変更や取り込みのときに送り直す。
+                // あわせて、失敗したことを画面側へ知らせる (端末内に
+                // は保存されているため、黙っていると他の端末で
+                // 変わっていないことに気づけない)。
+                unsentSave = item
+                await notifySaveFailed()
+                continue
+            }
+            pendingSave = item
             // 少し間を置いてから試し直す (通信が戻るのを待つ)。
             // 待ちは取り消せる形にし、待っている間に新しい変更が
             // 来たり、状態が変わったりしたら、待ちを打ち切って
@@ -374,6 +438,14 @@ final class SyncedSettingsStore {
         }
         isSaving = false
         restartDrainIfNeeded()
+    }
+
+    /// 保存に失敗して、自動の送り直しでも届かなかったことを画面側へ
+    /// 知らせる (番組表の表示設定と同じ作り)。
+    private func notifySaveFailed() async {
+        await MainActor.run {
+            NotificationCenter.default.post(name: .syncedSettingsSaveFailed, object: nil)
+        }
     }
 
     /// 送り直しまでの待ち (最長15秒)。細切れに眠り、そのたびに
@@ -408,6 +480,33 @@ final class SyncedSettingsStore {
     /// ときは何もせず false を返す。
     func refreshFromServer() async -> Bool {
         guard Self.isSyncEnabled else { return false }
+        // 未送信の変更が残っていたら、先に送り直す。取り込みを先に
+        // すると、届いていない端末の値がサーバーの古い値で上書き
+        // されてしまうため、取り込み自体は送り直しの後の回に回す。
+        // 世代の違う未送信分は前の状態のものなので捨てる。
+        if let unsent = unsentSave {
+            unsentSave = nil
+            if unsent.generation == SettingsStore.shared.authGeneration,
+               unsent.syncGeneration == SettingsStore.shared.syncGeneration {
+                if let pending = pendingSave,
+                   pending.generation == unsent.generation,
+                   pending.syncGeneration == unsent.syncGeneration {
+                    // 送信待ちがある間は、その差分の元へ合成して引き継ぐ。
+                    pendingSave = PendingSave(
+                        id: pending.id, base: unsent.base, desired: pending.desired,
+                        generation: pending.generation,
+                        syncGeneration: pending.syncGeneration)
+                } else if pendingSave == nil {
+                    pendingSave = unsent
+                    if !isSaving {
+                        isSaving = true
+                        consecutiveSaveFailures = 0
+                        Task { await self.drainSaveQueue() }
+                    }
+                }
+                return false
+            }
+        }
         // 送信待ちの変更があるときは取り込まない。取り込むと、送る前の
         // 変更までサーバーの古い値で上書きされてしまうため。
         guard pendingSave == nil, !isSaving else { return false }
@@ -876,31 +975,51 @@ final class SyncedSettingsStore {
     }
 
     /// ピン留めチャンネルの配列へ、編集の差分だけを適用する。
-    /// 追加と削除だけの編集は、最新の並びを土台に差分を適用する。
-    /// 要素の顔ぶれが同じで並びだけが変わった編集 (並び替え) は、
-    /// 差分では表せないため、利用者の並びそのもので置き換える。
+    /// 土台は最新のサーバー値で、利用者がこの端末で消した要素だけを
+    /// 落とし、足した要素だけを末尾に加える。
+    /// 並び替えは、最新の並びの上で、編集前からあって編集後も残る
+    /// 要素同士の順序だけを、編集後の順序に合わせて入れ替える。
+    /// 他の端末が足した要素や、他の端末が消した要素、文字列でない
+    /// 要素は、そのままの位置に残る (並び替えのたびに利用者の並び
+    /// そのもので置き換えると、他の端末の追加が消えたり、向こうで
+    /// 消したものが復活したりするため)。
+    /// サーバー側の値が配列の形でないときは、受け皿として利用者の
+    /// 並びそのものを返す。
     private static func mergedPinnedChannelIDs(
         latest: Any?, base: [String], desired: [String]
     ) -> [Any] {
-        if Set(base) == Set(desired) {
-            return desired
+        guard let rawEntries = latest as? [Any] else { return desired }
+        let baseSet = Set(base)
+        let desiredSet = Set(desired)
+        let removed = baseSet.subtracting(desiredSet)
+        // 並び替えの対象 (編集前からあって編集後も残る要素) と、
+        // 編集後の並びにおける順位。
+        let keptSet = baseSet.intersection(desiredSet)
+        var rank: [String: Int] = [:]
+        for (index, value) in desired.enumerated() where keptSet.contains(value) {
+            if rank[value] == nil { rank[value] = index }
         }
-        let removed = Set(base).subtracting(Set(desired))
-        var result: [Any] = []
-        var present = Set<String>()
-        if let rawEntries = latest as? [Any] {
-            for raw in rawEntries {
-                guard let value = raw as? String else {
-                    result.append(raw)
-                    continue
-                }
-                if removed.contains(value) { continue }
-                result.append(raw)
-                present.insert(value)
-            }
+        // 最新の並びから、この端末で消した要素だけを落とす。
+        var result: [Any] = rawEntries.filter { raw in
+            guard let value = raw as? String else { return true }
+            return !removed.contains(value)
         }
-        for value in desired where !base.contains(value) && !present.contains(value) {
+        // 対象の要素が占めている枠の中でだけ、順序を入れ替える。
+        // 枠の位置そのものは動かさないため、対象でない要素 (他の
+        // 端末の追加分や文字列でない要素) の位置は変わらない。
+        let keptSlots = result.indices.filter {
+            (result[$0] as? String).map { keptSet.contains($0) } ?? false
+        }
+        let keptValues = keptSlots.compactMap { result[$0] as? String }
+        let sortedKept = keptValues.sorted { (rank[$0] ?? 0) < (rank[$1] ?? 0) }
+        for (slot, value) in zip(keptSlots, sortedKept) {
+            result[slot] = value
+        }
+        // この端末で足した要素を、末尾に加える。
+        var present = Set(result.compactMap { $0 as? String })
+        for value in desired where !baseSet.contains(value) && !present.contains(value) {
             result.append(value)
+            present.insert(value)
         }
         return result
     }
