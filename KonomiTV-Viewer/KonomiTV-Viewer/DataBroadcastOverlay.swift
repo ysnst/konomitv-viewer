@@ -53,6 +53,17 @@ final class DataBroadcastOverlay: NSObject {
         var nvram: [String: String]?
     }
 
+    deinit {
+        // 後片付けの呼び忘れへの備え: 受け口の登録だけは外しておく
+        // (現行の呼び出し側は必ず teardown() を呼ぶ)。
+        if let webView {
+            webView.navigationDelegate = nil
+            webView.configuration.userContentController.removeScriptMessageHandler(forName: "bmlStatus")
+            webView.configuration.userContentController.removeScriptMessageHandler(forName: "bmlNvram")
+            webView.configuration.userContentController.removeScriptMessageHandler(forName: "bmlVideoRect")
+        }
+    }
+
     private(set) var webView: WKWebView?
     private var pageLoaded = false
     private var pendingStart: (psiURL: URL, serviceID: Int?, config: StartConfig)?
@@ -142,7 +153,11 @@ final class DataBroadcastOverlay: NSObject {
             config["hasNvram"] = false
         }
         guard let data = try? JSONSerialization.data(withJSONObject: config),
-              let json = String(data: data, encoding: .utf8) else { return }
+              let json = String(data: data, encoding: .utf8) else {
+            // 変換に失敗したら、無言で始めないままにせず失敗を知らせる。
+            onStatus?("error")
+            return
+        }
         webView.evaluateJavaScript("window.BMLSpike && window.BMLSpike.start(\(json))")
     }
 }
@@ -170,7 +185,13 @@ extension DataBroadcastOverlay: WKScriptMessageHandler {
         }
         // 保存データの写し (キー → 値の辞書が丸ごと届く)。アプリ側の
         // 控えとして保存する。
-        if message.name == "bmlNvram", let nvram = message.body as? [String: String] {
+        if message.name == "bmlNvram", let raw = message.body as? [String: Any] {
+            // 文字列でない値が混じっていても、その値だけを除いて
+            // 保存する (保存全体を黙って捨てないため)。
+            var nvram: [String: String] = [:]
+            for (key, value) in raw {
+                if let string = value as? String { nvram[key] = string }
+            }
             SettingsStore.shared.dataBroadcastingNvram = nvram
             return
         }

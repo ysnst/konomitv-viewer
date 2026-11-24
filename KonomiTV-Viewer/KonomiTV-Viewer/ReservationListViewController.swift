@@ -220,6 +220,8 @@ final class ReservationListViewController: UIViewController, UITableViewDataSour
                 self.finishLoad()
                 if self.reservations.isEmpty {
                     self.showStatus("録画予約一覧を取得できませんでした。\n下に引いて再読み込みしてください。")
+                } else {
+                    self.showReloadFailedAlert()
                 }
             }
         }
@@ -238,6 +240,17 @@ final class ReservationListViewController: UIViewController, UITableViewDataSour
             let r = rhs.program.startDate ?? .distantFuture
             return sortAscending ? l < r : l > r
         }
+    }
+
+    /// データがある状態での再読み込み失敗の知らせ (古い表示のまま
+    /// 更新できたと思い込まないため)。
+    private func showReloadFailedAlert() {
+        let alert = UIAlertController(
+            title: "再読み込みできませんでした",
+            message: "接続先とネットワークを確認してください。表示は前回の内容のままです。",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
 
     private func showStatus(_ text: String) {
@@ -284,7 +297,14 @@ final class ReservationListViewController: UIViewController, UITableViewDataSour
 
     /// カード上の切り替え。設定一式の is_enabled だけを反転させて送る
     /// (Web 版のカードと同じ)。失敗したら切り替えを元に戻して知らせる。
+    /// 切り替えの通信が終わっていない予約の ID (連打で二重に送らないため)。
+    private var togglingReservationIDs: Set<Int> = []
+
     private func toggleReservation(_ reservation: Reservation, toggle: WebToggle) {
+        guard !togglingReservationIDs.contains(reservation.id) else {
+            toggle.isOn = reservation.record_settings.is_enabled
+            return
+        }
         // 手動予約の無効化は録画側に対応する状態が無いため、送らずに
         // 案内する (Web 版の保存時の守りと同じ)。切り替え自体は手動予約
         // のカードでは出していないため、通常はここへは来ない。
@@ -300,8 +320,14 @@ final class ReservationListViewController: UIViewController, UITableViewDataSour
         }
         var settings = reservation.record_settings
         settings.is_enabled = toggle.isOn
+        togglingReservationIDs.insert(reservation.id)
+        toggle.isEnabled = false
         Task { [weak self] in
             guard let self else { return }
+            defer {
+                self.togglingReservationIDs.remove(reservation.id)
+                toggle.isEnabled = true
+            }
             do {
                 let updated = try await APIClient.shared.updateReservation(
                     id: reservation.id, recordSettings: settings)

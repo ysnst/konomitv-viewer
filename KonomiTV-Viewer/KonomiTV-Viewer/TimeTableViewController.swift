@@ -211,6 +211,19 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = AppPalette.background
+        // 番組表の表示設定のサーバー保存に失敗したら知らせる
+        // (端末内には保存されるため、黙っていると気づけない)。
+        NotificationCenter.default.addObserver(
+            forName: .timeTableSettingsSaveFailed, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self, self.view.window != nil else { return }
+            let alert = UIAlertController(
+                title: "表示設定をサーバーへ保存できませんでした",
+                message: "この端末には保存されていますが、他の端末や Web 版には反映されていません。接続先とネットワークを確認してください。",
+                preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            self.present(alert, animated: true)
+        }
 
         // ロゴ帯は Web 版の番組表と同じく画面の先頭に固定で置く
         // (番組表は格子自体がスクロール領域を持つため、一覧画面のように
@@ -476,7 +489,9 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
         super.viewWillAppear(animated)
         // 先頭画面ではシステムのナビゲーションバーを隠す (他のタブと同じ)。
         navigationController?.setNavigationBarHidden(true, animated: animated)
-        // 現在時刻の線は表示中だけ進める。
+        // 現在時刻の線は表示中だけ進める (出るたびに前のタイマーを
+        // 止めてから作り直し、二重に残らないようにする)。
+        nowTimer?.invalidate()
         nowTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             self?.updateNowLine()
         }
@@ -654,8 +669,16 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
     }
 
     /// 番組表を取り直して格子を組み直す。
+    /// 読み込み中に来た読み直しを覚えておく印。完了後に取り直す。
+    private var pendingReloadAfterLoad = false
+
     private func load(scrollToNowAfter: Bool) {
-        guard !isLoading else { return }
+        guard !isLoading else {
+            // 読み込み中の読み直しは捨てず、完了後に取り直す
+            // (予約の塗り分けなどが古いまま残らないように)。
+            pendingReloadAfterLoad = true
+            return
+        }
         guard SettingsStore.shared.isConfigured else {
             statusLabel.text = "設定タブで接続先 URL を設定してください。"
             return
@@ -705,13 +728,23 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
             } catch {
                 if self.channels.isEmpty {
                     self.statusLabel.text = "読み込めませんでした。\n接続先とネットワークを確認してください。\n(\(error.localizedDescription))"
+                } else {
+                    // データがある状態での再読み込み失敗も知らせる。
+                    let alert = UIAlertController(
+                        title: "再読み込みできませんでした",
+                        message: "接続先とネットワークを確認してください。表示は前回の内容のままです。",
+                        preferredStyle: .alert)
+                    alert.addAction(UIAlertAction(title: "OK", style: .default))
+                    self.present(alert, animated: true)
                 }
             }
             self.isLoading = false
             self.loadingIndicator.stopAnimating()
             // 読み込み中に日付や種別が変わっていたら、古い条件の結果を
-            // 出したままにせず、今の条件で取り直す。
-            if self.selectedDayStart != dayStart || self.selectedType != type {
+            // 出したままにせず、今の条件で取り直す。日付・種別が同じでも、
+            // 読み込み中に読み直しが来ていたら取り直す。
+            if self.pendingReloadAfterLoad || self.selectedDayStart != dayStart || self.selectedType != type {
+                self.pendingReloadAfterLoad = false
                 self.load(scrollToNowAfter: Self.isToday(self.selectedDayStart))
             }
         }
@@ -1493,6 +1526,11 @@ private final class TimeTableProgramCellView: RippleSurfaceView {
                 self.layer.addSublayer(layer)
             }
             borderLayer = layer
+        } else {
+            // 枠が小さくなった・予約が無くなったときは、前に作った
+            // 枠線を残さず取り除く。
+            borderLayer?.removeFromSuperlayer()
+            borderLayer = nil
         }
     }
 }

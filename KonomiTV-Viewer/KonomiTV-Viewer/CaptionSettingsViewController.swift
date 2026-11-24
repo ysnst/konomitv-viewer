@@ -7,10 +7,9 @@ import UIKit
 ///
 /// 値はいずれもサーバーに保存される利用者設定と共通で、読み書きは
 /// SyncedSettingsStore が担う (同期が入っていればサーバーへも送られる)。
-/// 変更はその場で保存され、次に録画再生を始めるときから字幕の描画に
-/// 効く。テレビ側の文字スーパーは、生放送の字幕表示がまだ無いため、
-/// いまは Web 版と共通の値の置き場所として働く (生放送の字幕が入った
-/// ときにそのまま効く)。
+/// 変更はその場で保存され、次に再生を始めるとき (再生の作り直しを
+/// 含む) から字幕の描画に効く。テレビ側の文字スーパーの設定は、
+/// 生放送の字幕でも実際に効く。
 final class CaptionSettingsViewController: SettingsDetailViewController {
     private let fontButton = RippleButton()
     private let borderSwitch = WebToggle()

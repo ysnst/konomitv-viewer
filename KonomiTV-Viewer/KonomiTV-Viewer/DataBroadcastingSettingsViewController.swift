@@ -179,6 +179,11 @@ final class DataBroadcastingSettingsViewController: SettingsDetailViewController
     }
 
     private func updatePrefectureButton(selected: String) {
+        // 保存値が選択肢に無いときは、表示 (未設定) と中身をそろえる
+        // ため、保存値自体も未設定に戻す。
+        if !selected.isEmpty, !Self.prefectureOptions.contains(where: { $0.value == selected }) {
+            SettingsStore.shared.dataBroadcastingPrefecture = ""
+        }
         let title = Self.prefectureOptions.first { $0.value == selected }?.title ?? "未設定"
         prefectureButton.setTitle(title, for: .normal)
         prefectureButton.menu = UIMenu(children: Self.prefectureOptions.map { option in
@@ -212,8 +217,12 @@ final class DataBroadcastingSettingsViewController: SettingsDetailViewController
         if raw.count == 7, raw.allSatisfy({ $0.isNumber }) {
             candidate = String(raw.prefix(3)) + "-" + String(raw.suffix(4))
         }
-        let parts = candidate.split(separator: "-")
-        let isValid = parts.count == 2
+        // split は空の要素を落とすため、「123--4567」のような形も
+        // 通ってしまう。ハイフンはちょうど1つだけ、他は数字だけの
+        // 形であることを確かめる。
+        let parts = candidate.split(separator: "-", omittingEmptySubsequences: false)
+        let isValid = candidate.filter { $0 == "-" }.count == 1
+            && parts.count == 2
             && parts[0].count == 3 && parts[1].count == 4
             && parts.allSatisfy { part in part.allSatisfy { $0.isNumber } }
         guard isValid else {

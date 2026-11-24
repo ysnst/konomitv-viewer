@@ -32,11 +32,17 @@ final class CaptionOverlayView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         if let fractions = displayRectFractions, fractions.width > 0, fractions.height > 0 {
+            // 割合が 0〜1 の範囲を超えて届いても、枠の外へはみ出さない
+            // よう範囲内に切りそろえる。
+            let minX = min(max(fractions.minX, 0), 1)
+            let minY = min(max(fractions.minY, 0), 1)
+            let clampedWidth = min(max(fractions.width, 0), 1 - minX)
+            let clampedHeight = min(max(fractions.height, 0), 1 - minY)
             imageView.frame = CGRect(
-                x: bounds.minX + bounds.width * fractions.minX,
-                y: bounds.minY + bounds.height * fractions.minY,
-                width: bounds.width * fractions.width,
-                height: bounds.height * fractions.height
+                x: bounds.minX + bounds.width * minX,
+                y: bounds.minY + bounds.height * minY,
+                width: bounds.width * clampedWidth,
+                height: bounds.height * clampedHeight
             )
         } else {
             imageView.frame = bounds
@@ -160,13 +166,21 @@ final class CaptionDisplayEngine {
     private func ensureCreated() {
         guard context == nil else { return }
         context = aribcc_context_alloc()
-        guard let context else { return }
+        guard let context else {
+            context = nil
+            return
+        }
         captionDecoder = aribcc_decoder_alloc(context)
         superimposeDecoder = aribcc_decoder_alloc(context)
         captionRenderer = aribcc_renderer_alloc(context)
         superimposeRenderer = aribcc_renderer_alloc(context)
         guard let captionDecoder, let superimposeDecoder,
-              let captionRenderer, let superimposeRenderer else { return }
+              let captionRenderer, let superimposeRenderer else {
+            // 途中で失敗したら、確保済みの部品を手放して最初から
+            // やり直せるようにする (失敗したまま「用意済み」にしない)。
+            teardownCaptionComponents()
+            return
+        }
         let captionOK = aribcc_decoder_initialize(
             captionDecoder, ARIBCC_ENCODING_SCHEME_AUTO, ARIBCC_CAPTIONTYPE_CAPTION,
             ARIBCC_PROFILE_DEFAULT, ARIBCC_LANGUAGEID_DEFAULT)
@@ -179,9 +193,36 @@ final class CaptionDisplayEngine {
         let superimposeRendererOK = aribcc_renderer_initialize(
             superimposeRenderer, ARIBCC_CAPTIONTYPE_SUPERIMPOSE,
             ARIBCC_FONTPROVIDER_TYPE_AUTO, ARIBCC_TEXTRENDERER_TYPE_AUTO)
-        guard captionOK, superimposeOK, captionRendererOK, superimposeRendererOK else { return }
+        guard captionOK, superimposeOK, captionRendererOK, superimposeRendererOK else {
+            teardownCaptionComponents()
+            return
+        }
         // 描画の設定は、設定の「字幕」画面の値 (利用者設定と共通) から取る。
-        // DRCS (外字) は対応する文字への置き換えを有効にする (固定)。
+        applyCaptionSettings()
+        available = true
+    }
+
+    /// 確保済みの文字化の部品をすべて手放し、次回の用意を最初から
+    /// やり直せる状態に戻す。
+    private func teardownCaptionComponents() {
+        if let captionRenderer { aribcc_renderer_free(captionRenderer) }
+        if let superimposeRenderer { aribcc_renderer_free(superimposeRenderer) }
+        if let captionDecoder { aribcc_decoder_free(captionDecoder) }
+        if let superimposeDecoder { aribcc_decoder_free(superimposeDecoder) }
+        if let context { aribcc_context_free(context) }
+        captionRenderer = nil
+        superimposeRenderer = nil
+        captionDecoder = nil
+        superimposeDecoder = nil
+        context = nil
+        available = false
+    }
+
+    /// 字幕の設定 (フォント・縁取り・背景・文字スーパーの表示) を
+    /// 生成済みの描画の部品へ付け直す。再生の作り直しのときにも
+    /// 呼ぶことで、同じ再生画面の間での設定変更も反映される。
+    private func applyCaptionSettings() {
+        guard let captionRenderer, let superimposeRenderer else { return }
         let captionSettings = SyncedSettingsStore.shared.current
         showSuperimpose = useTVSuperimposeSetting
             ? captionSettings.tvShowSuperimpose
@@ -190,13 +231,11 @@ final class CaptionDisplayEngine {
             aribcc_renderer_set_force_stroke_text(
                 renderer, captionSettings.alwaysBorderCaptionText)
             aribcc_renderer_set_replace_drcs(renderer, true)
-            // 背景の濃さは部品に直接の口が無いため、濃さ 0 の指定のとき
-            // だけ「背景を出さない」として効かせる。
             if captionSettings.specifyCaptionOpacity, captionSettings.captionOpacity == 0 {
                 aribcc_renderer_set_force_no_background(renderer, true)
+            } else {
+                aribcc_renderer_set_force_no_background(renderer, false)
             }
-            // フォントは設定の選択肢を iOS のフォントへ対応づけたもの。
-            // 対応が空 (sans-serif) のときは部品の既定のままにする。
             let families = SyncedClientSettings.iosFontFamilies(
                 forCaptionFont: captionSettings.captionFont)
             if !families.isEmpty {
@@ -209,13 +248,15 @@ final class CaptionDisplayEngine {
                 }
             }
         }
-        available = true
     }
 
     // MARK: - 再生の作り直し
 
     /// 新しい再生が始まるときに、蓄えと部品の中身を空にする。
     func resetForNewPlayback() {
+        // 作り直しのたびに字幕の設定も読み直す (同じ再生画面の間で
+        // 変わった設定が、次の再生から効くように)。
+        if available { applyCaptionSettings() }
         packets = []
         seenKeys = []
         feedIndex = 0
@@ -367,8 +408,14 @@ final class CaptionDisplayEngine {
 
     private static func dedupeKey(position: Double, payload: Data) -> String {
         let ms = Int((position * 1000).rounded())
-        let head = payload.prefix(8).map { String(format: "%02x", Int($0)) }.joined()
-        return "\(ms)/\(payload.count)/\(head)"
+        // 先頭だけでは、途中から違う別の字幕を重複と間違えるため、
+        // 中身全体から控えを作る。
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in payload {
+            hash ^= UInt64(byte)
+            hash &*= 0x100000001b3
+        }
+        return "\(ms)/\(payload.count)/\(hash)"
     }
 
     // MARK: - 再生位置に合わせた更新
@@ -517,6 +564,9 @@ final class CaptionDisplayEngine {
             let stride = Int(image.stride)
             let dstX = Int(image.dst_x)
             let dstY = Int(image.dst_y)
+            // 部品から受け取る寸法・行の幅が想定外なら、その画像だけ
+            // 飛ばす (確かめずに画素を読みに行って落ちないため)。
+            guard imgWidth > 0, imgHeight > 0, stride >= imgWidth * 4 else { continue }
             for y in 0..<imgHeight {
                 let cy = dstY + y
                 guard cy >= 0, cy < height else { continue }

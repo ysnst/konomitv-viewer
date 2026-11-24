@@ -192,7 +192,11 @@ final class JikkyoSettingsViewController: SettingsDetailViewController {
     }
 
     /// サーバーからユーザー情報を取り直して、連携の状態を更新する。
+    private var niconicoRefreshGeneration = 0
+
     private func refreshNiconicoState() {
+        niconicoRefreshGeneration += 1
+        let generation = niconicoRefreshGeneration
         guard SettingsStore.shared.isLoggedIn else {
             niconicoState = .notLoggedIn
             return
@@ -201,7 +205,7 @@ final class JikkyoSettingsViewController: SettingsDetailViewController {
         Task { [weak self] in
             do {
                 let user = try await APIClient.shared.fetchCurrentUser()
-                guard let self else { return }
+                guard let self, generation == self.niconicoRefreshGeneration else { return }
                 if let userID = user.niconico_user_id {
                     let name = user.niconico_user_name ?? "\(userID)"
                     self.niconicoState = .linked(name: name)
@@ -209,6 +213,7 @@ final class JikkyoSettingsViewController: SettingsDetailViewController {
                     self.niconicoState = .unlinked
                 }
             } catch {
+                guard let self, generation == self.niconicoRefreshGeneration else { return }
                 // 確認できなかっただけでは「未連携」とは言えない。
                 // 連携済みの人が不要な連携のやり直しを始めないよう、
                 // 失敗と分かる表示に分ける。

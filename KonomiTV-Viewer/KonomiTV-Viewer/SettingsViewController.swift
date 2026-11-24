@@ -339,12 +339,22 @@ final class SettingsViewController: UIViewController {
 
     /// Web 版の保存ボタンと同じ形 (高さ 45px、地は background-lighten-2、
     /// 文字 15.5px、角丸 4px) をボタンに付ける。
+    /// 組み直しのたびに高さの制約が積み重ならないよう、既存の
+    /// 自分の高さの制約を外してから付け直す。
+    private func resetHeightConstraint(of view: UIView, to height: CGFloat) {
+        for constraint in view.constraints
+        where constraint.firstAttribute == .height && constraint.secondItem == nil {
+            constraint.isActive = false
+        }
+        view.heightAnchor.constraint(equalToConstant: height).isActive = true
+    }
+
     private func styleActionButton(_ button: UIButton) {
         button.backgroundColor = AppPalette.pressed
         button.setTitleColor(AppPalette.text, for: .normal)
         button.titleLabel?.font = .scaledSystemFont(ofSize: 15.5)
         button.layer.cornerRadius = 4
-        button.heightAnchor.constraint(equalToConstant: 45).isActive = true
+        resetHeightConstraint(of: button, to: 45)
     }
 
     /// 設定項目1つ分のまとまり。Web 版の並び (見出し → 14px 空けて入力欄)。
@@ -755,6 +765,10 @@ final class SettingsViewController: UIViewController {
     private func storeConnectionFields() {
         let store = SettingsStore.shared
         let previousMethod = store.authMethod
+        // 方式変更時の Cookie 消去は、URL を上書きする前の (古い)
+        // 接続先を対象にする。同時に URL を変えても古い接続先の
+        // Cookie が画面側に残らないようにするため。
+        let previousHost = store.baseURL?.host
         store.rawURLString = urlField.text ?? ""
         store.authMethod = selectedAuthMethod
         store.cfClientID = cfIDField.text ?? ""
@@ -766,7 +780,7 @@ final class SettingsViewController: UIViewController {
         store.urlParameterName = urlParameterNameField.text ?? ""
         store.urlParameterValue = urlParameterValueField.text ?? ""
         if previousMethod == .browserLogin, selectedAuthMethod != .browserLogin {
-            clearBrowserLoginCookies()
+            clearBrowserLoginCookies(forHost: previousHost)
         }
     }
 
@@ -805,9 +819,9 @@ final class SettingsViewController: UIViewController {
     /// 取り込んだ Cookie を消す。画面 (WebView) 側の保存領域からも
     /// 接続先の宛先の Cookie を消す (消さないと、次にログイン画面を
     /// 開いたときにログイン済みのままになってしまうため)。
-    private func clearBrowserLoginCookies() {
+    private func clearBrowserLoginCookies(forHost explicitHost: String? = nil) {
         SettingsStore.shared.clearBrowserLoginCookies()
-        guard let host = SettingsStore.shared.baseURL?.host else { return }
+        guard let host = explicitHost ?? SettingsStore.shared.baseURL?.host else { return }
         let cookieStore = WKWebsiteDataStore.default().httpCookieStore
         cookieStore.getAllCookies { cookies in
             for cookie in cookies
@@ -905,7 +919,7 @@ final class SettingsViewController: UIViewController {
         // 枠の内側に左 12px の余白を作る。
         field.leftView = UIView(frame: CGRect(x: 0, y: 0, width: 12, height: 1))
         field.leftViewMode = .always
-        field.heightAnchor.constraint(equalToConstant: 50).isActive = true
+        resetHeightConstraint(of: field, to: 50)
         field.keyboardType = keyboard
         field.autocapitalizationType = .none
         field.autocorrectionType = .no
@@ -1034,7 +1048,7 @@ final class SettingsViewController: UIViewController {
         button.titleLabel?.font = .scaledSystemFont(ofSize: 16)
         // 右の余白は、右端に留める矢印の分 (12 + 12 + 8) を空ける。
         button.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 32)
-        button.heightAnchor.constraint(equalToConstant: 50).isActive = true
+        resetHeightConstraint(of: button, to: 50)
         addSelectChevron(to: button)
     }
 
@@ -1094,6 +1108,19 @@ final class SettingsViewController: UIViewController {
 
         guard store.isConfigured else {
             statusLabel.text = "URL が正しくありません。入力を見直してください。"
+            return
+        }
+        // キーチェーンへ書く値 (パスワード類) は、読み戻して一致するか
+        // 確かめる。失敗していたら「保存しました」とは出さない。
+        let keychainValues: [(entered: String, stored: String)] = [
+            (cfSecretField.text ?? "", store.cfClientSecret),
+            (basicPasswordField.text ?? "", store.basicPassword),
+            (digestPasswordField.text ?? "", store.digestPassword),
+            (urlParameterValueField.text ?? "", store.urlParameterValue),
+            (passwordField.text ?? "", store.password),
+        ]
+        if keychainValues.contains(where: { !$0.entered.isEmpty && $0.entered != $0.stored }) {
+            statusLabel.text = "一部の値を保存できませんでした。もう一度保存してください。"
             return
         }
         if mode == .setup {

@@ -40,11 +40,16 @@ final class GeneralSettingsViewController: SettingsDetailViewController {
         reloadValues()
     }
 
+    private var appearRefreshGeneration = 0
+
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        appearRefreshGeneration += 1
+        let generation = appearRefreshGeneration
         Task { [weak self] in
             if await SyncedSettingsStore.shared.refreshFromServer() {
-                self?.reloadValues()
+                guard let self, generation == self.appearRefreshGeneration else { return }
+                self.reloadValues()
             }
         }
     }

@@ -49,10 +49,10 @@ enum ReservationConditions {
         networkID: Int?, serviceID: Int?, transportStreamID: Int?
     ) -> ProgramSearchCondition {
         let serviceRanges: [ProgramSearchServiceRange]?
-        if let networkID, let serviceID {
+        if let networkID, let serviceID, let transportStreamID {
             serviceRanges = [ProgramSearchServiceRange(
                 network_id: networkID,
-                transport_stream_id: transportStreamID ?? 0,
+                transport_stream_id: transportStreamID,
                 service_id: serviceID)]
         } else {
             serviceRanges = nil
@@ -98,6 +98,9 @@ enum ReservationConditions {
             let newRange = condition.service_ranges?.first
             let isDuplicate = existing.reservation_conditions.contains { existingCondition in
                 let existingSearch = existingCondition.program_search_condition
+                // 無効化された条件は自動予約されないため、重複とはしない
+                // (無効な同名条件が残っていても新しく作れるようにする)。
+                guard existingSearch.is_enabled else { return false }
                 guard existingSearch.keyword == condition.keyword else { return false }
                 let existingRange = existingSearch.service_ranges?.first
                 switch (existingRange, newRange) {

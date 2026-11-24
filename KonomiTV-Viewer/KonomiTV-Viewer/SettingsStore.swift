@@ -23,18 +23,21 @@ enum KeychainStore {
     }
 
     /// 値を保存する。nil または空文字なら削除する。
-    static func setString(_ value: String?, forKey key: String) {
+    /// 戻り値は保存できたかどうか (呼び出し側で失敗に気づけるように)。
+    @discardableResult
+    static func setString(_ value: String?, forKey key: String) -> Bool {
         guard let value, !value.isEmpty, let data = value.data(using: .utf8) else {
-            SecItemDelete(baseQuery(forKey: key) as CFDictionary)
-            return
+            let status = SecItemDelete(baseQuery(forKey: key) as CFDictionary)
+            return status == errSecSuccess || status == errSecItemNotFound
         }
         let query = baseQuery(forKey: key)
         let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if status == errSecItemNotFound {
             var attributes = query
             attributes[kSecValueData as String] = data
-            SecItemAdd(attributes as CFDictionary, nil)
+            return SecItemAdd(attributes as CFDictionary, nil) == errSecSuccess
         }
+        return status == errSecSuccess
     }
 
     /// バイト列のまま保存する値 (ブラウザでログインの Cookie の控え、
@@ -50,18 +53,21 @@ enum KeychainStore {
     }
 
     /// バイト列を保存する。nil または空なら削除する。
-    static func setData(_ value: Data?, forKey key: String) {
+    /// 戻り値は保存できたかどうか。
+    @discardableResult
+    static func setData(_ value: Data?, forKey key: String) -> Bool {
         guard let value, !value.isEmpty else {
-            SecItemDelete(baseQuery(forKey: key) as CFDictionary)
-            return
+            let status = SecItemDelete(baseQuery(forKey: key) as CFDictionary)
+            return status == errSecSuccess || status == errSecItemNotFound
         }
         let query = baseQuery(forKey: key)
         let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: value] as CFDictionary)
         if status == errSecItemNotFound {
             var attributes = query
             attributes[kSecValueData as String] = value
-            SecItemAdd(attributes as CFDictionary, nil)
+            return SecItemAdd(attributes as CFDictionary, nil) == errSecSuccess
         }
+        return status == errSecSuccess
     }
 
     private static func baseQuery(forKey key: String) -> [String: Any] {
@@ -1257,6 +1263,8 @@ final class SettingsStore {
     /// 控えが指すファイルの中身が変わったら作り直す。
     private var cachedClientCertificate: ClientCertificateMaterial?
     private var cachedClientCertificateHash: Int?
+    /// 証明書の控えは複数の処理から同時に触られうるため、読み書きを守る。
+    private let clientCertificateLock = NSLock()
 
     /// 取り込んだ証明書の表示名。
     var clientCertificateLabel: String {
@@ -1276,6 +1284,10 @@ final class SettingsStore {
               let array = items as? [[String: Any]],
               let first = array.first,
               let rawIdentity = first[kSecImportItemIdentity as String] else {
+            return nil
+        }
+        // 型の印を見てから取り出す (想定外の形の結果で落ちないため)。
+        guard CFGetTypeID(rawIdentity as CFTypeRef) == SecIdentityGetTypeID() else {
             return nil
         }
         let identity = rawIdentity as! SecIdentity
@@ -1302,8 +1314,10 @@ final class SettingsStore {
         KeychainStore.setData(p12Data, forKey: KeychainKey.clientCertificateP12)
         KeychainStore.setString(passphrase, forKey: KeychainKey.clientCertificatePassphrase)
         clientCertificateLabel = material.label
+        clientCertificateLock.lock()
         cachedClientCertificate = material
         cachedClientCertificateHash = p12Data.hashValue
+        clientCertificateLock.unlock()
         return true
     }
 
@@ -1312,11 +1326,15 @@ final class SettingsStore {
         KeychainStore.setData(nil, forKey: KeychainKey.clientCertificateP12)
         KeychainStore.setString(nil, forKey: KeychainKey.clientCertificatePassphrase)
         clientCertificateLabel = ""
+        clientCertificateLock.lock()
         cachedClientCertificate = nil
         cachedClientCertificateHash = nil
+        clientCertificateLock.unlock()
     }
 
     private func clientCertificateMaterial() -> ClientCertificateMaterial? {
+        clientCertificateLock.lock()
+        defer { clientCertificateLock.unlock() }
         guard let data = KeychainStore.data(forKey: KeychainKey.clientCertificateP12) else { return nil }
         if let cached = cachedClientCertificate, cachedClientCertificateHash == data.hashValue {
             return cached

@@ -230,10 +230,15 @@ final class AccountSettingsViewController: SettingsDetailViewController {
 
     /// サーバーからユーザー情報を取り直して、表示 (名前・管理者・
     /// アイコン) に反映する。取れなければ保存済みのユーザー名で受ける。
+    private var userInfoRefreshGeneration = 0
+
     private func refreshUserInfo() {
+        userInfoRefreshGeneration += 1
+        let generation = userInfoRefreshGeneration
         Task { [weak self] in
-            guard let self else { return }
+            guard let self, generation == self.userInfoRefreshGeneration else { return }
             if let user = try? await APIClient.shared.fetchCurrentUser() {
+                guard generation == self.userInfoRefreshGeneration else { return }
                 self.userNameLabel.text = user.name
                 self.userAdminLabel.isHidden = !user.is_admin
                 self.userIDLabel.text = "User ID: \(user.id)"
@@ -241,6 +246,7 @@ final class AccountSettingsViewController: SettingsDetailViewController {
             }
             if let iconData = try? await APIClient.shared.fetchCurrentUserIcon(),
                let image = UIImage(data: iconData) {
+                guard generation == self.userInfoRefreshGeneration else { return }
                 self.userIconView.image = image
             }
         }

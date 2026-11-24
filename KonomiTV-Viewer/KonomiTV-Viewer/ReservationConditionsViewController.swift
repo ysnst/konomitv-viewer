@@ -236,6 +236,12 @@ final class ReservationConditionsViewController: SettingsDetailViewController {
                 // 仕組みが無いため、状態の文の場所に一時的に出す。
                 self.stateLabel.isHidden = false
                 self.stateLabel.text = "自動予約の条件を削除しました。"
+                // 知らせは出しっぱなしにせず、少し経ったら消す
+                // (一覧が空のときの案内表示へ戻す)。
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                    guard let self, self.stateLabel.text == "自動予約の条件を削除しました。" else { return }
+                    self.updateStateViews()
+                }
             } catch {
                 self.isDeleting = false
                 let message: String

@@ -37,6 +37,8 @@ final class MyPageViewController: UIViewController {
     /// App version の行のタップ回数 (拡張オプションの区分の解放用)。
     /// 解放できたら数え直す。解放の状態そのものは端末ごとに保存される。
     private var appVersionTapCount = 0
+    /// 最後に App version の行をタップした時刻 (間が空いたら数え直し)。
+    private var appVersionLastTapAt: Date?
     /// 短い知らせ (解放までの残り回数・解放の完了) を出している間の保持。
     private var briefNoticeView: UIView?
     private var briefNoticeLabel: UILabel?
@@ -268,16 +270,22 @@ final class MyPageViewController: UIViewController {
 
     /// ログインしていれば GET /api/users/me で取り直して表示する。
     /// 未ログインなら、その旨の表示にする (設定の入口はそのまま使える)。
+    private var accountRefreshGeneration = 0
+    private var serverVersionRefreshGeneration = 0
+
     private func refreshAccount() {
+        accountRefreshGeneration += 1
+        let generation = accountRefreshGeneration
         guard SettingsStore.shared.isLoggedIn else {
             currentUser = nil
             showLoggedOut()
             return
         }
         Task { [weak self] in
-            guard let self else { return }
+            guard let self, generation == self.accountRefreshGeneration else { return }
             do {
                 let user = try await APIClient.shared.fetchCurrentUser()
+                guard generation == self.accountRefreshGeneration else { return }
                 self.currentUser = user
                 self.nameLabel.text = user.name
                 self.adminBadge.isHidden = !user.is_admin
@@ -291,6 +299,7 @@ final class MyPageViewController: UIViewController {
                     self.iconGlyphView.isHidden = true
                 }
             } catch {
+                guard generation == self.accountRefreshGeneration else { return }
                 // 期限切れ・接続不可などで取れなかったときは、保存済みの
                 // ユーザー名だけ出して ID は出さない (「未ログイン」と
                 // 決めつけると、単なる接続失敗のときに誤解を招くため)。
@@ -310,11 +319,15 @@ final class MyPageViewController: UIViewController {
     /// 取れなかったとき (接続先未設定・接続失敗など) は、その旨の控えめな
     /// 表示にする。アプリの版の行はそのまま残る。
     private func refreshServerVersion() {
+        serverVersionRefreshGeneration += 1
+        let generation = serverVersionRefreshGeneration
         Task { [weak self] in
             guard let self else { return }
             if let version = await APIClient.shared.fetchServerVersion() {
+                guard generation == self.serverVersionRefreshGeneration else { return }
                 self.serverVersionRow?.updateTitle("Server version \(version)")
             } else {
+                guard generation == self.serverVersionRefreshGeneration else { return }
                 self.serverVersionRow?.updateTitle("Server version 取得できませんでした")
             }
         }
@@ -371,6 +384,12 @@ final class MyPageViewController: UIViewController {
             showBriefNotice("拡張オプションはすでに有効です")
             return
         }
+        // 前のタップから時間が空いていたら、最初から数え直す
+        // (長い期間に分けたタップの合計では解放しない)。
+        if let last = appVersionLastTapAt, Date().timeIntervalSince(last) > 3 {
+            appVersionTapCount = 0
+        }
+        appVersionLastTapAt = Date()
         appVersionTapCount += 1
         let remaining = 7 - appVersionTapCount
         if remaining <= 0 {

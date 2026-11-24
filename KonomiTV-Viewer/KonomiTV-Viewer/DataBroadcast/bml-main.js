@@ -615,7 +615,7 @@
         if (zipCode) {
             // ハイフンを除いて Base64 符号化する
             window.localStorage.setItem(
-                RECEIVER_INFO_KEY_BASE + 'zipcode', window.btoa(zipCode.replace('-', '')));
+                RECEIVER_INFO_KEY_BASE + 'zipcode', window.btoa(zipCode.replace(/-/g, '')));
         } else {
             window.localStorage.removeItem(RECEIVER_INFO_KEY_BASE + 'zipcode');
         }

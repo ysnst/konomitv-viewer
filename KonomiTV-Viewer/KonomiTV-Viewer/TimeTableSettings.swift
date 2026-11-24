@@ -1,6 +1,11 @@
 import Foundation
 import CoreGraphics
 
+extension Notification.Name {
+    /// 番組表の表示設定のサーバー保存に失敗したときの通知。
+    static let timeTableSettingsSaveFailed = Notification.Name("TimeTableSettingsSaveFailed")
+}
+
 /// 番組表の表示設定の値一式。項目名・値の形は Web 版の利用者設定
 /// (timetable_channel_width など) とそのまま同じにしてある。
 /// サーバーに保存される利用者設定の一部で、同期が入っているときは
@@ -168,7 +173,7 @@ final class TimeTableSettingsStore {
     }
 
     /// 値を差し替える。端末内の控えへはその場で書き、同期が効いている
-    /// ときはサーバーへも送る (送信は裏で行い、失敗しても握りつぶす)。
+    /// ときはサーバーへも送る (送信は裏で行い、失敗したら通知で知らせる)。
     func update(_ settings: TimeTableDisplaySettings) {
         current = settings
         saveToLocal(settings)
@@ -244,8 +249,15 @@ final class TimeTableSettingsStore {
             } catch let APIError.badStatus(code) where code == 422 {
                 continue  // 取り直して1回だけやり直す。
             } catch {
-                return  // それ以外の失敗は、この回の送信を諦める。
+                break  // それ以外の失敗は、この回の送信を諦める。
             }
+        }
+        // 保存できなかったことを、画面側が知らせられるよう通知する
+        // (端末内には保存されているため、黙っていると他の端末で
+        // 変わっていないことに気づけない)。
+        await MainActor.run {
+            NotificationCenter.default.post(
+                name: .timeTableSettingsSaveFailed, object: nil)
         }
     }
 

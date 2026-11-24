@@ -479,6 +479,10 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        autoRefreshTimer?.invalidate()
+        autoRefreshTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            self?.refresh()
+        }
         // 先頭画面ではシステムのナビゲーションバー (ページ名の見出し) を隠し、
         // Web 版のスマホ縦と同じく自前のヘッダーだけを出す。
         // 押し込んだ先の再生画面では戻るボタンが要るため、隠すのはこの画面の間だけ。
@@ -491,6 +495,8 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        autoRefreshTimer?.invalidate()
+        autoRefreshTimer = nil
         // 再生画面など、押し込んだ先ではナビゲーションバーを元に戻す。
         navigationController?.setNavigationBarHidden(false, animated: animated)
     }
@@ -801,6 +807,10 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
         }
     }
 
+    /// 一覧を開いたままにしても番組情報が古くならないよう、表示中は
+    /// 定期的に取り直すためのタイマー (viewWillAppear で張る)。
+    private var autoRefreshTimer: Timer?
+
     @objc private func refresh() {
         guard !isLoading else { return }
         guard SettingsStore.shared.isConfigured else {
@@ -831,6 +841,15 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
             } catch {
                 if self.lastResponse == nil {
                     self.statusLabel.text = "読み込めませんでした。\n接続先とネットワークを確認してください。\n(\(error.localizedDescription))"
+                } else {
+                    // データがある状態での再読み込み失敗は、古い表示の
+                    // まま更新できたと思い込まないよう知らせる。
+                    let alert = UIAlertController(
+                        title: "再読み込みできませんでした",
+                        message: "接続先とネットワークを確認してください。表示は前回の内容のままです。",
+                        preferredStyle: .alert)
+                    alert.addAction(UIAlertAction(title: "OK", style: .default))
+                    self.present(alert, animated: true)
                 }
             }
             self.isLoading = false
