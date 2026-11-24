@@ -214,6 +214,68 @@ final class StreamRelayServer {
         connections.removeValue(forKey: ObjectIdentifier(relay))
     }
 
+    // MARK: - 元のサーバーへの取りに行き (使い回し)
+
+    /// 元のサーバーへ取りに行く通信の受け口と、その受け手。
+    /// 以前は中継の接続ごとに受け口を作り直していたため、取りに行く
+    /// たびに元のサーバーへの接続の張り直し (握手) が発生し、再生の
+    /// 開始や区切りファイルの取りに行きがその分遅くなっていた。
+    /// 受け口を使い回すことで、接続も使い回される。
+    private let upstreamDelegate = RelayUpstreamDelegate()
+    private lazy var upstreamDelegateQueue: OperationQueue = {
+        let operationQueue = OperationQueue()
+        operationQueue.maxConcurrentOperationCount = 1
+        operationQueue.underlyingQueue = queue
+        return operationQueue
+    }()
+    /// 使い回しの受け口 (生放送かどうかで、受け取り全体の上限が違う)。
+    private var upstreamSessions: [Bool: URLSession] = [:]
+    /// 受け口を作ったときの、接続先と認証の設定の目印。
+    private var upstreamFingerprint: String?
+
+    /// 接続先と認証の設定をまとめた目印。接続先や合言葉が変わったら
+    /// 目印も変わり、使い回しの受け口は捨てて作り直される (古い
+    /// 接続先・古い合言葉のままの接続が残らないため)。
+    private static func currentUpstreamFingerprint() -> String {
+        let base = SettingsStore.shared.baseURL?.absoluteString ?? ""
+        let headers = SettingsStore.shared.serverAuthHeaders
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key):\($0.value)" }
+            .joined(separator: "\n")
+        return base + "\n" + headers
+    }
+
+    /// 使い回しの受け口を返す。中継のキューの上で呼ぶこと。
+    fileprivate func upstreamSession(isLiveStream: Bool) -> URLSession {
+        let fingerprint = Self.currentUpstreamFingerprint()
+        if fingerprint != upstreamFingerprint {
+            for session in upstreamSessions.values {
+                session.invalidateAndCancel()
+            }
+            upstreamSessions.removeAll()
+            upstreamFingerprint = fingerprint
+        }
+        if let session = upstreamSessions[isLiveStream] {
+            return session
+        }
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 60
+        // 受け取り全体の上限。録画は1時間で十分だが、生放送は終わりが
+        // 無いので、上限が短いと見ている途中で切れてしまう。
+        // 生放送だけ上限を1週間に広げる (実質、時間では切らない)。
+        config.timeoutIntervalForResource = isLiveStream ? 7 * 24 * 3600 : 3600
+        let session = URLSession(
+            configuration: config, delegate: upstreamDelegate,
+            delegateQueue: upstreamDelegateQueue)
+        upstreamSessions[isLiveStream] = session
+        return session
+    }
+
+    /// 取りに行きの担当を、受け手へ登録する。中継のキューの上で呼ぶこと。
+    fileprivate func registerUpstream(task: URLSessionTask, handler: RelayConnection) {
+        upstreamDelegate.register(task: task, handler: handler)
+    }
+
     /// 中継が受けた経路 (パス+クエリ) から、元のサーバーの URL を組み立てる。
     /// 経路には接続先 URL のパス部分がそのまま入っているため、
     /// スキームとホストだけを接続先から補う。
@@ -228,13 +290,68 @@ final class StreamRelayServer {
     }
 }
 
+/// 使い回しの受け口の受け手。受け口は中継の接続で共用するため、
+/// 届いた知らせを、取りに行きを始めた接続へ振り分ける。
+/// 登録と知らせはどちらも中継のキューに集まるため、受け口の
+/// 使い回しで知らせの宛先が取り違えられることはない。
+private final class RelayUpstreamDelegate: NSObject, URLSessionDataDelegate {
+    /// 担当の接続への弱い参照 (接続が先に片付いたら、知らせは捨てる)。
+    private final class WeakHandler {
+        weak var value: RelayConnection?
+        init(_ value: RelayConnection) { self.value = value }
+    }
+
+    private var handlers: [ObjectIdentifier: WeakHandler] = [:]
+
+    func register(task: URLSessionTask, handler: RelayConnection) {
+        handlers[ObjectIdentifier(task)] = WeakHandler(handler)
+    }
+
+    private func unregister(task: URLSessionTask) {
+        handlers.removeValue(forKey: ObjectIdentifier(task))
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+                    didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        guard let handler = handlers[ObjectIdentifier(dataTask)]?.value else {
+            completionHandler(.cancel)
+            return
+        }
+        handler.urlSession(session, dataTask: dataTask, didReceive: response,
+                           completionHandler: completionHandler)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard let handler = handlers[ObjectIdentifier(task)]?.value else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+        handler.urlSession(session, task: task, didReceive: challenge,
+                           completionHandler: completionHandler)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        handlers[ObjectIdentifier(dataTask)]?.value?
+            .urlSession(session, dataTask: dataTask, didReceive: data)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let handler = handlers[ObjectIdentifier(task)]?.value
+        unregister(task: task)
+        handler?.urlSession(session, task: task, didCompleteWithError: error)
+    }
+}
+
 /// 中継の接続1つ分。VLCKit からの GET を受け、元のサーバーへ合言葉付きで
 /// 取りに行き、応答をそのまま (プレイリストだけは中身を書き換えて) 返す。
 /// 応答の区切りは、プレイリストは長さを明示し、それ以外はチャンク形式で
 /// 流す。接続は1回ごとに閉じる (VLCKit は必要に応じて張り直す)。
 /// GET のほかに POST も受ける (データ放送の双方向の送信が、サーバー側の
 /// 代理の口へ POST で送るため)。POST は本体ごと元のサーバーへ渡す。
-private final class RelayConnection: NSObject, URLSessionDataDelegate {
+private final class RelayConnection: NSObject {
     private let connection: NWConnection
     private let server: StreamRelayServer
     private let queue: DispatchQueue
@@ -245,7 +362,6 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
     private var requestHead: String?
     private var requestBody = Data()
     private var expectedBodyLength = 0
-    private var session: URLSession?
     private var task: URLSessionDataTask?
     private var originURL: URL?
     private var isPlaylist = false
@@ -425,7 +541,7 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
         let pathPart = target.split(separator: "?").first.map(String.init) ?? target
         isPlaylist = pathPart.hasSuffix(".m3u8") || pathPart.contains("playlist")
         // 生放送の流れは終わりが無いので、受け取り全体の上限を付けると
-        // 途中で切れてしまう (下の session の設定で使う)。
+        // 途中で切れてしまう (使い回しの受け口の選び分けに使う)。
         isLiveStream = pathPart.contains("/api/streams/live/")
 
         // 字幕の抜き取り (登録があり、この接続が対象の録画の経路のときだけ)。
@@ -488,19 +604,13 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
             request.setValue(value, forHTTPHeaderField: "Range")
         }
 
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 60
-        // 受け取り全体の上限。録画は1時間で十分だが、生放送は終わりが
-        // 無いので、上限が短いと見ている途中で切れてしまう。
-        // 生放送だけ上限を1週間に広げる (実質、時間では切らない)。
-        config.timeoutIntervalForResource = isLiveStream ? 7 * 24 * 3600 : 3600
-        let delegateQueue = OperationQueue()
-        delegateQueue.maxConcurrentOperationCount = 1
-        delegateQueue.underlyingQueue = queue
-        let session = URLSession(configuration: config, delegate: self, delegateQueue: delegateQueue)
-        self.session = session
+        // 受け口は中継全体で使い回す (接続も使い回され、取りに行く
+        // たびの張り直しが無くなる)。受け取り全体の上限 (生放送だけ
+        // 1週間) は受け口側の設定に移してある。
+        let session = server.upstreamSession(isLiveStream: isLiveStream)
         let task = session.dataTask(with: request)
         self.task = task
+        server.registerUpstream(task: task, handler: self)
         task.resume()
     }
 
@@ -560,8 +670,8 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         let http = task.response as? HTTPURLResponse
-        session.finishTasksAndInvalidate()
-        self.session = nil
+        // 受け口は使い回しのため、ここでは閉じない (担当の登録は
+        // 受け手側で外される)。
         // 字幕の抜き取り: 区切りファイルを受け取り終わったら、取り出した
         // 字幕の包みを渡す (失敗した受け取りでも、読めた分は渡す)。
         if let captionTap, let captionSegmentSequence, let captionExtractor {
@@ -792,8 +902,6 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
         guard !finished else { return }
         finished = true
         task?.cancel()
-        session?.invalidateAndCancel()
-        session = nil
         connection.cancel()
         server.remove(self)
     }
@@ -802,8 +910,6 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
         guard !finished else { return }
         finished = true
         task?.cancel()
-        session?.invalidateAndCancel()
-        session = nil
         server.remove(self)
     }
 }

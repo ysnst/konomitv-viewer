@@ -204,9 +204,10 @@ final class PlayerViewController: UIViewController {
     /// VLCKit 経路で進み具合を 0.5 秒ごとに見るためのタイマー
     /// (AVPlayer の定期観測にあたる)。
     private var vlcTimeTimer: Timer?
-    /// VLCKit 経路で、再生が始まってから移動する開始位置の控え。
-    /// VLC は再生が始まる前に位置を指定しても効かないため、再生開始の
-    /// 合図 (デリゲート) で一度だけ移動する。
+    /// VLCKit 経路で、開始位置の控え。開始位置はメディアの指定
+    /// (":start-time") で最初から渡すのが本筋で、こちらは、その指定が
+    /// 効かずに先頭から始まってしまったときの受け皿 (再生開始の合図で、
+    /// 現在位置が控えと大きく違う場合だけ移る)。
     private var vlcPendingStartPosition: Double?
     /// VLCKit 経路で、開始の見張り用タイマー。一定時間たっても再生が
     /// 始まらなければ、真っ黒のまま無言にせず、その旨を表示する。
@@ -285,6 +286,13 @@ final class PlayerViewController: UIViewController {
     /// 画面を離れる処理が済んだかどうか。開始位置の取得 (非同期) が
     /// 離れた後に返ってきた場合、再生を始め直さないための印。
     private var didLeaveScreen = false
+    /// 再生開始の通し番号。開始のたびに進める。並行して確かめている
+    /// 続きの位置が返ってきたとき、別の開始に切り替わっていたら
+    /// その確認は古いものとして移らないために使う。
+    private var startPlaybackCount = 0
+    /// 開始の後に、利用者が自分で位置を動かしたかどうか。動かして
+    /// いたら、遅れて返ってきた続きの位置の確認では移らない。
+    private var userSeekedSinceStart = false
     /// 画面を離れるときに控えた再生位置と、再生中だったかどうか。
     /// 次の話などへ進んでから戻ってきたとき、片付け済みの再生を
     /// 同じ位置から作り直すために使う。
@@ -593,15 +601,47 @@ final class PlayerViewController: UIViewController {
         // 録画中の番組は追いかけ再生として、先端追従を効かせる。
         chaseFollowActive = recordingInProgress
         beginNowPlaying()
-        resolveInitialStartPosition { [weak self] position in
-            guard let self, !self.didLeaveScreen else { return }
-            // ハイライト横断再生の対象なら、続きの位置ではなく
-            // 区間の開始から始める (Web 版と同じ)。
-            if self.reelActive, let item = HighlightReelStore.shared.currentItem {
-                self.startPlayback(at: item.start)
-            } else {
+        beginInitialPlayback()
+    }
+
+    /// 最初の再生を始める。
+    /// ハイライト横断再生の対象なら、続きの位置ではなく区間の開始
+    /// から始める (Web 版と同じ)。
+    /// 続きの位置をサーバーへ確かめに行く場合 (同期が効く状態) は、
+    /// 確認の通信を待たずに、手元の材料 (一覧の応答に含まれる見た
+    /// 割合) で先に再生を始める。プレイリストの取り込みも再生の
+    /// 開始と一緒に走り出すため、開始がその分速くなる。確認が
+    /// 返ってきたら、位置が大きく違う場合だけ移る。
+    /// 録画中の番組 (追いかけ再生) は開始位置の決め方が大事なため、
+    /// 今までどおり確かめてから始める。
+    private func beginInitialPlayback() {
+        if reelActive, let item = HighlightReelStore.shared.currentItem {
+            startPlayback(at: item.start)
+            return
+        }
+        guard WatchedHistorySync.isEnabled, !recordingInProgress else {
+            resolveInitialStartPosition { [weak self] position in
+                guard let self, !self.didLeaveScreen else { return }
                 self.startPlayback(at: position)
             }
+            return
+        }
+        userSeekedSinceStart = false
+        startPlayback(at: initialStartPosition())
+        let startCount = startPlaybackCount
+        Task { [weak self] in
+            guard let self else { return }
+            guard let saved = await WatchedHistorySync.lastPlaybackPosition(videoID: program.id)
+            else { return }
+            // 画面を離れた・別の開始に切り替わった・利用者が自分で
+            // 位置を動かした場合は、遅れてきた確認では移らない。
+            guard !self.didLeaveScreen,
+                  self.startPlaybackCount == startCount,
+                  !self.userSeekedSinceStart else { return }
+            let target = self.startPosition(savedPosition: saved)
+            let current = self.currentPosition()
+            guard current.isFinite, abs(target - current) > 5 else { return }
+            self.seek(to: target)
         }
     }
 
@@ -1980,6 +2020,7 @@ final class PlayerViewController: UIViewController {
     /// 再生の仕組みを出し分ける。画質の切り替えで H.264 ⇄ HEVC が切り替わったら、
     /// 仕組みごと作り直す (呼び出し側が位置を引き継いで渡す)。
     private func startPlayback(at seconds: Double) {
+        startPlaybackCount += 1
         guard let url = APIClient.shared.playlistURL(videoID: program.id, quality: quality, profile: profile, sessionID: sessionID) else {
             messageLabel.text = "接続先が設定されていません。"
             return
@@ -2170,6 +2211,15 @@ final class PlayerViewController: UIViewController {
         // 受け取りの溜めは録画用の多めの値にする (先読みを厚くして
         // 止まりにくくするため。値の根拠は vlcRecordedNetworkCaching の定義側)。
         media.addOption(":network-caching=\(Self.vlcRecordedNetworkCaching)")
+        // 続きの開始位置は、再生が始まってから移るのではなく、最初から
+        // 再生部品へ渡す (先頭から一瞬再生されてから飛ぶ、という
+        // 動きがなくなる)。字幕は、中継が区切りファイルから取り出す
+        // 映像の時刻印で位置を合わせる作りのため、途中から始めても
+        // 合い方は崩れない (プレイリストは今までどおり先頭から
+        // 中継を通り、区切りの長さも全部渡る)。
+        if seconds > 0 {
+            media.addOption(":start-time=\(seconds)")
+        }
         if audioOnly {
             media.addOption(":no-video")
         }
@@ -2211,7 +2261,8 @@ final class PlayerViewController: UIViewController {
                 self.messageLabel.text = "再生を開始できませんでした。"
             }
         }
-        // 開始位置は、再生が始まった合図で一度だけ移動する (デリゲート側)。
+        // 開始位置の控え (デリゲート側で、":start-time" の指定が効いて
+        // いなかった場合の受け皿として使う)。
         vlcPendingStartPosition = seconds > 0 ? seconds : nil
         // 進み具合の見張りは 0.5 秒ごとのタイマーで行う
         // (AVPlayer の定期観測にあたる)。
@@ -3441,6 +3492,10 @@ final class PlayerViewController: UIViewController {
         // 位置が動いたら「終わった」出来事は古くなる。終わった直後の
         // 次の話の取り込みが終わっても、自動再生は始めない。
         playbackEndEventID += 1
+        // 利用者 (または自動の移動) が位置を動かした印。開始直後に
+        // 並行して確かめている続きの位置が遅れて返ってきても、
+        // 動かした後の位置を上書きしないために使う。
+        userSeekedSinceStart = true
         let clamped = max(0, min(seconds, effectiveDuration))
         // CM自動スキップの判定は移動先から見張る
         // (シークで CM 区間の真ん中へ入った直後は発動させないため)。
@@ -3812,9 +3867,9 @@ final class PlayerViewController: UIViewController {
 #if canImport(MobileVLCKit)
 extension PlayerViewController: VLCMediaPlayerDelegate {
     /// VLC 側の状態変化に、画面内のボタンとロック画面の表示を追随させる
-    /// (生放送と同じ作り)。再生が始まった合図では、控えておいた開始位置への
-    /// 移動と、画質の切り替え完了時点の書き戻しも行う
-    /// (AVPlayer 経路の再生状態の観測にあたる)。
+    /// (生放送と同じ作り)。再生が始まった合図では、開始位置の指定が
+    /// 効いていなかった場合の受け皿の移動と、画質の切り替え完了時点の
+    /// 書き戻しも行う (AVPlayer 経路の再生状態の観測にあたる)。
     func mediaPlayerStateChanged(_ aNotification: Notification) {
         DispatchQueue.main.async { [weak self] in
             guard let self, let vlcPlayer = self.vlcPlayer else { return }
@@ -3836,7 +3891,12 @@ extension PlayerViewController: VLCMediaPlayerDelegate {
                 }
                 if let start = self.vlcPendingStartPosition {
                     self.vlcPendingStartPosition = nil
-                    if start > 0 {
+                    // 開始位置はメディアの指定で最初から渡してある。
+                    // 指定が効いて、その位置から始まっているときは
+                    // 移り直さない (二重に飛んで見えるため)。指定が
+                    // 効かず先頭から始まっているときだけ、今まで
+                    // どおりここで移る。
+                    if start > 0, abs(self.currentPosition() - start) > 3 {
                         self.seek(to: start)
                     }
                 }
