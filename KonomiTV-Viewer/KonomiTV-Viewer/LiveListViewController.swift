@@ -826,10 +826,15 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
         isLoading = true
         Task { [weak self] in
             guard let self else { return }
-            // 同期が入っていれば、利用者設定を先に取り込んでおく
+            // 同期が入っていれば、利用者設定も取り込んでおく
             // (Web 版で付け外ししたピン留めなどを、この画面にも
             // 反映するため。失敗しても端末内の値で続ける)。
-            _ = await SyncedSettingsStore.shared.refreshFromServer()
+            // 以前は設定の取り込みが終わるまでチャンネルの取得を
+            // 始めなかったため、設定の取得が遅い・詰まったときに
+            // 一覧の更新まで止まってしまっていた。チャンネルの取得は
+            // 待たずに進め、先に表示を更新する。設定の取り込みが
+            // 後から効いたら、その時点で組み直す。
+            let settingsRefresh = Task { await SyncedSettingsStore.shared.refreshFromServer() }
             do {
                 let response = try await APIClient.shared.fetchChannels()
                 self.loadedBaseURLString = SettingsStore.shared.baseURL?.absoluteString
@@ -851,6 +856,11 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
                     alert.addAction(UIAlertAction(title: "OK", style: .default))
                     self.present(alert, animated: true)
                 }
+            }
+            // 設定の取り込みで値が変わっていたら (ピン留めや並び順)、
+            // 取り込んだ値で組み直す。
+            if await settingsRefresh.value {
+                self.rebuildGroups()
             }
             self.isLoading = false
             self.refreshControl.endRefreshing()
