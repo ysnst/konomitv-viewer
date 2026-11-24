@@ -37,7 +37,7 @@ final class SettingsViewController: UIViewController {
     /// 表示の大きさのプリセットを選ぶボタンと、数値を直接入れる欄。
     private let uiScaleButton = RippleButton()
     private let uiScaleField = UITextField()
-    /// 「改造版サーバーの機能」の専用画面を開くボタン。区分自体は、
+    /// 「拡張オプション」の専用画面を開くボタン。区分自体は、
     /// マイページの App version の行を7回タップして解放するまで出さない。
     private let customizedFeaturesButton = RippleButton()
     /// 見出し帯の戻るボタン。マイページから押し込まれたときだけ出す
@@ -52,7 +52,7 @@ final class SettingsViewController: UIViewController {
         [urlField, cfIDField, cfSecretField, usernameField, passwordField]
     }
 
-    /// 「改造版サーバーの機能」の区分。専用画面で無効化された場合に
+    /// 「拡張オプション」の区分。専用画面で無効化された場合に
     /// 戻ってきた時点で隠し直すため、組み立てたものを保持する。
     private var customizedGroupView: UIStackView?
 
@@ -144,7 +144,7 @@ final class SettingsViewController: UIViewController {
         // 戻るボタンは、タブの先頭画面ではなく押し込まれた先として
         // 開かれたときだけ出す。
         backButton.isHidden = navigationController?.viewControllers.first === self
-        // 「改造版サーバーの機能」の区分は、専用画面で無効化されると
+        // 「拡張オプション」の区分は、専用画面で無効化されると
         // 入口自体が消えるため、戻ってきた時点の解放状態で付け直す。
         customizedGroupView?.isHidden = !SettingsStore.shared.customizedServerFeaturesUnlocked
         // 設定アプリ側で変更された場合も含め、現在の保存値を表示する。
@@ -415,14 +415,14 @@ final class SettingsViewController: UIViewController {
         ])
         uiScaleGroup.axis = .vertical
 
-        // 改造版サーバーの機能の区分。録画の保護・ゴミ箱など、
+        // 拡張オプションの区分。録画の保護・ゴミ箱など、
         // konomitv-customizations を適用したサーバーが持つ受け口を使う
         // 機能の出し入れは、1つ下の階層の専用画面
         // (CustomizedFeaturesSettingsViewController) で機能ごとに
         // 行うため、ここには専用画面への入口だけを置く。区分自体は、
         // マイページの App version の行を7回タップして解放するまで
         // 出さない (解放の状態は端末ごとに保存される)。
-        customizedFeaturesButton.setTitle("改造版サーバーの機能を開く", for: .normal)
+        customizedFeaturesButton.setTitle("拡張オプションを開く", for: .normal)
         customizedFeaturesButton.addTarget(
             self, action: #selector(openCustomizedFeatures), for: .touchUpInside)
         styleActionButton(customizedFeaturesButton)
@@ -432,7 +432,7 @@ final class SettingsViewController: UIViewController {
         ])
         customizedField.axis = .vertical
         customizedField.spacing = 14
-        let customizedGroup = itemGroup(title: "改造版サーバーの機能", field: customizedField)
+        let customizedGroup = itemGroup(title: "拡張オプション", field: customizedField)
         customizedGroup.isHidden = !SettingsStore.shared.customizedServerFeaturesUnlocked
         customizedGroupView = customizedGroup
 
@@ -605,7 +605,7 @@ final class SettingsViewController: UIViewController {
         SettingsStore.shared.syncSettings = syncSettingsSwitch.isOn
     }
 
-    /// 「改造版サーバーの機能」の専用画面を開く (機能ごとのトグルは
+    /// 「拡張オプション」の専用画面を開く (機能ごとのトグルは
     /// 専用画面側で、その場で保存する)。
     @objc private func openCustomizedFeatures() {
         navigationController?.pushViewController(

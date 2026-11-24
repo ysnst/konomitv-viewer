@@ -2887,7 +2887,7 @@ final class PlayerViewController: UIViewController {
     /// 「番組の終わりで停止」が入っていれば停止の知らせを、
     /// それ以外で次の話があれば自動再生の数え下げを始める。
     /// 先端追従とおやすみタイマーは常時有効で、次の話の自動再生だけが
-    /// 改造版サーバーの機能のトグルの対象 (前の話・次の話と同じ)。
+    /// 拡張オプションのトグルの対象 (前の話・次の話と同じ)。
     private func handlePlaybackEnded() {
         guard !didLeaveScreen, hasActiveEngine else { return }
         if chaseFollowActive {

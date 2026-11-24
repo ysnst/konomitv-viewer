@@ -736,7 +736,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             UIMenu(options: .displayInline, children: [newestAction, oldestAction]),
         ]
         // 「今日のハイライト」はアプリだけで完結するため常時出す
-        // (改造版サーバーの機能のトグルからは外した)。
+        // (拡張オプションのトグルからは外した)。
         let highlightsAction = UIAction(
             title: "今日のハイライト",
             image: UIImage(systemName: "flame")

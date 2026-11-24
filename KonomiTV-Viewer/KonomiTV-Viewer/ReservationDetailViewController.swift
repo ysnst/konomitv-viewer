@@ -530,7 +530,7 @@ final class ReservationDetailViewController: UIViewController {
         // 「シリーズ予約」。Web 版の予約詳細と同じく、並びの最後に
         // 地のないボタンで出す。押すと、この番組の名前から作った
         // キーワード + 同じチャンネルの自動予約の条件が作られ、
-        // 以後は自動で予約される。改造版サーバーの機能のトグルからは
+        // 以後は自動で予約される。拡張オプションのトグルからは
         // 外し、「予約を追加」と同じ条件 (土台が EDCB のときだけ
         // 押せる) に寄せた。
         let seriesActionButton = makeActionButton(

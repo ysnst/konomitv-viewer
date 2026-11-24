@@ -1,13 +1,13 @@
 import UIKit
 
-/// 「改造版サーバーの機能」の設定画面。「このアプリの設定」の
-/// 「改造版サーバーの機能」の行から入る、1つ下の階層の画面。
+/// 「拡張オプション」の設定画面。「このアプリの設定」の
+/// 「拡張オプション」の行から入る、1つ下の階層の画面。
 ///
 /// konomitv-customizations を適用した改造版サーバーが持つ受け口を
 /// 使う機能を、機能ごとのトグルで切り替える。以前はまとめトグル
-/// 「改造版サーバーの機能を使う」1つだったものを、機能ごとに
-/// 切り替えられるよう組み替えた (まとめトグルの値は、初回に
-/// 個別トグル全部へ引き継がれる。SettingsStore 側)。
+/// 1つだったものを、機能ごとに切り替えられるよう組み替えた
+/// (まとめトグルの値は、初回に個別トグル全部へ引き継がれる。
+/// SettingsStore 側)。
 /// 各トグルの下には、その機能に必要なサーバー側のカスタマイズ
 /// (konomitv-customizations の機能とパッチの名前) の案内を出す。
 /// 名前の対応は konomitv-customizations の README の表による。
@@ -15,14 +15,14 @@ import UIKit
 /// 値はいずれも端末ごとに持つ設定で、デバイス間同期の対象には
 /// しない。切り替えはその場で保存する。
 ///
-/// 画面の一番上には「拡張機能を無効にする」も置く。実行すると
-/// 解放が戻り、「このアプリの設定」の中の入口の行自体が消えて、
-/// 機能が全部止まる (Android の開発者向けオプションのオフと
-/// 同じ扱い)。個別トグルの状態は保持されるため、マイページの
-/// App version の行を7回タップして解放し直せば、そのままの
-/// 状態で復帰する。誤って消さないよう、実行前に確認を出す。
+/// 画面の一番上には、全体のトグル「拡張オプションを使用」
+/// を置く (Android の開発者向けオプションの一番上のトグルと
+/// 同じ形)。オフにすると解放が戻り、「このアプリの設定」の中の
+/// 入口の行自体が消えて、機能が全部止まる。個別トグルの状態は
+/// 保持されるため、マイページの App version の行を7回タップして
+/// 解放し直せば、そのままの状態で復帰する。
 final class CustomizedFeaturesSettingsViewController: SettingsDetailViewController {
-    private let disableButton = RippleButton()
+    private let masterSwitch = WebToggle()
     private let protectionSwitch = WebToggle()
     private let trashSwitch = WebToggle()
     private let episodesSwitch = WebToggle()
@@ -31,7 +31,7 @@ final class CustomizedFeaturesSettingsViewController: SettingsDetailViewControll
     private let tunerInUseSwitch = WebToggle()
 
     init() {
-        super.init(headingTitle: "改造版サーバーの機能")
+        super.init(headingTitle: "拡張オプション")
     }
 
     @available(*, unavailable)
@@ -44,22 +44,7 @@ final class CustomizedFeaturesSettingsViewController: SettingsDetailViewControll
     }
 
     private func buildItems() {
-        // 無効化のボタンは、データ放送の設定のリセットと同じく
-        // 注意の色 (赤地) にする。
-        disableButton.setTitle("無効にする", for: .normal)
-        disableButton.backgroundColor = AppPalette.error
-        disableButton.setTitleColor(.white, for: .normal)
-        disableButton.titleLabel?.font = .scaledSystemFont(ofSize: 15.5)
-        disableButton.layer.cornerRadius = 4
-        disableButton.heightAnchor.constraint(equalToConstant: 45).isActive = true
-        disableButton.addTarget(self, action: #selector(disablePressed), for: .touchUpInside)
-        let disableField = UIStackView(arrangedSubviews: [
-            makeDescriptionLabel("無効にすると、この画面への入口が設定から消えて、機能が全部止まります。再び使うには、マイページの「App version」の行を7回タップしてください。機能ごとのトグルの状態は、そのまま残ります。"),
-            disableButton,
-        ])
-        disableField.axis = .vertical
-        disableField.spacing = 14
-
+        masterSwitch.addTarget(self, action: #selector(masterChanged), for: .valueChanged)
         protectionSwitch.addTarget(self, action: #selector(protectionChanged), for: .valueChanged)
         trashSwitch.addTarget(self, action: #selector(trashChanged), for: .valueChanged)
         episodesSwitch.addTarget(self, action: #selector(episodesChanged), for: .valueChanged)
@@ -68,49 +53,49 @@ final class CustomizedFeaturesSettingsViewController: SettingsDetailViewControll
         tunerInUseSwitch.addTarget(self, action: #selector(tunerInUseChanged), for: .valueChanged)
 
         for view in [
-            makeDescriptionLabel("konomitv-customizations を適用した改造版サーバー向けの機能を、機能ごとに切り替えます。素の KonomiTV サーバーでは使えません。この設定はこの端末だけに保存されます。"),
-            itemGroup(title: "拡張機能を無効にする", field: disableField),
+            makeSwitchRow(text: "拡張オプションを使用", toggle: masterSwitch),
+            makeDescriptionLabel("改造版サーバー向けの機能を、機能ごとに切り替えます。素のサーバーでは使えません。設定はこの端末だけに保存されます。"),
             makeDivider(),
             itemGroup(
                 title: "録画の保護",
                 field: makeFeatureField(
-                    text: "録画を保護したり、保護中の録画だけを表示したりできるようになります。",
-                    guidance: "サーバー側に konomitv-customizations の「EPGStation/Jellyfin 連携（base-integration）」が入っているときに使えます。",
+                    text: "録画の保護と、保護中だけの表示ができるようになります。",
+                    guidance: "サーバー側に「EPGStation/Jellyfin 連携（base-integration）」が必要です。",
                     toggle: protectionSwitch),
                 syncDisabled: true),
             itemGroup(
                 title: "ゴミ箱",
                 field: makeFeatureField(
-                    text: "録画をゴミ箱へ移動したり、ゴミ箱を開いたりできるようになります。ゴミ箱は管理者だけに表示されます。",
-                    guidance: "サーバー側に konomitv-customizations の「ゴミ箱（recorder-features）」が入っているときに使えます。",
+                    text: "録画をゴミ箱へ移動できるようになります。管理者だけに表示されます。",
+                    guidance: "サーバー側に「ゴミ箱（recorder-features）」が必要です。",
                     toggle: trashSwitch),
                 syncDisabled: true),
             itemGroup(
                 title: "前の話・次の話ボタンと、次の話の自動再生",
                 field: makeFeatureField(
-                    text: "再生画面に前の話・次の話のボタンが出て、再生が終わると次の話が自動で始まるようになります。",
-                    guidance: "サーバー側に konomitv-customizations の「前の話・次の話ボタン（playback）」と「次話の自動再生（recorder-features）」が入っているときに使えます。",
+                    text: "再生画面に前の話・次の話ボタンが出て、終わると次が自動で始まります。",
+                    guidance: "サーバー側に「前の話・次の話ボタン（playback）」と「次話の自動再生（recorder-features）」が必要です。",
                     toggle: episodesSwitch),
                 syncDisabled: true),
             itemGroup(
                 title: "しおりと場面一覧",
                 field: makeFeatureField(
-                    text: "再生画面に、しおりを追加するボタンと場面一覧のボタンが出ます。",
-                    guidance: "サーバー側に konomitv-customizations の「場面一覧（comment-highlights）」と「しおり（recorder-features）」が入っているときに使えます。",
+                    text: "再生画面にしおりと場面一覧のボタンが出ます。",
+                    guidance: "サーバー側に「場面一覧（comment-highlights）」と「しおり（recorder-features）」が必要です。",
                     toggle: bookmarksScenesSwitch),
                 syncDisabled: true),
             itemGroup(
                 title: "録画結果一覧",
                 field: makeFeatureField(
-                    text: "録画番組一覧の容量の行に、録画結果一覧への入口が出ます。",
-                    guidance: "サーバー側に konomitv-customizations の「録画結果一覧（recorder-features）」が入っているときに使えます。",
+                    text: "録画番組一覧の容量の行に入口が出ます。",
+                    guidance: "サーバー側に「録画結果一覧（recorder-features）」が必要です。",
                     toggle: recordingResultsSwitch),
                 syncDisabled: true),
             itemGroup(
                 title: "チューナー使用中のチャンネル表示",
                 field: makeFeatureField(
-                    text: "チューナーに空きがなく視聴できないチャンネルが、生放送の一覧で薄く表示されるようになります。",
-                    guidance: "サーバー側に konomitv-customizations の「ライブ視聴のチューナー連動（live-tuner-gating）」が入っているときに使えます。",
+                    text: "視聴できないチャンネルが、生放送の一覧で薄く表示されます。",
+                    guidance: "サーバー側に「ライブ視聴のチューナー連動（live-tuner-gating）」が必要です。",
                     toggle: tunerInUseSwitch),
                 syncDisabled: true),
         ] as [UIView] {
@@ -130,27 +115,26 @@ final class CustomizedFeaturesSettingsViewController: SettingsDetailViewControll
         return field
     }
 
-    /// 拡張機能全体の無効化。入口自体が消える操作なので、実行前に
-    /// 確認を出す。無効化は解放を戻すことで行い、個別トグルの状態は
-    /// 触らない (解放し直せばそのまま復帰する)。前の画面へ戻ると、
-    /// 入口の行は消えた状態で表示される。
-    @objc private func disablePressed() {
-        let alert = UIAlertController(
-            title: "拡張機能を無効にしますか",
-            message: "「改造版サーバーの機能」の入口が設定から消えて、機能が全部止まります。再び使うには、マイページの「App version」の行を7回タップしてください。機能ごとのトグルの状態は、そのまま残ります。",
-            preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "キャンセル", style: .cancel))
-        alert.addAction(UIAlertAction(title: "無効にする", style: .destructive) { [weak self] _ in
+    /// 全体のトグル。オフにすると解放を戻し、機能が全部止まって
+    /// 入口の行も消えるため、そのまま前の画面へ戻る (戻った先の
+    /// 設定画面では、入口の行が消えた状態で表示される)。個別
+    /// トグルの状態は触らない (解放し直せばそのまま復帰する)。
+    /// この画面は解放済みのときしか開けないため、オンへの切り替え
+    /// は実際には起きないが、値の対応として解放を立てる。
+    @objc private func masterChanged() {
+        if masterSwitch.isOn {
+            SettingsStore.shared.customizedServerFeaturesUnlocked = true
+        } else {
             SettingsStore.shared.customizedServerFeaturesUnlocked = false
-            self?.navigationController?.popViewController(animated: true)
-        })
-        present(alert, animated: true)
+            navigationController?.popViewController(animated: true)
+        }
     }
 
     // MARK: - 値の読み書き (変更はその場で保存する)
 
     private func reloadValues() {
         let store = SettingsStore.shared
+        masterSwitch.isOn = store.customizedServerFeaturesUnlocked
         protectionSwitch.isOn = store.customizedProtectionEnabled
         trashSwitch.isOn = store.customizedTrashEnabled
         episodesSwitch.isOn = store.customizedEpisodesEnabled

@@ -34,7 +34,7 @@ final class MyPageViewController: UIViewController {
     /// サーバーの版の行。開くたびに取り直して文字を差し替えるため保持する。
     private var serverVersionRow: EntryButtonView?
 
-    /// App version の行のタップ回数 (改造版サーバーの機能の区分の解放用)。
+    /// App version の行のタップ回数 (拡張オプションの区分の解放用)。
     /// 解放できたら数え直す。解放の状態そのものは端末ごとに保存される。
     private var appVersionTapCount = 0
     /// 短い知らせ (解放までの残り回数・解放の完了) を出している間の保持。
@@ -104,7 +104,7 @@ final class MyPageViewController: UIViewController {
         // クライアント自身の版を出す (言い回しは "version 番号")。
         // アプリでは、アプリ自身の版と接続中のサーバーの版は別物なので、
         // 2行に分けて出す。サーバーの版の行は押せない表示として置く。
-        // アプリの版の行は行き先は無いが、「改造版サーバーの機能」の
+        // アプリの版の行は行き先は無いが、「拡張オプション」の
         // 区分の解放用にタップを受け付ける (7回タップで解放。Android の
         // 開発者向けオプションと同じ出し方)。
         // アプリの版は、ビルド時にアプリへ入った値 (Info.plist の版) から取る。
@@ -354,24 +354,31 @@ final class MyPageViewController: UIViewController {
         navigationController?.pushViewController(WatchedHistoryViewController(), animated: true)
     }
 
-    // MARK: - 改造版サーバーの機能の解放
+    // MARK: - 拡張オプションの解放
 
-    /// App version の行のタップ。7回タップで「改造版サーバーの機能」の
+    /// App version の行のタップ。7回タップで「拡張オプション」の
     /// 区分 (「このアプリの設定」の中) が解放される。残り3回からは
-    /// 「あと○回」と知らせ、解放できたらその旨を知らせる。
-    /// 解放の状態は端末ごとに保存される。専用画面で「拡張機能を
-    /// 無効にする」を実行すると解放が戻るため、そのときはここから
-    /// 解放をやり直す形になる。
+    /// 「あと○ステップ」と知らせ、解放できたらその旨を知らせる。
+    /// 知らせの文面は、Android の開発者向けオプションの実物の
+    /// 言い回しに合わせた短い文にしている。解放済みのときに
+    /// タップしたら、すでに有効な旨を知らせる (Android の
+    /// 「開発者向けオプションはすでに有効です」と同じ)。
+    /// 解放の状態は端末ごとに保存される。専用画面の全体トグルを
+    /// オフにすると解放が戻るため、そのときはここから解放を
+    /// やり直す形になる。
     @objc private func appVersionRowTapped() {
-        guard !SettingsStore.shared.customizedServerFeaturesUnlocked else { return }
+        if SettingsStore.shared.customizedServerFeaturesUnlocked {
+            showBriefNotice("拡張オプションはすでに有効です")
+            return
+        }
         appVersionTapCount += 1
         let remaining = 7 - appVersionTapCount
         if remaining <= 0 {
             appVersionTapCount = 0
             SettingsStore.shared.customizedServerFeaturesUnlocked = true
-            showBriefNotice("「改造版サーバーの機能」が解放されました。設定の「このアプリの設定」から有効にできます。")
+            showBriefNotice("拡張オプションが有効になりました")
         } else if remaining <= 3 {
-            showBriefNotice("あと \(remaining) 回タップすると、「改造版サーバーの機能」が解放されます。")
+            showBriefNotice("あと \(remaining) ステップで拡張オプションが有効になります。")
         }
     }
 
