@@ -110,6 +110,13 @@ enum NicoCommentCommand {
 /// 張り直す。ニコニコの認証情報はサーバー側が持つため、ここには無い。
 ///
 /// 受け口 (onComments など) はすべて主キューで呼ばれる。
+/// 状態 (結果待ちの投稿・待ち行列・視聴の準備の印など) の変更も、
+/// すべて主キューに集めている。受け取りと送信完了の合図は接続の
+/// 受け口の都合で主キューに届き (URLSession の delegateQueue を
+/// 主キューにしてある)、タイマーと時間切れの処理も主キューで、
+/// 接続の組み立て (connect) は MainActor で行う。複数の流れが
+/// 同じ状態を同時に触らないため、完了の処理が二重に走ったり、
+/// 片付けた投稿が別の流れから触られたりすることはない。
 final class LiveCommentSession {
     /// コメントが届いたとき (コメントの並び、初回のまとめかどうか)。
     /// 初回のまとめは一覧にだけ出す分で、流れる表示には出さない。
@@ -167,6 +174,15 @@ final class LiveCommentSession {
     /// 送り直さない。
     private static let postResultUnknownMessage =
         "コメントの送信結果が確認できませんでした。投稿されている可能性があります。"
+    /// まだ送っていない投稿を、待ち行列に残したまま片付けるときの文。
+    /// 送信済みの結果不明とは区別し、送られていないことを明示する。
+    private static let postNotSentMessage =
+        "コメントは送信されませんでした。送信前に時間切れになったため、このコメントは投稿されていません。"
+    /// まだ送っていない投稿を待ち行列に留めておく上限の時間 (秒)。
+    /// 視聴の準備の合図が来ない接続では、結果待ちの15秒の刻みが
+    /// 始まらないため、待ち行列の側にも期限が無いと、投稿の完了が
+    /// いつまでも呼ばれずに残り続けてしまう。
+    private static let unsentPostLifetime: TimeInterval = 30
     /// 自分のニコニコユーザー ID とプレミアムかどうか (ユーザー情報から)。
     private var myNiconicoUserID: Int?
     private var myNiconicoPremium: Bool?
@@ -240,6 +256,10 @@ final class LiveCommentSession {
     // MARK: - 接続の組み立て
 
     /// ユーザー情報を取り、接続先情報を取って、視聴セッションを開く。
+    /// 状態の変更を主キューに集めるため、MainActor で行う (他の
+    /// 状態変更はすべて主キューで起きる。クラスの頭書き参照)。
+    /// 取得の待ち合わせの間は主キューを塞がない。
+    @MainActor
     private func connect() async {
         // この組み立ての世代を控える。取得の途中で止められたり、
         // 新しい組み立てが始まったりしたら、この組み立ては打ち切る
@@ -685,6 +705,20 @@ final class LiveCommentSession {
             size: size,
             completion: completion)
         queuedPosts.append(pending)
+        // まだ送っていない間にも期限を設ける。視聴の準備の合図が
+        // 来ない接続では、送った後の15秒の刻みが始まらず、完了が
+        // 呼ばれないまま残り続けてしまうため。期限までに送れた
+        // 投稿は待ち行列から外れているので、この確認には掛からない。
+        // 期限切れは「未送信」と明示して片付け、後から勝手に
+        // 送られることもない (待ち行列から外すため)。
+        let queuedID = pending.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.unsentPostLifetime) { [weak self] in
+            guard let self, !self.destroyed,
+                  let index = self.queuedPosts.firstIndex(where: { $0.id == queuedID })
+            else { return }
+            let expired = self.queuedPosts.remove(at: index)
+            expired.completion(Self.postNotSentMessage)
+        }
         pumpPostQueue()
     }
 

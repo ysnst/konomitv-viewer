@@ -13,6 +13,11 @@ enum APIError: Error {
     /// ログインの応答が返るまでの間に、接続先の変更・ログアウト・
     /// 別のログインがあり、この試行が古くなった (応答は保存しない)。
     case loginSuperseded
+    /// 処理の途中でログインや接続先が変わり、この操作が古くなった。
+    /// 応答が成功でも、結果は今のログインのものとして扱わない
+    /// (アカウント編集の遅れて届いた応答が、別のアカウントの
+    /// 端末内の資格情報を上書きしないため)。
+    case staleSession
 
     /// 保護の切り替えに失敗した理由を、ユーザー向けの文にする。
     var protectionFailureMessage: String {
@@ -302,7 +307,16 @@ final class APIClient {
     /// ログイン中のユーザーの情報 (ユーザー名・パスワード) を更新する
     /// (ログイン必須)。渡した項目だけが更新される。ユーザー名が他の
     /// アカウントと重なる場合などはサーバーが 422 を返す。
+    /// 始めた時点の認証の世代と接続先を控え、応答が返るまでの間に
+    /// ログアウト・別のログイン・接続先の変更があったら、成功でも
+    /// 古い操作として失敗 (staleSession) にする。呼び出し側は成功を
+    /// 前提に、入力値を端末内の資格情報へ書き込むため、遅れて届いた
+    /// 応答をそのまま成功として扱うと、別のアカウントの保存値が
+    /// 前のアカウントの値で上書きされてしまう。
     func updateCurrentUser(username: String?, password: String?) async throws {
+        let store = SettingsStore.shared
+        let generationAtStart = store.authGeneration
+        let baseURLAtStart = store.baseURL
         var body: [String: Any] = [:]
         if let username { body["username"] = username }
         if let password { body["password"] = password }
@@ -311,6 +325,10 @@ final class APIClient {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (_, response) = try await session.data(for: request)
         try check(response)
+        guard store.authGeneration == generationAtStart,
+              store.baseURL == baseURLAtStart else {
+            throw APIError.staleSession
+        }
     }
 
     // MARK: - 利用者設定 (クライアント設定)

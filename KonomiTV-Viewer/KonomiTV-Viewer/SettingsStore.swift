@@ -649,10 +649,25 @@ final class SettingsStore {
     /// オンで、サーバーに保存されている利用者設定 (視聴履歴など) を
     /// 取得・書き戻しして Web 版など他の端末と共通にする。
     /// 既定は Web 版と同じオフ (キーが無いときはオフで受ける)。
+    /// 値が変わったら同期の世代も進める。同期を切った時点で、
+    /// 送信待ちに残っている変更は世代が古くなるため送られなく
+    /// なり、入れ直しても前の待ち分は復活しない。
     var syncSettings: Bool {
         get { defaults.bool(forKey: Key.syncSettings) }
-        set { defaults.set(newValue, forKey: Key.syncSettings) }
+        set {
+            let oldValue = defaults.bool(forKey: Key.syncSettings)
+            defaults.set(newValue, forKey: Key.syncSettings)
+            if newValue != oldValue {
+                syncGeneration += 1
+            }
+        }
     }
+
+    /// 同期の世代。同期のオン・オフが切り替わるたびに進む。
+    /// 設定の保存は、変更が起きた時点の世代を控えて持ち、実行時に
+    /// 世代が変わっていたら、その保存は打ち切る (同期を切った後に
+    /// 待ち行列に残っていた変更が送られてしまうのを防ぐ)。
+    private(set) var syncGeneration = 0
 
     /// この端末が最後にサーバーと設定を同期した時刻 (UNIX 秒)。
     /// サーバーへ利用者設定を送れたときと、サーバーから取り込んだときに

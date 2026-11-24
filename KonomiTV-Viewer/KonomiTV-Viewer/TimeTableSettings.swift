@@ -161,9 +161,12 @@ final class TimeTableSettingsStore {
     /// サーバーへの送信待ちの最新値と、送信中かどうかの控え。
     /// 変更が短時間に重なっても、古い内容の送信が新しい内容を
     /// 上書きしないよう、送信は1つずつ順番に行う。
-    /// 送信待ちには、変更が起きた時点の認証の世代も持たせる。
-    /// 世代が今と違う送信待ちは、前のログインの変更なので送らない。
-    private var pendingSave: (settings: TimeTableDisplaySettings, generation: Int)?
+    /// 送信待ちには、変更が起きた時点の認証の世代と同期の世代も
+    /// 持たせる。認証の世代が今と違う送信待ちは、前のログインの
+    /// 変更なので送らない。同期の世代が違う送信待ちは、同期の
+    /// オン・オフが切り替わる前の変更なので送らない (共通設定の
+    /// 同期と同じ扱い)。
+    private var pendingSave: (settings: TimeTableDisplaySettings, generation: Int, syncGeneration: Int)?
     private var isSaving = false
 
     /// ログアウトで端末内の控えが消されたあと、今の値を既定値に戻す
@@ -185,7 +188,8 @@ final class TimeTableSettingsStore {
         saveToLocal(settings)
         guard Self.isSyncEnabled else { return }
         // 世代は変更が起きたこの時点で確定させる (設定の同期と同じ理由)。
-        pendingSave = (settings, SettingsStore.shared.authGeneration)
+        pendingSave = (settings, SettingsStore.shared.authGeneration,
+                       SettingsStore.shared.syncGeneration)
         consecutiveSaveFailures = 0
         guard !isSaving else { return }
         isSaving = true
@@ -202,9 +206,12 @@ final class TimeTableSettingsStore {
     private func drainSaveQueue() async {
         while let item = pendingSave {
             pendingSave = nil
-            // 前のログインの変更は送らない。
-            guard item.generation == SettingsStore.shared.authGeneration else { continue }
-            if await saveToServer(item.settings, expectedGeneration: item.generation) {
+            // 前のログインの変更と、同期の切り替え前の変更は送らない。
+            guard item.generation == SettingsStore.shared.authGeneration,
+                  item.syncGeneration == SettingsStore.shared.syncGeneration
+            else { continue }
+            if await saveToServer(item.settings, expectedGeneration: item.generation,
+                                  expectedSyncGeneration: item.syncGeneration) {
                 consecutiveSaveFailures = 0
                 continue
             }
@@ -236,7 +243,8 @@ final class TimeTableSettingsStore {
             // 待っている間にログアウトされていたら、送信待ちを
             // 取り下げて係を終える。
             guard Self.isSyncEnabled else {
-                if pendingSave?.generation == item.generation {
+                if pendingSave?.generation == item.generation,
+                   pendingSave?.syncGeneration == item.syncGeneration {
                     pendingSave = nil
                 }
                 break
@@ -252,6 +260,7 @@ final class TimeTableSettingsStore {
     private func restartDrainIfNeeded() {
         guard let item = pendingSave,
               item.generation == SettingsStore.shared.authGeneration,
+              item.syncGeneration == SettingsStore.shared.syncGeneration,
               !isSaving else { return }
         isSaving = true
         Task { await self.drainSaveQueue() }
@@ -298,7 +307,8 @@ final class TimeTableSettingsStore {
     /// ジャンル色は、サーバー側にある分を土台にアプリが知っている
     /// ジャンルだけを上書きする (知らないジャンルがあっても落とさない)。
     private func saveToServer(
-        _ settings: TimeTableDisplaySettings, expectedGeneration: Int
+        _ settings: TimeTableDisplaySettings, expectedGeneration: Int,
+        expectedSyncGeneration: Int
     ) async -> Bool {
         // 他の保存 (視聴履歴・各種設定) と重なって互いを上書きしないよう、
         // 保存の順番待ちに並んでから本体を行う。
@@ -307,23 +317,31 @@ final class TimeTableSettingsStore {
         let box = BoolResultBox()
         await ClientSettingsSaveQueue.shared.run {
             box.value = await self.saveToServerSerial(
-                settings, expectedGeneration: expectedGeneration)
+                settings, expectedGeneration: expectedGeneration,
+                expectedSyncGeneration: expectedSyncGeneration)
         }
         return box.value
     }
 
     private func saveToServerSerial(
-        _ settings: TimeTableDisplaySettings, expectedGeneration: Int
+        _ settings: TimeTableDisplaySettings, expectedGeneration: Int,
+        expectedSyncGeneration: Int
     ) async -> Bool {
         // 照合は、変更が起きた時点の世代で行う。順番待ちの間に
         // ログインし直していたら、この回の保存は打ち切る。
+        // 同期の世代も同じで、順番待ちの間に同期を切られていたら
+        // 打ち切る (共通設定の同期と同じ扱い)。
         let generation = expectedGeneration
         guard SettingsStore.shared.authGeneration == generation,
+              SettingsStore.shared.syncGeneration == expectedSyncGeneration,
+              SettingsStore.shared.syncSettings,
               SettingsStore.shared.isLoggedIn else { return false }
         for _ in 0..<2 {
             do {
                 var clientSettings = try await APIClient.shared.fetchClientSettings()
                 guard SettingsStore.shared.authGeneration == generation,
+                      SettingsStore.shared.syncGeneration == expectedSyncGeneration,
+                      SettingsStore.shared.syncSettings,
                       SettingsStore.shared.isLoggedIn else { return false }
                 clientSettings["timetable_channel_width"] = settings.channelWidth
                 clientSettings["timetable_hour_height"] = settings.hourHeight

@@ -281,19 +281,34 @@ final class MyPageViewController: UIViewController {
             showLoggedOut()
             return
         }
+        // 認証の世代も控える。取り直しの間に別のアカウントへ
+        // 切り替わっていたら、前の情報は今の表示へ混ぜない。
+        let authGenerationAtStart = SettingsStore.shared.authGeneration
+        // 前のアカウントのアイコンが残ったまま新しい表示に
+        // 見えないよう、取り直しの開始時点で消しておく
+        // (新しいアイコンが取れたら差し替える)。
+        iconPhotoView.image = nil
+        iconPhotoView.isHidden = true
+        iconGlyphView.isHidden = false
         Task { [weak self] in
             guard let self, generation == self.accountRefreshGeneration else { return }
             do {
                 let user = try await APIClient.shared.fetchCurrentUser()
-                guard generation == self.accountRefreshGeneration else { return }
+                guard generation == self.accountRefreshGeneration,
+                      SettingsStore.shared.authGeneration == authGenerationAtStart else { return }
                 self.currentUser = user
                 self.nameLabel.text = user.name
                 self.adminBadge.isHidden = !user.is_admin
                 self.idLabel.text = "User ID: \(user.id)"
                 self.idLabel.isHidden = false
                 // アイコンは取れたら差し替える。失敗したら placeholder のまま。
+                // 取得の後にも世代を確かめる (アイコンだけ遅れて届いた
+                // 前のアカウントの画像が、新しい表示に混ざらないため)。
                 if let data = try? await APIClient.shared.fetchCurrentUserIcon(),
                    let image = UIImage(data: data) {
+                    guard generation == self.accountRefreshGeneration,
+                          SettingsStore.shared.authGeneration == authGenerationAtStart
+                    else { return }
                     self.iconPhotoView.image = image
                     self.iconPhotoView.isHidden = false
                     self.iconGlyphView.isHidden = true

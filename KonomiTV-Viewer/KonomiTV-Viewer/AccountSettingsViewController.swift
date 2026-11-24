@@ -235,10 +235,16 @@ final class AccountSettingsViewController: SettingsDetailViewController {
     private func refreshUserInfo() {
         userInfoRefreshGeneration += 1
         let generation = userInfoRefreshGeneration
+        // 画面の世代に加えて、認証の世代も控える。取り直しの間に
+        // ログアウトや別のログインがあったら、前のログインの情報や
+        // アイコンを今の表示へ混ぜないため。
+        let authGenerationAtStart = SettingsStore.shared.authGeneration
         Task { [weak self] in
-            guard let self, generation == self.userInfoRefreshGeneration else { return }
+            guard let self, generation == self.userInfoRefreshGeneration,
+                  SettingsStore.shared.authGeneration == authGenerationAtStart else { return }
             if let user = try? await APIClient.shared.fetchCurrentUser() {
-                guard generation == self.userInfoRefreshGeneration else { return }
+                guard generation == self.userInfoRefreshGeneration,
+                      SettingsStore.shared.authGeneration == authGenerationAtStart else { return }
                 self.userNameLabel.text = user.name
                 self.userAdminLabel.isHidden = !user.is_admin
                 self.userIDLabel.text = "User ID: \(user.id)"
@@ -246,7 +252,8 @@ final class AccountSettingsViewController: SettingsDetailViewController {
             }
             if let iconData = try? await APIClient.shared.fetchCurrentUserIcon(),
                let image = UIImage(data: iconData) {
-                guard generation == self.userInfoRefreshGeneration else { return }
+                guard generation == self.userInfoRefreshGeneration,
+                      SettingsStore.shared.authGeneration == authGenerationAtStart else { return }
                 self.userIconView.image = image
             }
         }
@@ -300,14 +307,33 @@ final class AccountSettingsViewController: SettingsDetailViewController {
         }
         view.endEditing(true)
         updateUsernameButton.isEnabled = false
+        // 始めた時点の認証の世代と接続先を控える。応答が返るまでの
+        // 間にログアウトや別のログインがあったら、この操作の結果は
+        // 今のログインのものではないため、端末内の保存値へは
+        // 書き込まない (APIClient 側でも同じ照合をして失敗にする)。
+        let store = SettingsStore.shared
+        let generationAtStart = store.authGeneration
+        let baseURLAtStart = store.baseURL
         Task { [weak self] in
             guard let self else { return }
             do {
                 try await APIClient.shared.updateCurrentUser(username: username, password: nil)
-                SettingsStore.shared.username = username
+                guard store.authGeneration == generationAtStart,
+                      store.baseURL == baseURLAtStart else {
+                    self.updateUsernameButton.isEnabled = true
+                    return
+                }
+                store.username = username
                 self.userNameLabel.text = username
                 self.statusLabel.text = "ユーザー名を更新しました。"
             } catch {
+                // ログインが切り替わっていたら、知らせも出さない
+                // (ログアウト等の知らせを上書きしないため)。
+                guard store.authGeneration == generationAtStart,
+                      store.baseURL == baseURLAtStart else {
+                    self.updateUsernameButton.isEnabled = true
+                    return
+                }
                 self.statusLabel.text = "ユーザー名を更新できませんでした。すでに使われているユーザー名かもしれません。"
             }
             self.updateUsernameButton.isEnabled = true
@@ -322,15 +348,30 @@ final class AccountSettingsViewController: SettingsDetailViewController {
         }
         view.endEditing(true)
         updatePasswordButton.isEnabled = false
+        // ユーザー名の更新と同じく、始めた時点の認証の世代と接続先を
+        // 控え、途中でログインが切り替わっていたら結果を書き込まない。
+        let store = SettingsStore.shared
+        let generationAtStart = store.authGeneration
+        let baseURLAtStart = store.baseURL
         Task { [weak self] in
             guard let self else { return }
             do {
                 try await APIClient.shared.updateCurrentUser(username: nil, password: password)
+                guard store.authGeneration == generationAtStart,
+                      store.baseURL == baseURLAtStart else {
+                    self.updatePasswordButton.isEnabled = true
+                    return
+                }
                 // 次回のログインで使えるよう、保存済みのパスワードも差し替える。
-                SettingsStore.shared.password = password
+                store.password = password
                 self.newPasswordField.text = ""
                 self.statusLabel.text = "パスワードを更新しました。"
             } catch {
+                guard store.authGeneration == generationAtStart,
+                      store.baseURL == baseURLAtStart else {
+                    self.updatePasswordButton.isEnabled = true
+                    return
+                }
                 self.statusLabel.text = "パスワードを更新できませんでした。"
             }
             self.updatePasswordButton.isEnabled = true
