@@ -82,6 +82,7 @@ enum ServerAuthMethod: String {
     case digest = "digest"
     case customHeader = "custom_header"
     case browserLogin = "browser_login"
+    case clientCertificate = "client_certificate"
 
     /// プルダウンに出す名前。
     var displayName: String {
@@ -92,6 +93,7 @@ enum ServerAuthMethod: String {
         case .digest: return "Digest認証"
         case .customHeader: return "カスタムヘッダ"
         case .browserLogin: return "ブラウザでログイン"
+        case .clientCertificate: return "クライアント証明書"
         }
     }
 }
@@ -122,6 +124,7 @@ final class SettingsStore {
         static let authMethod = "viewer_auth_method"
         static let basicUsername = "viewer_basic_username"
         static let digestUsername = "viewer_digest_username"
+        static let clientCertificateLabel = "viewer_client_cert_label"
         static let customHeaderName1 = "viewer_custom_header_name_1"
         static let customHeaderName2 = "viewer_custom_header_name_2"
         static let quality = "viewer_quality"
@@ -238,6 +241,8 @@ final class SettingsStore {
         static let basicPassword = "basic_auth_password"
         static let digestPassword = "digest_auth_password"
         static let browserLoginCookies = "browser_login_cookies"
+        static let clientCertificateP12 = "client_certificate_p12"
+        static let clientCertificatePassphrase = "client_certificate_passphrase"
         static let customHeaderValue1 = "custom_header_value_1"
         static let customHeaderValue2 = "custom_header_value_2"
     }
@@ -1157,6 +1162,94 @@ final class SettingsStore {
         return pairs.isEmpty ? nil : pairs.joined(separator: "; ")
     }
 
+    // MARK: - クライアント証明書
+
+    /// 証明書ファイル (.p12) を読み解いた結果。
+    struct ClientCertificateMaterial {
+        let identity: SecIdentity
+        let certificates: [SecCertificate]
+        /// 証明書の持ち主の名前 (設定画面の表示用)。
+        let label: String
+    }
+
+    /// 読み解いた証明書の控え (毎回の通信で読み解き直さないため)。
+    /// 控えが指すファイルの中身が変わったら作り直す。
+    private var cachedClientCertificate: ClientCertificateMaterial?
+    private var cachedClientCertificateHash: Int?
+
+    /// 取り込んだ証明書の表示名。
+    var clientCertificateLabel: String {
+        get { defaults.string(forKey: Key.clientCertificateLabel) ?? "" }
+        set { defaults.set(newValue, forKey: Key.clientCertificateLabel) }
+    }
+
+    var hasClientCertificate: Bool {
+        KeychainStore.data(forKey: KeychainKey.clientCertificateP12) != nil
+    }
+
+    /// .p12 の中身とパスフレーズから、証明書一式を取り出す。
+    private static func importPKCS12(_ data: Data, passphrase: String) -> ClientCertificateMaterial? {
+        let options: [String: Any] = [kSecImportExportPassphrase as String: passphrase]
+        var items: CFArray?
+        guard SecPKCS12Import(data as CFData, options as CFDictionary, &items) == errSecSuccess,
+              let array = items as? [[String: Any]],
+              let first = array.first,
+              let rawIdentity = first[kSecImportItemIdentity as String] else {
+            return nil
+        }
+        let identity = rawIdentity as! SecIdentity
+        let chain = (first[kSecImportItemCertChain as String] as? [Any])?
+            .compactMap { $0 as? SecCertificate } ?? []
+        var label = ""
+        if let leaf = chain.first,
+           let summary = SecCertificateCopySubjectSummary(leaf) {
+            label = summary as String
+        }
+        return ClientCertificateMaterial(identity: identity, certificates: chain, label: label)
+    }
+
+    /// 証明書ファイルを取り込む。読み解けたら、ファイルの中身と
+    /// パスフレーズをキーチェーンに保存して true を返す。
+    @discardableResult
+    func importClientCertificate(p12Data: Data, passphrase: String) -> Bool {
+        guard let material = Self.importPKCS12(p12Data, passphrase: passphrase) else { return false }
+        KeychainStore.setData(p12Data, forKey: KeychainKey.clientCertificateP12)
+        KeychainStore.setString(passphrase, forKey: KeychainKey.clientCertificatePassphrase)
+        clientCertificateLabel = material.label
+        cachedClientCertificate = material
+        cachedClientCertificateHash = p12Data.hashValue
+        return true
+    }
+
+    /// 取り込んだ証明書を削除する。
+    func removeClientCertificate() {
+        KeychainStore.setData(nil, forKey: KeychainKey.clientCertificateP12)
+        KeychainStore.setString(nil, forKey: KeychainKey.clientCertificatePassphrase)
+        clientCertificateLabel = ""
+        cachedClientCertificate = nil
+        cachedClientCertificateHash = nil
+    }
+
+    private func clientCertificateMaterial() -> ClientCertificateMaterial? {
+        guard let data = KeychainStore.data(forKey: KeychainKey.clientCertificateP12) else { return nil }
+        if let cached = cachedClientCertificate, cachedClientCertificateHash == data.hashValue {
+            return cached
+        }
+        let passphrase = KeychainStore.string(forKey: KeychainKey.clientCertificatePassphrase) ?? ""
+        guard let material = Self.importPKCS12(data, passphrase: passphrase) else { return nil }
+        cachedClientCertificate = material
+        cachedClientCertificateHash = data.hashValue
+        return material
+    }
+
+    /// サーバーから証明書を求められたときに渡す資格情報。
+    func clientCertificateCredential() -> URLCredential? {
+        guard let material = clientCertificateMaterial() else { return nil }
+        return URLCredential(identity: material.identity,
+                             certificates: material.certificates.isEmpty ? nil : material.certificates,
+                             persistence: .forSession)
+    }
+
     /// カスタムヘッダの名前 (1組目・2組目)。自作のリバースプロキシ等で
     /// 独自の合言葉ヘッダを見ている環境向けで、名前は自由に決められる。
     var customHeaderName1: String {
@@ -1215,6 +1308,11 @@ final class SettingsStore {
             // ログイン画面で取り込んだ Cookie を付ける。
             guard let cookie = browserLoginCookieHeader else { return [:] }
             return ["Cookie": cookie]
+        case .clientCertificate:
+            // 証明書はヘッダーではなく、サーバーからの求めに応じて出す。
+            // 応答は ServerAuthChallengeResponder が行い、AVPlayer 単独では
+            // 出せないため再生は中継経由になる。
+            return [:]
         }
     }
 }
@@ -1245,6 +1343,12 @@ enum ServerAuthChallengeResponder {
             guard !user.isEmpty, !pass.isEmpty else { break }
             completionHandler(.useCredential,
                               URLCredential(user: user, password: pass, persistence: .none))
+            return
+        case NSURLAuthenticationMethodClientCertificate:
+            // クライアント証明書が選ばれているときだけ、取り込んだ証明書を出す。
+            guard store.authMethod == .clientCertificate,
+                  let credential = store.clientCertificateCredential() else { break }
+            completionHandler(.useCredential, credential)
             return
         default:
             break

@@ -819,10 +819,12 @@ final class APIClient {
 
     /// 認証のヘッダーを付けた AVURLAsset を作る (プレイリストと分割ファイルの両方に同じヘッダーが付く)。
     func playerAsset(url: URL) -> AVURLAsset {
-        // Digest認証は、サーバーからの求めに応答する計算が要るため、
-        // AVPlayer 単独では通せない。アプリ内の中継経由にすると、
-        // 中継側の通信が求めに応答する (中継が使えないときは元の URL)。
-        if SettingsStore.shared.authMethod == .digest,
+        // Digest認証とクライアント証明書は、サーバーからの求めへの
+        // 応答が要るため、AVPlayer 単独では通せない。アプリ内の
+        // 中継経由にすると、中継側の通信が求めに応答する
+        // (中継が使えないときは元の URL)。
+        let method = SettingsStore.shared.authMethod
+        if method == .digest || method == .clientCertificate,
            let relayed = StreamRelayServer.shared.relayURL(for: url) {
             return AVURLAsset(url: relayed)
         }

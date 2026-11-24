@@ -1,7 +1,8 @@
 import UIKit
+import UniformTypeIdentifiers
 import WebKit
 
-/// 接続先 URL と認証方式 (なし / Cloudflare Access / Basic認証 / Digest認証 / カスタムヘッダ / ブラウザでログイン)、KonomiTV ログインを設定する画面。
+/// 接続先 URL と認証方式 (なし / Cloudflare Access / Basic認証 / Digest認証 / カスタムヘッダ / ブラウザでログイン / クライアント証明書)、KonomiTV ログインを設定する画面。
 /// 画質まわりは別画面 (「画質」) に分け、入口は設定の分類一覧
 /// (SettingsCategoryViewController) 側に置く (この画面と重複させない)。
 /// 初回起動時 (URL 未設定) の入力画面と、分類一覧の「このアプリの設定」の先で使う。
@@ -57,6 +58,11 @@ final class SettingsViewController: UIViewController {
     private let browserLoginButton = RippleButton()
     private let browserLogoutButton = RippleButton()
     private var browserLoginGroupView: UIStackView?
+    /// クライアント証明書の区分 (説明・状態・ボタン)。
+    private let clientCertStatusLabel = UILabel()
+    private let clientCertImportButton = RippleButton()
+    private let clientCertRemoveButton = RippleButton()
+    private var clientCertGroupView: UIStackView?
     private let statusLabel = UILabel()
     private let usernameField = UITextField()
     private let passwordField = UITextField()
@@ -92,7 +98,9 @@ final class SettingsViewController: UIViewController {
         case .customHeader:
             fields += [customHeaderName1Field, customHeaderValue1Field,
                        customHeaderName2Field, customHeaderValue2Field]
-        case .none:
+        case .none, .browserLogin, .clientCertificate:
+            // 入力欄の無い方式 (ブラウザでログインとクライアント証明書は
+            // ボタン操作のため、欄は持たない)。
             break
         }
         fields += [usernameField, passwordField]
@@ -401,6 +409,18 @@ final class SettingsViewController: UIViewController {
         browserLogoutButton.addTarget(self, action: #selector(browserLogout), for: .touchUpInside)
         styleActionButton(browserLogoutButton)
 
+        // クライアント証明書: ファイル (.p12) を取り込み、サーバーから
+        // 証明書を求められたときにその証明書を出す方式。
+        clientCertStatusLabel.font = .scaledSystemFont(ofSize: 13.5)
+        clientCertStatusLabel.textColor = AppPalette.metaText
+        clientCertStatusLabel.numberOfLines = 0
+        clientCertImportButton.setTitle("証明書を取り込む", for: .normal)
+        clientCertImportButton.addTarget(self, action: #selector(importClientCertificate), for: .touchUpInside)
+        styleActionButton(clientCertImportButton)
+        clientCertRemoveButton.setTitle("証明書を削除", for: .normal)
+        clientCertRemoveButton.addTarget(self, action: #selector(removeClientCertificate), for: .touchUpInside)
+        styleActionButton(clientCertRemoveButton)
+
         // リターンキーの表示は、表示中の欄に合わせて refreshReturnKeyTypes() で付ける。
 
         // KonomiTV ログイン (保護の切り替えに必要)。パスワードはキーチェーンに保存される。
@@ -552,6 +572,17 @@ final class SettingsViewController: UIViewController {
         let browserLoginGroup = itemGroup(title: "ブラウザでログイン", field: browserLoginField)
         browserLoginGroupView = browserLoginGroup
 
+        let clientCertField = UIStackView(arrangedSubviews: [
+            makeDescriptionLabel("証明書ファイル (.p12) をファイルアプリから取り込んで使います。サーバーから証明書を求められたときに、この証明書を出します。この方式では、データ放送の画面が通らない場合があります (データ放送の画面は、アプリが取り込んだ証明書を使えないため)。"),
+            clientCertStatusLabel,
+            clientCertImportButton,
+            clientCertRemoveButton,
+        ])
+        clientCertField.axis = .vertical
+        clientCertField.spacing = 14
+        let clientCertGroup = itemGroup(title: "クライアント証明書", field: clientCertField)
+        clientCertGroupView = clientCertGroup
+
         let connectionDivider = makeDivider()
         let stack = UIStackView(arrangedSubviews: [
             note,
@@ -568,6 +599,7 @@ final class SettingsViewController: UIViewController {
             customHeaderName2Group,
             customHeaderValue2Group,
             browserLoginGroup,
+            clientCertGroup,
             uiScaleGroup,
             connectionDivider,
             usernameGroup,
@@ -631,7 +663,7 @@ final class SettingsViewController: UIViewController {
     /// 認証方式のプルダウンの表示と選択肢を、現在の選択に合わせて付け直す。
     private func updateAuthMethodControls() {
         authMethodButton.setTitle(selectedAuthMethod.displayName, for: .normal)
-        let methods: [ServerAuthMethod] = [.none, .cloudflareAccess, .basic, .digest, .customHeader, .browserLogin]
+        let methods: [ServerAuthMethod] = [.none, .cloudflareAccess, .basic, .digest, .customHeader, .browserLogin, .clientCertificate]
         authMethodButton.menu = UIMenu(children: methods.map { method in
             UIAction(title: method.displayName,
                      state: method == selectedAuthMethod ? .on : .off) { [weak self] _ in
@@ -656,6 +688,7 @@ final class SettingsViewController: UIViewController {
         customHeaderName2GroupView?.isHidden = selectedAuthMethod != .customHeader
         customHeaderValue2GroupView?.isHidden = selectedAuthMethod != .customHeader
         browserLoginGroupView?.isHidden = selectedAuthMethod != .browserLogin
+        clientCertGroupView?.isHidden = selectedAuthMethod != .clientCertificate
         // 隠れた欄はリターンキーの移動先からも外れるため、表示を付け直す。
         refreshReturnKeyTypes()
     }
@@ -733,6 +766,69 @@ final class SettingsViewController: UIViewController {
         }
     }
 
+    // MARK: - クライアント証明書
+
+    /// 取り込んだ証明書の状態表示を付け直す。
+    private func refreshClientCertificateStatus() {
+        let store = SettingsStore.shared
+        if store.hasClientCertificate {
+            let label = store.clientCertificateLabel
+            clientCertStatusLabel.text = label.isEmpty
+                ? "証明書を取り込み済みです。"
+                : "証明書を取り込み済みです (\(label))。"
+            clientCertImportButton.setTitle("証明書を取り込み直す", for: .normal)
+        } else {
+            clientCertStatusLabel.text = "まだ証明書を取り込んでいません。"
+            clientCertImportButton.setTitle("証明書を取り込む", for: .normal)
+        }
+        clientCertRemoveButton.isHidden = !store.hasClientCertificate
+    }
+
+    /// ファイルアプリから証明書ファイル (.p12) を選ぶ。
+    @objc private func importClientCertificate() {
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: [UTType(filenameExtension: "p12") ?? .data], asCopy: true)
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        present(picker, animated: true)
+    }
+
+    @objc private func removeClientCertificate() {
+        SettingsStore.shared.removeClientCertificate()
+        refreshClientCertificateStatus()
+    }
+
+    /// 選んだ証明書ファイルのパスフレーズを聞いて、取り込む。
+    private func promptCertificatePassphrase(for url: URL) {
+        let alert = UIAlertController(
+            title: "証明書のパスフレーズ",
+            message: "証明書ファイル (.p12) のパスフレーズを入力してください。",
+            preferredStyle: .alert)
+        alert.addTextField { field in
+            field.isSecureTextEntry = true
+            field.placeholder = "パスフレーズ"
+        }
+        alert.addAction(UIAlertAction(title: "キャンセル", style: .cancel))
+        alert.addAction(UIAlertAction(title: "取り込む", style: .default) { [weak self, weak alert] _ in
+            guard let self else { return }
+            let passphrase = alert?.textFields?.first?.text ?? ""
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            guard let data = try? Data(contentsOf: url),
+                  SettingsStore.shared.importClientCertificate(p12Data: data, passphrase: passphrase) else {
+                let failure = UIAlertController(
+                    title: "取り込めませんでした",
+                    message: "ファイルとパスフレーズを確認してください。",
+                    preferredStyle: .alert)
+                failure.addAction(UIAlertAction(title: "OK", style: .default))
+                present(failure, animated: true)
+                return
+            }
+            refreshClientCertificateStatus()
+        })
+        present(alert, animated: true)
+    }
+
     /// カスタムヘッダの入力欄を保存する (保存とログイン前の保存で共用)。
     private func storeCustomHeaderFields(to store: SettingsStore) {
         store.customHeaderName1 = customHeaderName1Field.text ?? ""
@@ -782,6 +878,7 @@ final class SettingsViewController: UIViewController {
         customHeaderName2Field.text = store.customHeaderName2
         customHeaderValue2Field.text = store.customHeaderValue2
         refreshBrowserLoginStatus()
+        refreshClientCertificateStatus()
         refreshAuthFieldVisibility()
         usernameField.text = store.username
         passwordField.text = store.password
@@ -965,6 +1062,14 @@ extension SettingsViewController: UITextFieldDelegate {
             textField.resignFirstResponder()
         }
         return false
+    }
+}
+
+extension SettingsViewController: UIDocumentPickerDelegate {
+    /// 証明書ファイルが選ばれたら、パスフレーズを聞いて取り込む。
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let url = urls.first else { return }
+        promptCertificatePassphrase(for: url)
     }
 }
 
