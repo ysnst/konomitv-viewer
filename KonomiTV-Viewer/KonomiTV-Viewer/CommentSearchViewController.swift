@@ -14,6 +14,11 @@ final class CommentSearchViewController: UIViewController {
 
     private let searchField = UITextField()
     private let summaryLabel = UILabel()
+    /// 件数の案内を一覧の先頭に載せるための入れ物。
+    private let summaryContainerView = UIView()
+    /// 案内の入れ物の高さを合わせたときの一覧の幅。
+    /// 幅が変わったら合わせ直すために持つ。
+    private var summaryHeaderWidth: CGFloat = 0
     private let tableView = UITableView(frame: .zero, style: .plain)
     private let emptyLabel = UILabel()
     /// 現在のキーワードで絞り込んだ結果 (最大100件)。
@@ -91,11 +96,24 @@ final class CommentSearchViewController: UIViewController {
         searchField.addTarget(self, action: #selector(searchTextChanged), for: .editingChanged)
 
         // 件数の案内 (Web 版の summary と同じ文)。
+        // 一覧の先頭に置いて、一覧と一緒にスクロールさせる
+        // (一覧の上に固定すると、スクロールしたときに下の行が
+        // 案内の下に滑り込んで、文字と重なって見えるため)。
         summaryLabel.font = .scaledSystemFont(ofSize: 12.5)
         summaryLabel.textColor = AppPalette.metaText
         summaryLabel.numberOfLines = 0
         summaryLabel.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(summaryLabel)
+        summaryContainerView.addSubview(summaryLabel)
+        NSLayoutConstraint.activate([
+            summaryLabel.topAnchor.constraint(
+                equalTo: summaryContainerView.topAnchor, constant: 12),
+            summaryLabel.leadingAnchor.constraint(
+                equalTo: summaryContainerView.leadingAnchor, constant: 20),
+            summaryLabel.trailingAnchor.constraint(
+                equalTo: summaryContainerView.trailingAnchor, constant: -20),
+            summaryLabel.bottomAnchor.constraint(
+                equalTo: summaryContainerView.bottomAnchor, constant: -8),
+        ])
 
         tableView.backgroundColor = AppPalette.background
         tableView.separatorColor = AppPalette.pressed
@@ -137,16 +155,41 @@ final class CommentSearchViewController: UIViewController {
             searchField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             searchField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
             searchField.heightAnchor.constraint(equalToConstant: 40),
-            summaryLabel.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 12),
-            summaryLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            summaryLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            tableView.topAnchor.constraint(equalTo: summaryLabel.bottomAnchor, constant: 8),
+            tableView.topAnchor.constraint(equalTo: searchField.bottomAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             emptyLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             emptyLabel.topAnchor.constraint(equalTo: tableView.topAnchor, constant: 32),
         ])
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // 一覧の幅が変わったら、案内の入れ物の高さを合わせ直す。
+        if tableView.bounds.width != summaryHeaderWidth {
+            layoutSummaryHeader()
+        }
+    }
+
+    /// 件数の案内を一覧の先頭 (一緒にスクロールする側) へ載せる。
+    /// 文が変わったときと、一覧の幅が変わったときに呼ぶ。
+    private func layoutSummaryHeader() {
+        let width = tableView.bounds.width
+        guard width > 0 else { return }
+        summaryHeaderWidth = width
+        if (summaryLabel.text ?? "").isEmpty {
+            summaryContainerView.frame = CGRect(x: 0, y: 0, width: width, height: 0)
+        } else {
+            let size = summaryContainerView.systemLayoutSizeFitting(
+                CGSize(width: width,
+                       height: UIView.layoutFittingCompressedSize.height),
+                withHorizontalFittingPriority: .required,
+                verticalFittingPriority: .fittingSizeLevel)
+            summaryContainerView.frame = CGRect(
+                x: 0, y: 0, width: width, height: size.height)
+        }
+        tableView.tableHeaderView = summaryContainerView
     }
 
     @objc private func closeTapped() {
@@ -172,6 +215,7 @@ final class CommentSearchViewController: UIViewController {
             summaryLabel.text = "\(filteredComments.count) 件ヒット (クリックでその場面へ移動)"
         }
         emptyLabel.isHidden = keyword.isEmpty || comments.isEmpty || !filteredComments.isEmpty
+        layoutSummaryHeader()
         tableView.reloadData()
     }
 }

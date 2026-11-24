@@ -1,5 +1,95 @@
 import UIKit
 
+/// なぞり選択専用の指の動きの受け口 (ゴミ箱・録画一覧で共用)。
+///
+/// スクロールか なぞり選択かの判定を、受け口が始まる前に済ませる
+/// ためのもの。指が少し (12pt) 動くまでは親に渡さず手元に留め、
+/// その間の動きの速さで決める。速ければ受け口を失敗で終わらせ、
+/// ゆっくりなら そのまま受け口を始めて、なぞり選択として取り込む。
+/// 一覧のスクロールは、この受け口が失敗するまで始めないよう
+/// 頼んである (require(toFail:)) ので、判定が出るまでは一覧が
+/// 一切動かず、決まった瞬間に位置が跳ぶこともない。
+/// 以前の作り (一覧のスクロールと同時に動きを見て、途中で
+/// スクロールを凍らせる) では、凍らせる瞬間に一覧が小刻みに
+/// 跳ねることがあったため、この形に変えた。
+final class DragSelectionPanGestureRecognizer: UIPanGestureRecognizer {
+    /// 判定するまでの指の移動量。
+    private static let decisionDistance: CGFloat = 12
+    /// これより速い指の動きはスクロールとして扱う速さ (1秒あたり)。
+    private static let scrollSpeedThreshold: CGFloat = 600
+    /// 速さを測るために残しておく、直近の指の位置と時刻。
+    private static let speedWindow: TimeInterval = 0.1
+
+    /// 指が触れた位置 (受け口の付いている画面での座標)。
+    /// 判定で受け口が始まる頃には指が少し動いているため、なぞり
+    /// 選択の起点には、現在の位置ではなく この位置を使う。
+    private(set) var startLocation: CGPoint = .zero
+    /// 判定が出たかどうか。
+    private var decided = false
+    /// 速さの計算用の控え (古いものから順に並ぶ)。
+    private var samples: [(point: CGPoint, time: TimeInterval)] = []
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        decided = false
+        samples = []
+        if let touch = touches.first, let view {
+            startLocation = touch.location(in: view)
+            samples.append((startLocation, touch.timestamp))
+        }
+        super.touchesBegan(touches, with: event)
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+        if decided {
+            super.touchesMoved(touches, with: event)
+            return
+        }
+        guard let touch = touches.first, let view else {
+            super.touchesMoved(touches, with: event)
+            return
+        }
+        let point = touch.location(in: view)
+        samples.append((point, touch.timestamp))
+        // 速さを測る窓から外れた控えは捨てる (触れたまま止まって
+        // から動き出した場合に、止まっていた時間が割り算に
+        // 混ざらないように)。
+        while samples.count > 1,
+              touch.timestamp - samples[0].time > Self.speedWindow {
+            samples.removeFirst()
+        }
+        guard hypot(point.x - startLocation.x, point.y - startLocation.y)
+                >= Self.decisionDistance,
+              samples.count >= 2,
+              let first = samples.first else {
+            // まだ決めない。親に渡さないので、受け口は始まらない。
+            // (samples が1つだけのときは、速さを測る材料が足りない
+            // ので、次の動きまで待つ。)
+            return
+        }
+        decided = true
+        let elapsed = touch.timestamp - first.time
+        let speed = elapsed > 0
+            ? hypot(point.x - first.point.x, point.y - first.point.y)
+                / CGFloat(elapsed)
+            : 0
+        if speed > Self.scrollSpeedThreshold {
+            // 速い動きはスクロール。受け口を失敗で終わらせると、
+            // 失敗を待っていた一覧のスクロールが始められる。
+            // 一覧はまだ動いていないので、位置の跳びは起きない。
+            state = .failed
+            return
+        }
+        // ゆっくりした動きは、なぞり選択として取り込む。
+        super.touchesMoved(touches, with: event)
+    }
+
+    override func reset() {
+        super.reset()
+        decided = false
+        samples = []
+    }
+}
+
 /// ゴミ箱の画面。録画一覧の「ゴミ箱を開く」から開く (拡張版だけ)。
 ///
 /// 本家 Web 版のゴミ箱 (views/Videos/Trash.vue) と同じ作り:
@@ -12,9 +102,10 @@ import UIKit
 ///   確認を挟み、項目ごとに事前確認を取ってから削除する。
 ///   選択中は、カードに触れたまま指を動かすと通ったカードを連続で
 ///   選べる (写真アプリのなぞって選択と同じ感覚)。
-/// - 見出しの下に保持期間の説明を出し、各カードには録画一覧と同じ
-///   カード部品 (VideoCell) に「あと○日で完全に削除されます」の行と、
-///   「復元する」「完全に削除」のボタンの行を足して出す。
+/// - 一覧の先頭に保持期間の説明を出し (一覧と一緒にスクロール
+///   する)、各カードには録画一覧と同じカード部品 (VideoCell) に
+///   「あと○日で完全に削除されます」の行と、「復元する」
+///   「完全に削除」のボタンの行を足して出す。
 /// - 操作ボタンは Web 版と同じく管理者だけに出す (一覧自体は
 ///   ログインしていれば見られる)。
 /// - 完全削除は取り返しがつかないため、Web 版と同じ手順で
@@ -55,9 +146,16 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
     private let selectRowView = UIView()
     private let selectButton = RippleButton()
     private var selectRowHeightConstraint: NSLayoutConstraint?
-    private var noteTopConstraint: NSLayoutConstraint?
     /// 保持期間の説明 (Web 版の見出し下の説明と同じ文面)。
+    /// 一覧の先頭に置いて、一覧と一緒にスクロールさせる
+    /// (以前は一覧の上に固定していたため、スクロールすると
+    /// カードが説明文の下に滑り込んで、文字と重なって見えた)。
     private let noteLabel = UILabel()
+    /// 説明文を一覧の先頭に載せるための入れ物。
+    private let noteContainerView = UIView()
+    /// 説明文の入れ物の高さを合わせたときの一覧の幅。
+    /// 幅が変わったら合わせ直すために持つ。
+    private var noteHeaderWidth: CGFloat = 0
     private let tableView = UITableView(frame: .zero, style: .plain)
     private let refreshControl = UIRefreshControl()
     private let statusLabel = UILabel()
@@ -94,26 +192,24 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
     /// 選択中でないときは一覧のスクロールに一切触れない (有効なまま
     /// だと、選択中でないときでも受け口が指の動きを横取りして、
     /// 普通のスクロールができなくなった)。
-    /// 選択中は一覧のスクロールと同時に動きを見て、指の勢いで
-    /// 使い分ける: 速い動き (フリック) はスクロールに譲り、
-    /// ゆっくりした動きはなぞり選択として取り込む。なぞり選択に
-    /// 決まったら一覧を指に付いて動かさず、指が画面の端に来た
-    /// ときだけ自動で少しずつ流す。
-    private let dragSelectionGesture = UIPanGestureRecognizer()
-    /// 触れた行の控え。スクロールか なぞり選択か決まるまで、
-    /// 起点の行はここに置く (決まった時点で dragAnchorRow へ移す)。
-    private var dragPendingAnchorRow: Int?
+    /// スクロールか なぞり選択かの判定は受け口の中で済ませる
+    /// (DragSelectionPanGestureRecognizer を参照)。受け口が
+    /// 始まった時点で判定は終わっていて、ここに来たものは
+    /// なぞり選択として取り込む。一覧のスクロールは、受け口が
+    /// 失敗するまで始めないよう頼んであるので、判定が出るまで
+    /// 一覧は動かず、決まった瞬間に位置が跳ぶこともない。
+    private let dragSelectionGesture = DragSelectionPanGestureRecognizer()
     /// この指の動きをなぞり選択として取り込んだかどうか。
     private var dragCommitted = false
-    /// この指の動きをスクロールに譲ったかどうか。譲ったあとは
-    /// 指を離すまで、なぞり選択には切り替えない。
-    private var dragAbandoned = false
-    /// スクロールか なぞり選択かを決めるまでの、指の移動量。
-    private static let dragDecisionDistance: CGFloat = 16
-    /// これより速い指の動きはスクロールとして扱う速さ (1秒あたり)。
-    private static let dragScrollSpeedThreshold: CGFloat = 600
     /// 指の位置 (画面全体での座標)。端に近いかの判定に使う。
     private var dragFingerPoint: CGPoint?
+    /// 端での自動スクロールが、いま効いている向き (-1 = 上へ、
+    /// 1 = 下へ、0 = 止まっている)。端の境目から少し外れるまで
+    /// 向きを保ち、境目での入ったり止まったりの繰り返しで
+    /// 小刻みに跳ねて見えないようにする。
+    private var dragAutoScrollDirection = 0
+    /// 端の境目から、向きを保つ幅。
+    private static let dragEdgeHysteresis: CGFloat = 16
     /// 端での自動スクロールを進めるための、表示の刻み。
     private var dragScrollLink: CADisplayLink?
     private var dragScrollLastTime: CFTimeInterval = 0
@@ -157,7 +253,17 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
         noteLabel.textColor = AppPalette.text.withAlphaComponent(0.8)
         noteLabel.numberOfLines = 0
         noteLabel.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(noteLabel)
+        noteContainerView.addSubview(noteLabel)
+        NSLayoutConstraint.activate([
+            noteLabel.topAnchor.constraint(
+                equalTo: noteContainerView.topAnchor, constant: 10),
+            noteLabel.leadingAnchor.constraint(
+                equalTo: noteContainerView.leadingAnchor, constant: 16),
+            noteLabel.trailingAnchor.constraint(
+                equalTo: noteContainerView.trailingAnchor, constant: -16),
+            noteLabel.bottomAnchor.constraint(
+                equalTo: noteContainerView.bottomAnchor, constant: -6),
+        ])
 
         tableView.dataSource = self
         tableView.delegate = self
@@ -173,14 +279,16 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
         tableView.refreshControl = refreshControl
         // 選択中になぞって連続で選べるよう、なぞり選択専用の
         // 指の動きの受け口を付ける。選択中だけ有効にし、それ以外
-        // では一覧のスクロールに触れない。選択中は一覧のスクロール
-        // と同時に動きを見て、勢いで使い分ける
-        // (handleDragSelection を参照)。
+        // では一覧のスクロールに触れない。スクロールか なぞり
+        // 選択かの判定は受け口の中で済ませ、一覧のスクロールは
+        // 受け口が失敗するまで始めない (判定が出るまで一覧は
+        // 動かない。handleDragSelection を参照)。
         dragSelectionGesture.addTarget(
             self, action: #selector(handleDragSelection(_:)))
         dragSelectionGesture.delegate = self
         dragSelectionGesture.isEnabled = false
         tableView.addGestureRecognizer(dragSelectionGesture)
+        tableView.panGestureRecognizer.require(toFail: dragSelectionGesture)
         view.addSubview(tableView)
 
         statusLabel.textAlignment = .center
@@ -189,13 +297,8 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(statusLabel)
 
-        noteTopConstraint = noteLabel.topAnchor.constraint(
-            equalTo: selectRowView.bottomAnchor, constant: 10)
         NSLayoutConstraint.activate([
-            noteTopConstraint!,
-            noteLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            noteLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            tableView.topAnchor.constraint(equalTo: noteLabel.bottomAnchor, constant: 6),
+            tableView.topAnchor.constraint(equalTo: selectRowView.bottomAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
@@ -204,6 +307,35 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
             statusLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 24),
             statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -24),
         ])
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // 一覧の幅が変わったら、説明文の入れ物の高さを合わせ直す。
+        if tableView.bounds.width != noteHeaderWidth {
+            layoutNoteHeader()
+        }
+    }
+
+    /// 説明文を一覧の先頭 (一緒にスクロールする側) へ載せる。
+    /// 文が変わったときと、一覧の幅が変わったときに呼ぶ。
+    /// 文が無いときは高さを 0 にして、先頭を詰める。
+    private func layoutNoteHeader() {
+        let width = tableView.bounds.width
+        guard width > 0 else { return }
+        noteHeaderWidth = width
+        if (noteLabel.text ?? "").isEmpty {
+            noteContainerView.frame = CGRect(x: 0, y: 0, width: width, height: 0)
+        } else {
+            let size = noteContainerView.systemLayoutSizeFitting(
+                CGSize(width: width,
+                       height: UIView.layoutFittingCompressedSize.height),
+                withHorizontalFittingPriority: .required,
+                verticalFittingPriority: .fittingSizeLevel)
+            noteContainerView.frame = CGRect(
+                x: 0, y: 0, width: width, height: size.height)
+        }
+        tableView.tableHeaderView = noteContainerView
     }
 
     /// 見出し帯 (設定まわりの画面・視聴履歴と同じ形)。
@@ -427,6 +559,7 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
             statusLabel.text = "ゴミ箱を使うには、ログインが必要です。\n"
                 + "アカウントの設定でログインしてください。"
             noteLabel.text = nil
+            layoutNoteHeader()
             tableView.reloadData()
             refreshControl.endRefreshing()
             return
@@ -456,6 +589,7 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
                     self.statusLabel.text = "ログインの有効期限が切れています。\n"
                         + "アカウントの設定でログインし直してください。"
                     self.noteLabel.text = nil
+                    self.layoutNoteHeader()
                     self.tableView.reloadData()
                 } else if self.items.isEmpty {
                     self.statusLabel.text = "読み込めませんでした。\n接続先とネットワークを確認してください。"
@@ -483,6 +617,7 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
             exitSelectionMode()
         }
         updateControlsVisibility()
+        layoutNoteHeader()
         tableView.reloadData()
     }
 
@@ -506,7 +641,6 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
         let showsSelectRow = isAdminUser && !items.isEmpty
         selectRowView.isHidden = !showsSelectRow
         selectRowHeightConstraint?.constant = showsSelectRow ? 38 : 0
-        noteTopConstraint?.constant = showsSelectRow ? 2 : 10
         bulkBar.isHidden = !isSelectionMode
         if isSelectionMode {
             // 操作帯は一覧より前面に出す (組み立て順では一覧が後から
@@ -595,70 +729,49 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
     /// 画面の端に指を持っていったときだけ、端からの近さに応じた
     /// 速さで一覧が少しずつ流れる (stepDragAutoScroll)。
     ///
-    /// ただし、触れた直後はスクロールか なぞり選択か決めない。
-    /// 一覧のスクロールと同時に指の動きを見て (同時の見守りは
-    /// gestureRecognizer(_:shouldRecognizeSimultaneouslyWith:) で
-    /// 許可)、指がある程度動いた時点で勢いを見る。速ければ
-    /// スクロールに譲ってこの指には最後まで関わらず、ゆっくりなら
-    /// なぞり選択として取り込む。取り込むまでは一覧が指に付いて
-    /// 少し流れるが、決まるまでの動きはわずかなので、範囲の起点は
-    /// 触れた行のまま保てる。
-    @objc private func handleDragSelection(_ gesture: UIPanGestureRecognizer) {
+    /// スクロールか なぞり選択かの判定は、受け口が始まる前に
+    /// 受け口の中で済ませる (DragSelectionPanGestureRecognizer)。
+    /// 一覧のスクロールは受け口が失敗するまで始めないので、判定が
+    /// 出るまで一覧は一切動かず、ここに来たものは そのまま
+    /// なぞり選択として取り込める。以前の作り (同時に動きを見て、
+    /// 途中で一覧のスクロールを凍らせる) では、凍らせる瞬間に
+    /// 一覧が小刻みに跳ねることがあった。
+    @objc private func handleDragSelection(_ gesture: DragSelectionPanGestureRecognizer) {
         switch gesture.state {
         case .began:
             guard isSelectionMode, !isBulkRunning, !isLoading else { return }
-            guard let row = dragRow(at: gesture.location(in: tableView)) else { return }
-            // ここでは起点の行を控えるだけにし、スクロールは止めない。
-            dragPendingAnchorRow = row
-            dragCommitted = false
-            dragAbandoned = false
-        case .changed:
-            guard isSelectionMode else { return }
-            if dragCommitted {
-                guard dragAnchorRow != nil else { return }
-                dragFingerPoint = gesture.location(in: view)
-                // 端での自動スクロールの刻みが何かの都合で止まって
-                // いたら、指の動きに合わせて再開する (同じドラッグの
-                // 間は、端に入るたびに流れが始まるように)。
-                if dragScrollLink == nil { startDragAutoScroll() }
-                if let row = dragRow(at: gesture.location(in: tableView)) {
-                    applyDragSelection(toRow: row)
-                }
-                return
-            }
-            guard !dragAbandoned, let anchorRow = dragPendingAnchorRow else { return }
-            let translation = gesture.translation(in: view)
-            guard hypot(translation.x, translation.y) >= Self.dragDecisionDistance
-            else { return }
-            let velocity = gesture.velocity(in: view)
-            if hypot(velocity.x, velocity.y) > Self.dragScrollSpeedThreshold {
-                // 速い動きはスクロール。一覧側がそのまま流すので、
-                // この指にはもう関わらない。
-                dragAbandoned = true
-                dragPendingAnchorRow = nil
-                return
-            }
-            // ゆっくりした動きは、なぞり選択として取り込む。
+            // 起点は、指が触れた位置の行 (判定の間に指は少し動いて
+            // いるため、受け口に残してある触れた位置を使う)。
+            guard let row = dragRow(at: gesture.startLocation) else { return }
             dragCommitted = true
-            dragPendingAnchorRow = nil
-            dragAnchorRow = anchorRow
-            dragSelecting = !selectedIDs.contains(displayItems[anchorRow].program.id)
+            dragAnchorRow = row
+            dragSelecting = !selectedIDs.contains(displayItems[row].program.id)
             dragRangeIDs = []
             dragBaseline = [:]
+            dragAutoScrollDirection = 0
             dragFingerPoint = gesture.location(in: view)
-            // 一覧が指に付いて動かないようにし、流れかけていた
-            // 勢いも止める。引っ張って更新も、最中は止める。
+            // 一覧が指に付いて動かないようにする (この指については
+            // 一覧のスクロール側が既に外れているが、別の指で
+            // 流れたりしないための用心)。引っ張って更新も、
+            // 最中は止める。
             tableView.isScrollEnabled = false
-            tableView.setContentOffset(tableView.contentOffset, animated: false)
             refreshControl.isEnabled = false
             // なぞっている間は、操作帯のボタンが指の動きに割り込ま
             // ないよう、操作帯へのタッチを止める。指が操作帯の上に
             // 行っても、端での流れが止まらないようにするため。
             bulkBar.isUserInteractionEnabled = false
+            applyDragSelection(toRow: row)
+            startDragAutoScroll()
+        case .changed:
+            guard isSelectionMode, dragCommitted, dragAnchorRow != nil else { return }
+            dragFingerPoint = gesture.location(in: view)
+            // 端での自動スクロールの刻みが何かの都合で止まって
+            // いたら、指の動きに合わせて再開する (同じドラッグの
+            // 間は、端に入るたびに流れが始まるように)。
+            if dragScrollLink == nil { startDragAutoScroll() }
             if let row = dragRow(at: gesture.location(in: tableView)) {
                 applyDragSelection(toRow: row)
             }
-            startDragAutoScroll()
         default:
             finishDragSelection()
         }
@@ -670,26 +783,25 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
         dragScrollLink?.invalidate()
         dragScrollLink = nil
         dragAnchorRow = nil
-        dragPendingAnchorRow = nil
         dragCommitted = false
-        dragAbandoned = false
         dragRangeIDs = []
         dragBaseline = [:]
         dragFingerPoint = nil
+        dragAutoScrollDirection = 0
         tableView.isScrollEnabled = true
         refreshControl.isEnabled = true
         bulkBar.isUserInteractionEnabled = true
     }
 
-    /// なぞり選択の受け口は、一覧のスクロールと同時に指の動きを
-    /// 見られるようにする (スクロールかどうかの見分けに使う)。
-    /// それ以外の受け口とは同時に動かさない。
+    /// なぞり選択の受け口とは同時に動かさない。一覧のスクロールは、
+    /// なぞり選択の受け口が失敗するまで始めないよう頼んである
+    /// (require(toFail:))。同時に動くことを許すと、その頼みが
+    /// 効かなくなってしまう。
     func gestureRecognizer(
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
     ) -> Bool {
-        gestureRecognizer === dragSelectionGesture
-            && otherGestureRecognizer === tableView.panGestureRecognizer
+        false
     }
 
     /// 端での自動スクロールの刻みを始める。
@@ -740,14 +852,31 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
         let visibleTop = tableView.frame.minY
         let visibleBottom = tableView.frame.maxY
             - (isSelectionMode ? Self.bulkBarHeight : 0)
-        var delta: CGFloat = 0
-        if finger.y < visibleTop + Self.dragEdgeLength {
-            let depth = visibleTop + Self.dragEdgeLength - finger.y
-            delta = -Self.dragScrollSpeed(forDepth: depth) * CGFloat(dt)
-        } else if finger.y > visibleBottom - Self.dragEdgeLength {
-            let depth = finger.y - (visibleBottom - Self.dragEdgeLength)
-            delta = Self.dragScrollSpeed(forDepth: depth) * CGFloat(dt)
+        // 端に入った向きは、境目から少し (16pt) 外れるまで保つ。
+        // 境目ぎりぎりで指がわずかに揺れるたび、流れが入ったり
+        // 止まったりを繰り返して、小刻みに跳ねて見えるのを防ぐ。
+        // 向きを保っている間も、端の領域の外では深さが無いので
+        // 実際には流れない。
+        let topEdge = visibleTop + Self.dragEdgeLength
+        let bottomEdge = visibleBottom - Self.dragEdgeLength
+        var depth: CGFloat = 0
+        if finger.y < topEdge {
+            dragAutoScrollDirection = -1
+            depth = topEdge - finger.y
+        } else if finger.y > bottomEdge {
+            dragAutoScrollDirection = 1
+            depth = finger.y - bottomEdge
+        } else if dragAutoScrollDirection < 0,
+                  finger.y < topEdge + Self.dragEdgeHysteresis {
+            depth = 0
+        } else if dragAutoScrollDirection > 0,
+                  finger.y > bottomEdge - Self.dragEdgeHysteresis {
+            depth = 0
+        } else {
+            dragAutoScrollDirection = 0
         }
+        let delta = CGFloat(dragAutoScrollDirection)
+            * Self.dragScrollSpeed(forDepth: depth) * CGFloat(dt)
         guard delta != 0 else { return }
         let minOffset = -tableView.contentInset.top
         let maxOffset = max(minOffset,
