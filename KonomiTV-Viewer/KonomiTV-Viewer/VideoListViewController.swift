@@ -1536,6 +1536,10 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             if dragCommitted {
                 guard dragAnchorRow != nil else { return }
                 dragFingerPoint = gesture.location(in: view)
+                // 端での自動スクロールの刻みが何かの都合で止まって
+                // いたら、指の動きに合わせて再開する (同じドラッグの
+                // 間は、端に入るたびに流れが始まるように)。
+                if dragScrollLink == nil { startDragAutoScroll() }
                 if let row = dragRow(at: gesture.location(in: tableView)) {
                     applyDragSelection(toRow: row)
                 }
@@ -1570,6 +1574,10 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             scrollRestoreTimer?.invalidate()
             scrollRestoreTimer = nil
             isScrollRestoring = false
+            // なぞっている間は、操作帯のボタンが指の動きに割り込ま
+            // ないよう、操作帯へのタッチを止める。指が操作帯の上に
+            // 行っても、端での流れが止まらないようにするため。
+            bulkBar.isUserInteractionEnabled = false
             if let row = dragRow(at: gesture.location(in: tableView)) {
                 applyDragSelection(toRow: row)
             }
@@ -1593,6 +1601,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         dragFingerPoint = nil
         tableView.isScrollEnabled = true
         refreshControl.isEnabled = true
+        bulkBar.isUserInteractionEnabled = true
     }
 
     /// なぞり選択の受け口は、一覧のスクロールと同時に指の動きを
@@ -1635,12 +1644,22 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     /// dragScrollSpeed(forDepth:) のとおりで、端そのものでは1秒に
     /// 420pt、指が端の外側まで出ればその1.5倍まで速くなる。
     @objc private func stepDragAutoScroll(_ link: CADisplayLink) {
-        guard dragAnchorRow != nil, let finger = dragFingerPoint else { return }
+        guard dragAnchorRow != nil else { return }
+        // 指の位置は、刻みのたびに受け口から取り直す。指の動きの
+        // 通知だけを頼りにすると、通知が止まったときに最後の位置で
+        // 固まって、同じドラッグの間は流れが再開しなくなるため。
+        if dragSelectionGesture.state == .began
+            || dragSelectionGesture.state == .changed {
+            dragFingerPoint = dragSelectionGesture.location(in: view)
+        }
+        guard let finger = dragFingerPoint else { return }
         defer { dragScrollLastTime = link.timestamp }
         guard dragScrollLastTime > 0 else { return }
         let dt = min(link.timestamp - dragScrollLastTime, 0.05)
-        // 一覧の見えている範囲 (画面全体での座標)。下端は、選択中の
-        // 操作帯に隠れる分を差し引く。
+        // 一覧の見えている範囲 (画面全体での座標)。下の端は操作帯の
+        // 上端に置く。指が操作帯の上にあるときは「一番下の端に
+        // いる」扱いで、深さが端の幅を超えた分だけ速くなり、
+        // 流れは止まらない。
         let visibleTop = tableView.frame.minY
         let visibleBottom = tableView.frame.maxY
             - (isSelectionMode ? Self.bulkBarHeight : 0)
