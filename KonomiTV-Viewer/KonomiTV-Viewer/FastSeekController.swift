@@ -41,6 +41,15 @@ final class FastSeekController {
         self.direction = direction
     }
 
+    deinit {
+        // 呼び出し側が片付けを忘れても、タイマーが残り続けないための受け口。
+        // 音を消したまま終わらないよう、高速シーク中なら音も元に戻す。
+        timer?.invalidate()
+        if isFastSeeking {
+            setMutedHandler?(wasMutedBefore)
+        }
+    }
+
     /// ボタンへ長押しの判定を取り付ける。
     func attach(to button: UIButton) {
         let recognizer = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))

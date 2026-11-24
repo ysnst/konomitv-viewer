@@ -341,7 +341,9 @@ final class SceneListViewController: UIViewController {
     /// タイル画像から場面1枚を切り出す。材料が無ければ nil。
     private func chapterImage(tileIndex: Int) -> UIImage? {
         guard let sprite = spriteCGImage,
-              let tile = program.recorded_video.thumbnail_info?.tile else { return nil }
+              let tile = program.recorded_video.thumbnail_info?.tile,
+              tile.column_count > 0, tile.tile_width > 0, tile.tile_height > 0
+        else { return nil }
         let column = tileIndex % tile.column_count
         let row = tileIndex / tile.column_count
         let rect = CGRect(
@@ -369,9 +371,18 @@ final class SceneListViewController: UIViewController {
         let videoID = program.id
         Task { [weak self] in
             guard let self else { return }
-            _ = await APIClient.shared.deleteBookmark(videoID: videoID, bookmarkID: id)
+            let deleted = await APIClient.shared.deleteBookmark(videoID: videoID, bookmarkID: id)
             self.bookmarks = await APIClient.shared.fetchBookmarks(videoID: videoID)
             self.rebuildContent()
+            if !deleted {
+                // 失敗が分からないと「押したのに消えない」ままになるため知らせる。
+                let alert = UIAlertController(
+                    title: nil,
+                    message: "しおりを削除できませんでした。接続先とネットワークを確認してください。",
+                    preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: "OK", style: .default))
+                self.present(alert, animated: true)
+            }
         }
     }
 

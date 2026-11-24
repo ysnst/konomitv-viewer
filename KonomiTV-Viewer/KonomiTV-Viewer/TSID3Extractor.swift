@@ -44,9 +44,9 @@ final class TSID3Extractor {
     private var pmtPID: Int?
     /// PMT から読んだ映像の PID。
     private var videoPID: Int?
-    /// 節 (PAT / PMT) の読みかけの控えと、その PID。
-    private var sectionBuffer = Data()
-    private var sectionPID: Int?
+    /// 節 (PAT / PMT) の読みかけの控え。PAT と PMT で別々に持つ
+    /// (1つを共用すると、途中で割り込んだ節と混ざって読み違えるため)。
+    private var sectionBuffers: [Int: Data] = [:]
     /// 字幕の PES の読みかけ (次の PES が始まるか finish で確定する)。
     private var captionPES = Data()
     private var captionPESStarted = false
@@ -70,6 +70,13 @@ final class TSID3Extractor {
         }
         var offset = 0
         while offset + 188 <= data.count {
+            // 途中で同期がずれたら、次の同期位置まで読み飛ばして立て直す。
+            if data[offset] != 0x47 {
+                let rest = Data(data[offset...])
+                guard let skip = findSync(in: rest) else { offset = data.count; break }
+                offset += skip
+                continue
+            }
             handlePacket(Data(data[offset..<(offset + 188)]))
             offset += 188
         }
@@ -96,7 +103,8 @@ final class TSID3Extractor {
 
     private func findSync(in data: Data) -> Int? {
         guard !data.isEmpty else { return nil }
-        if data[0] == 0x47 { return 0 }
+        // 先頭の 0x47 でも、188バイト先にも同期バイトがあることを
+        // 確かめてから採用する (本物でない 0x47 を掴まないため)。
         var index = 0
         while index < data.count {
             if data[index] == 0x47 {
@@ -165,25 +173,25 @@ final class TSID3Extractor {
 
     /// 節 (PAT / PMT) は短いので、長さがそろうまでつないでから渡す。
     private func feedSection(pid: Int, pusi: Bool, payload: Data, onComplete: (Data) -> Void) {
+        var buffer = sectionBuffers[pid] ?? Data()
         if pusi {
-            sectionPID = pid
-            sectionBuffer = Data()
+            buffer = Data()
             // 先頭は pointer_field (その長さだけ飛ばした所から節が始まる)。
-            guard !payload.isEmpty else { return }
+            guard !payload.isEmpty else { sectionBuffers[pid] = buffer; return }
             let pointer = Int(payload[0])
-            guard payload.count > 1 + pointer else { return }
-            sectionBuffer = Data(payload[(1 + pointer)...])
-        } else {
-            guard sectionPID == pid else { return }
-            sectionBuffer.append(payload)
+            guard payload.count > 1 + pointer else { sectionBuffers[pid] = buffer; return }
+            buffer = Data(payload[(1 + pointer)...])
         }
-        guard sectionBuffer.count >= 3 else { return }
-        let sectionLength = (Int(sectionBuffer[1] & 0x0F) << 8) | Int(sectionBuffer[2])
+        // pusi でない包みは、読みかけがある PID のときだけつなぐ。
+        if !pusi && sectionBuffers[pid] == nil { return }
+        if !pusi { buffer.append(payload) }
+        sectionBuffers[pid] = buffer
+        guard buffer.count >= 3 else { return }
+        let sectionLength = (Int(buffer[1] & 0x0F) << 8) | Int(buffer[2])
         let total = 3 + sectionLength
-        if sectionBuffer.count >= total {
-            let section = Data(sectionBuffer[..<total])
-            sectionBuffer = Data()
-            sectionPID = nil
+        if buffer.count >= total {
+            let section = Data(buffer[..<total])
+            sectionBuffers[pid] = nil
             onComplete(section)
         }
     }
@@ -191,7 +199,7 @@ final class TSID3Extractor {
     // MARK: - PAT / PMT の読み解き
 
     private func parsePAT(_ section: Data) {
-        guard pmtPID == nil, section.count >= 12, section[0] == 0x00 else { return }
+        guard section.count >= 12, section[0] == 0x00 else { return }
         let sectionLength = (Int(section[1] & 0x0F) << 8) | Int(section[2])
         let entriesEnd = min(section.count, 3 + sectionLength - 4)  // 末尾の CRC を除く
         var offset = 8
@@ -199,7 +207,12 @@ final class TSID3Extractor {
             let programNumber = (Int(section[offset]) << 8) | Int(section[offset + 1])
             let pid = (Int(section[offset + 2] & 0x1F) << 8) | Int(section[offset + 3])
             if programNumber != 0 {
-                pmtPID = pid
+                // 構成が変わったら、新しい PMT に合わせて映像の PID も
+                // 決め直す (一度決めたら更新しない、をやめる)。
+                if pmtPID != pid {
+                    pmtPID = pid
+                    videoPID = nil
+                }
                 return
             }
             offset += 4
@@ -207,7 +220,7 @@ final class TSID3Extractor {
     }
 
     private func parsePMT(_ section: Data) {
-        guard videoPID == nil, section.count >= 12, section[0] == 0x02 else { return }
+        guard section.count >= 12, section[0] == 0x02 else { return }
         let sectionLength = (Int(section[1] & 0x0F) << 8) | Int(section[2])
         let entriesEnd = min(section.count, 3 + sectionLength - 4)
         let programInfoLength = (Int(section[10] & 0x0F) << 8) | Int(section[11])

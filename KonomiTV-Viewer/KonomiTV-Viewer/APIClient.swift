@@ -83,6 +83,15 @@ final class APIClient {
         session = URLSession(configuration: config, delegate: authDelegate, delegateQueue: nil)
     }
 
+    /// URL のパスやクエリへ埋め込む値を、区切りの記号 (? # / & = 等) が
+    /// そのまま解釈されないよう逃がす。ID は通常、数字や英字だけだが、
+    /// 想定外の値が来ても URL の形が壊れないようにするための守り。
+    static func escapedURLComponent(_ value: String) -> String {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
     private func url(forPath path: String) -> URL? {
         guard let base = SettingsStore.shared.baseURL else { return nil }
         guard let url = URL(string: base.absoluteString + path) else { return nil }
@@ -181,7 +190,7 @@ final class APIClient {
     /// 成功したら true を返す。
     func deleteBookmark(videoID: Int, bookmarkID: String) async -> Bool {
         guard let request = try? request(
-            forPath: "/api/videos/\(videoID)/bookmarks/\(bookmarkID)", method: "DELETE")
+            forPath: "/api/videos/\(videoID)/bookmarks/\(Self.escapedURLComponent(bookmarkID))", method: "DELETE")
         else { return false }
         guard let (_, response) = try? await session.data(for: request),
               let http = response as? HTTPURLResponse else { return false }
@@ -345,9 +354,29 @@ final class APIClient {
         return try JSONDecoder().decode(ProtectionState.self, from: data)
     }
 
+    /// 切り替え中の録画 ID (同じ録画への切り替えが重なって、両方が同じ
+    /// 現在値を読んでしまうのを防ぐ)。
+    private var protectionTogglesInFlight: Set<Int> = []
+    private let protectionToggleLock = NSLock()
+
     /// 保護状態を切り替えて、切り替え後の状態を返す (管理者ログイン必須)。
     /// epgstation_id は取得した値をそのまま返す (管理外の録画では null)。
     func toggleProtection(videoID: Int) async throws -> Bool {
+        // 同じ録画への切り替えが実行中なら、終わるまで待ってから
+        // 現在値を取り直す (重なると2回切り替えても1回分しか変わらない)。
+        while true {
+            protectionToggleLock.lock()
+            let busy = protectionTogglesInFlight.contains(videoID)
+            if !busy { protectionTogglesInFlight.insert(videoID) }
+            protectionToggleLock.unlock()
+            if !busy { break }
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+        defer {
+            protectionToggleLock.lock()
+            protectionTogglesInFlight.remove(videoID)
+            protectionToggleLock.unlock()
+        }
         let current = try await fetchProtection(videoID: videoID)
         if current.enabled == false {
             throw APIError.protectionUnavailable
@@ -518,14 +547,14 @@ final class APIClient {
 
     func playlistURL(videoID: Int, quality: String, profile: PlaybackProfile, sessionID: String) -> URL? {
         let apiQuality = SettingsStore.shared.apiQuality(base: quality, media: .video, profile: profile)
-        return url(forPath: "/api/streams/video/\(videoID)/\(apiQuality)/playlist?session_id=\(sessionID)")
+        return url(forPath: "/api/streams/video/\(videoID)/\(apiQuality)/playlist?session_id=\(Self.escapedURLComponent(sessionID))")
     }
 
     /// 再生中、定期的に呼んでセッションを維持する (サーバー側の分割ファイル生成を止めないため)。
     func keepAlive(videoID: Int, quality: String, profile: PlaybackProfile, sessionID: String) async {
         let apiQuality = SettingsStore.shared.apiQuality(base: quality, media: .video, profile: profile)
         guard let request = try? request(
-            forPath: "/api/streams/video/\(videoID)/\(apiQuality)/keep-alive?session_id=\(sessionID)",
+            forPath: "/api/streams/video/\(videoID)/\(apiQuality)/keep-alive?session_id=\(Self.escapedURLComponent(sessionID))",
             method: "PUT"
         ) else { return }
         _ = try? await session.data(for: request)
@@ -831,14 +860,14 @@ final class APIClient {
 
     func liveStreamURL(displayChannelID: String, quality: String, profile: PlaybackProfile) -> URL? {
         let apiQuality = SettingsStore.shared.apiQuality(base: quality, media: .tv, profile: profile)
-        return url(forPath: "/api/streams/live/\(displayChannelID)/\(apiQuality)/mpegts")
+        return url(forPath: "/api/streams/live/\(Self.escapedURLComponent(displayChannelID))/\(apiQuality)/mpegts")
     }
 
     /// データ放送の材料 (PSI/SI アーカイブデータ) の口。
     /// 映像とは別の流れで、番組情報とデータ放送の中身だけが届き続ける。
     func psiArchivedDataURL(displayChannelID: String, quality: String, profile: PlaybackProfile) -> URL? {
         let apiQuality = SettingsStore.shared.apiQuality(base: quality, media: .tv, profile: profile)
-        return url(forPath: "/api/streams/live/\(displayChannelID)/\(apiQuality)/psi-archived-data")
+        return url(forPath: "/api/streams/live/\(Self.escapedURLComponent(displayChannelID))/\(apiQuality)/psi-archived-data")
     }
 
     // MARK: - AVPlayer 用
@@ -1009,7 +1038,11 @@ final class WatchedHistorySync {
                 } else if registerIfNeeded {
                     let maxCount = (settings["video_watched_history_max_count"] as? NSNumber)?.intValue
                         ?? defaultMaxCount
-                    if history.count >= maxCount, !history.isEmpty {
+                    // 上限が 0 のときは追加しない (空の履歴に1件増えてしまう)。
+                    guard maxCount > 0 else { return }
+                    // 上限まで戻るよう、はみ出しの分だけ古いものから落とす
+                    // (1件だけ落とすと、はみ出しが大きいときに上限へ戻らない)。
+                    while history.count >= maxCount, !history.isEmpty {
                         var oldest = 0
                         for i in history.indices {
                             let created = (history[i]["created_at"] as? NSNumber)?.doubleValue ?? 0

@@ -210,8 +210,12 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
 
     /// 履歴の ID を取り直してから、指定ページの番組を取る。
     /// 同期が効いていないときは通信せず、案内だけを出す。
+    /// 読み込み中に来た読み直しの控え (捨てず、終わったあとで行う)。
+    private var pendingReloadPage: Int?
+
     private func reloadHistory(page: Int) {
         guard !isLoading else {
+            pendingReloadPage = page
             refreshControl.endRefreshing()
             return
         }
@@ -226,6 +230,7 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
             updatePagination()
             return
         }
+        failedLogoIDs.removeAll()
         isLoading = true
         updatePagination()
         Task { [weak self] in
@@ -280,6 +285,10 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
         isLoading = false
         refreshControl.endRefreshing()
         updatePagination()
+        if let pending = pendingReloadPage {
+            pendingReloadPage = nil
+            reloadHistory(page: pending)
+        }
     }
 
     /// ページ送りから指定されたページへ移る。ID の並びは取り直さず、
@@ -436,6 +445,7 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
+        guard programs.indices.contains(indexPath.row) else { return }
         let program = programs[indexPath.row]
         let player = PlayerViewController(program: program)
         navigationController?.pushViewController(player, animated: true)
@@ -448,6 +458,7 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
         contextMenuConfigurationForRowAt indexPath: IndexPath,
         point: CGPoint
     ) -> UIContextMenuConfiguration? {
+        guard programs.indices.contains(indexPath.row) else { return nil }
         let program = programs[indexPath.row]
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             var actions: [UIMenuElement] = []

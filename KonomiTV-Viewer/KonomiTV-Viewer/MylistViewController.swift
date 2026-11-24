@@ -304,8 +304,14 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
     /// refreshSettings が false のときは、設定の取り直しをせず手元の現在値で
     /// 組み立てる (この画面で削除した直後用。削除の保存がサーバーへ届く前に
     /// 取り直すと、消したはずの登録が戻って見えるため)。
+    /// 読み込み中に来た読み直しの控え (捨てず、終わったあとで行う)。
+    private var pendingReload: (page: Int, refreshSettings: Bool)?
+
     private func reloadMylist(page: Int, refreshSettings: Bool = true) {
         guard !isLoading else {
+            // 操作後の反映のための読み直しが、別の読み込み中というだけで
+            // 捨てられて画面が古いまま残らないよう、控えておく。
+            pendingReload = (page, refreshSettings)
             refreshControl.endRefreshing()
             return
         }
@@ -321,6 +327,7 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
             updateSortRow()
             return
         }
+        failedLogoIDs.removeAll()
         isLoading = true
         updatePagination()
         Task { [weak self] in
@@ -391,6 +398,10 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
         refreshControl.endRefreshing()
         updatePagination()
         updateSortRow()
+        if let pending = pendingReload {
+            pendingReload = nil
+            reloadMylist(page: pending.page, refreshSettings: pending.refreshSettings)
+        }
     }
 
     /// ページ送りから指定されたページへ移る。登録の並びは取り直さず、
@@ -547,6 +558,7 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
+        guard programs.indices.contains(indexPath.row) else { return }
         let program = programs[indexPath.row]
         let player = PlayerViewController(program: program)
         navigationController?.pushViewController(player, animated: true)
@@ -559,6 +571,7 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
         contextMenuConfigurationForRowAt indexPath: IndexPath,
         point: CGPoint
     ) -> UIContextMenuConfiguration? {
+        guard programs.indices.contains(indexPath.row) else { return nil }
         let program = programs[indexPath.row]
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             var actions: [UIMenuElement] = []

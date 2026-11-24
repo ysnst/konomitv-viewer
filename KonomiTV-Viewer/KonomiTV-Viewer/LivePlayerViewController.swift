@@ -2907,7 +2907,7 @@ extension LivePlayerViewController: UITableViewDataSource, UITableViewDelegate {
             // 無理に読まず、空の行を返す (落ちないための守り)。
             guard channelGroups.indices.contains(selectedChannelGroupIndex),
                   channelGroups[selectedChannelGroupIndex].channels.indices.contains(indexPath.row)
-            else { return cell }
+            else { return UITableViewCell() }
             let target = channelGroups[selectedChannelGroupIndex].channels[indexPath.row]
             let isPinned = SyncedSettingsStore.shared.current.pinnedChannelIDs.contains(target.id)
             cell.configure(with: target, isPinned: isPinned)
@@ -2916,7 +2916,9 @@ extension LivePlayerViewController: UITableViewDataSource, UITableViewDelegate {
         }
         let cell = tableView.dequeueReusableCell(
             withIdentifier: LiveCommentListCell.reuseID, for: indexPath) as! LiveCommentListCell
-        guard liveComments.indices.contains(indexPath.row) else { return cell }
+        // 使い回しのセルをそのまま返すと前の行の表示が残るため、
+        // 対応が合わないときは空のセルを返す。
+        guard liveComments.indices.contains(indexPath.row) else { return UITableViewCell() }
         let comment = liveComments[indexPath.row]
         cell.configure(with: comment)
         cell.onMenu = { [weak self] in self?.showCommentMenu(for: comment) }

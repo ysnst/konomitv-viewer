@@ -871,6 +871,11 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         searchField.resignFirstResponder()
         storageTimer?.invalidate()
         storageTimer = nil
+        // なぞり選択中の自動スクロールの刻みが残らないよう、離れるときに
+        // 止める (指を離さずに画面遷移が重なった場合の守り)。
+        if dragScrollLink != nil {
+            finishDragSelection()
+        }
         // 離れる前に、いまのスクロール位置を目印として保存する
         // (Web 版の画面を離れるときの保存と同じ)。
         scrollRestoreTimer?.invalidate()
@@ -906,8 +911,9 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         // 接続先が変わっていたら、前の接続先のロゴは使い回さない (生放送一覧と同じ)。
         if SettingsStore.shared.baseURL?.absoluteString != loadedBaseURLString {
             logoCache.removeAllObjects()
-            failedLogoIDs.removeAll()
         }
+        // 一度失敗した局のロゴも、読み直しのたびに試し直す。
+        failedLogoIDs.removeAll()
         // 最初の読み込みだけは、保存しておいたページを復元する。
         // それ以外 (引っ張って更新など) は、フィルタと並び順の状態を保ったまま
         // 1ページ目に戻る (Web 版と同じ)。
@@ -1799,6 +1805,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     ) -> UIContextMenuConfiguration? {
         // 選択中は長押しメニューを出さない (タップでの付け外しに一本化する)。
         guard !isSelectionMode else { return nil }
+        guard programs.indices.contains(indexPath.row) else { return nil }
         let program = programs[indexPath.row]
         let isAdmin = isAdminUser
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in

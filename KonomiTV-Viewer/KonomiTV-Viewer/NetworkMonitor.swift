@@ -14,18 +14,27 @@ final class NetworkMonitor {
     static let shared = NetworkMonitor()
 
     private let monitor = NWPathMonitor()
+    /// 読み書きの同期用 (書き込みは見張り用のキューから、読み取りは
+    /// 主にメインスレッドから行われるため)。
+    private let stateLock = NSLock()
+    private var storedIsCellular = false
     /// モバイル回線でつながっているか。経路がまだ取れていない間は false
     /// (Wi-Fi 扱い。Web 版でも判定できない環境は Wi-Fi 扱い)。
-    /// 書き込みは見張り用のキューから、読み取りは主にメインスレッドから。
-    /// 真偽値1つの受け渡しなので、そのまま読む形にしている。
-    private(set) var isCellular = false
+    var isCellular: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return storedIsCellular
+    }
 
     private init() {
         monitor.pathUpdateHandler = { [weak self] path in
             // Web 版の「モバイル回線以外は全部 Wi-Fi 扱い」に合わせ、
             // cellular のときだけモバイル回線側、それ以外は Wi-Fi 側に寄せる
             // (Wi-Fi が無く有線だけのときも Wi-Fi 側)。
-            self?.isCellular = path.usesInterfaceType(.cellular)
+            guard let self else { return }
+            self.stateLock.lock()
+            self.storedIsCellular = path.usesInterfaceType(.cellular)
+            self.stateLock.unlock()
         }
         monitor.start(queue: DispatchQueue(
             label: "jp.tatsuya0902.konomitv.viewer.network-monitor"))

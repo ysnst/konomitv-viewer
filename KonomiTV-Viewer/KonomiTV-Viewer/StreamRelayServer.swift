@@ -404,6 +404,16 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
         for (key, value) in SettingsStore.shared.serverAuthHeaders {
             request.setValue(value, forHTTPHeaderField: key)
         }
+        // データ放送の双方向の送信 (POST) は、サーバー側の代理の口宛てで
+        // ログインが要る場合があるため、ログイン済みなら通常の通信と
+        // 同じくログインの合言葉を優先して付ける。再生 (GET) の経路は
+        // ログイン不要で通ることが確かめられているため、今までどおり
+        // 選んだ認証方式の合言葉だけにする。
+        if method == "POST", SettingsStore.shared.isLoggedIn {
+            request.setValue(
+                "Bearer \(SettingsStore.shared.accessToken)",
+                forHTTPHeaderField: "Authorization")
+        }
         // 範囲指定はそのまま元のサーバーへ渡す。
         if let rangeLine = lines.first(where: { $0.lowercased().hasPrefix("range:") }) {
             let value = String(rangeLine.dropFirst("range:".count))

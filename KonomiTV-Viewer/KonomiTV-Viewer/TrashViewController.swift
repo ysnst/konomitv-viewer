@@ -530,6 +530,8 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
     /// ゴミ箱の中身を取り直す。未ログインのときは通信せず案内だけ出す
     /// (ゴミ箱の口はログイン必須)。
     private func reloadTrash() {
+        // ロゴの取り直し: 一度失敗した局も、読み直しのたびに試し直す。
+        failedLogoIDs.removeAll()
         // なぞり選択の最中は読み直さない (並びが入れ替わると
         // 選択の範囲が崩れるため)。更新の表示だけ止めて戻る。
         guard !isDragSelecting else {

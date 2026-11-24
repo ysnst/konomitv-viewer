@@ -3062,6 +3062,10 @@ final class PlayerViewController: UIViewController {
                 if let nextProgram = await APIClient.shared.fetchVideo(videoID: nextID) {
                     self.navigationController?.pushViewController(
                         PlayerViewController(program: nextProgram), animated: true)
+                } else {
+                    // 取得に失敗したら、黙って区間が飛んだように見えない
+                    // よう知らせる (順番はすでに次へ進んでいる)。
+                    self.showPlayerNotice("次の録画を取り込めなかったため、その区間を飛ばしました")
                 }
             }
         }
@@ -3348,6 +3352,9 @@ final class PlayerViewController: UIViewController {
             if let cropped = sprite.cropping(to: rect) {
                 seekPreviewImageView.image = UIImage(
                     cgImage: cropped, scale: spriteImage?.scale ?? 1, orientation: .up)
+            } else {
+                // 切り出せなかったら、前のタイルの映像が残らないよう消す。
+                seekPreviewImageView.image = nil
             }
         }
         seekPreviewImageView.isHidden = seekPreviewImageView.image == nil
@@ -3715,6 +3722,11 @@ extension PlayerViewController: UITableViewDataSource, UITableViewDelegate {
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        // 行を選ぶ処理側と同じく、範囲の確認をしてから取り出す
+        // (配列の差し替えと表の更新がずれたときに落ちないため)。
+        guard jikkyoComments.indices.contains(indexPath.row) else {
+            return UITableViewCell()
+        }
         let cell = tableView.dequeueReusableCell(
             withIdentifier: CommentListCell.reuseIdentifier, for: indexPath) as! CommentListCell
         let comment = jikkyoComments[indexPath.row]

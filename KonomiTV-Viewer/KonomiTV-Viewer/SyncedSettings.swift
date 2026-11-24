@@ -376,7 +376,15 @@ final class SyncedSettingsStore {
         // この端末が一度でも同期していたら、同期を切ったのは意図的と
         // みなして何もしない。
         guard store.lastSyncedAt == 0 else { return }
-        guard let settings = try? await APIClient.shared.fetchClientSettings() else { return }
+        guard let settings = try? await APIClient.shared.fetchClientSettings() else {
+            // 一時的な通信失敗で二度と試さなくならないよう、試した印を
+            // 戻す (次の機会に試し直せる。アカウントが変わっていたら触らない)。
+            if store.accessToken == token { lastAdoptAttemptedToken = "" }
+            return
+        }
+        // 取得の途中でログアウトやアカウント切り替えがあったら、
+        // 前の状態で取ってきた設定では上書きしない。
+        guard store.isLoggedIn, store.accessToken == token else { return }
         // サーバー側に保存済みの設定が無ければ何もしない。
         let serverSyncedAt = (settings["last_synced_at"] as? NSNumber)?.doubleValue ?? 0
         guard serverSyncedAt > 0 else { return }
@@ -810,10 +818,23 @@ final class SyncedSettingsStore {
 
     /// キーワードとの照合。正規化がオンのときは、Web 版と同じく
     /// 英数字・記号の大文字小文字と全角半角の違いを無視して比べる。
+    /// 正規表現の作り直しを避けるための控え (式の文字列が鍵)。
+    private static var compiledRegexCache: [String: NSRegularExpression] = [:]
+    private static var failedRegexPatterns: Set<String> = []
+
     private static func matches(_ text: String, keyword: MutedCommentKeyword, normalize: Bool) -> Bool {
         if keyword.match == "regex" {
             // 正規表現はそのままの式で照合する (壊れた式は無視する)。
-            guard let regex = try? NSRegularExpression(pattern: keyword.pattern) else {
+            // コメントごとに作り直すと重いため、作ったものは控えて使い回す。
+            if failedRegexPatterns.contains(keyword.pattern) { return false }
+            let regex: NSRegularExpression
+            if let cached = compiledRegexCache[keyword.pattern] {
+                regex = cached
+            } else if let made = try? NSRegularExpression(pattern: keyword.pattern) {
+                compiledRegexCache[keyword.pattern] = made
+                regex = made
+            } else {
+                failedRegexPatterns.insert(keyword.pattern)
                 return false
             }
             let range = NSRange(text.startIndex..., in: text)

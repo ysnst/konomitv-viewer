@@ -210,9 +210,12 @@ final class CommentSearchViewController: UIViewController {
             summaryLabel.text = "コメント \(comments.count) 件 (キーワードを入力すると絞り込めます)"
             filteredComments = []
         } else {
-            filteredComments = Array(
-                comments.filter { $0.text.lowercased().contains(keyword) }.prefix(100))
-            summaryLabel.text = "\(filteredComments.count) 件ヒット (クリックでその場面へ移動)"
+            let matched = comments.filter { $0.text.lowercased().contains(keyword) }
+            filteredComments = Array(matched.prefix(100))
+            // 100件を超えたら、ちょうど100件で終わったように見せない。
+            summaryLabel.text = matched.count > 100
+                ? "100 件を超えるヒットがあります (先頭の 100 件を表示、クリックでその場面へ移動)"
+                : "\(matched.count) 件ヒット (クリックでその場面へ移動)"
         }
         emptyLabel.isHidden = keyword.isEmpty || comments.isEmpty || !filteredComments.isEmpty
         layoutSummaryHeader()

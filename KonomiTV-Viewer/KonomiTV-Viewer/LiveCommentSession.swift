@@ -77,8 +77,9 @@ enum NicoCommentCommand {
         var size = "medium"
         guard let mail else { return (colorHex, type, size) }
         // "184" (匿名の指定) は読み解きの対象から外す (Web 版と同じ)。
-        let commands = mail.replacingOccurrences(of: "184", with: "")
-            .split(separator: " ")
+        // ただし外すのは単独の語だけにする。文字列の一部として含まれる
+        // 場合 (色の指定 "#123184" 等) まで取り除くと、指定が壊れるため。
+        let commands = mail.split(separator: " ").filter { $0 != "184" }
         for command in commands {
             let token = String(command)
             if let hex = colorTable[token] {
@@ -476,9 +477,14 @@ final class LiveCommentSession {
         if (chat["yourpost"] as? NSNumber)?.intValue == 1, initialCommentsReceived {
             return
         }
-        if let myID = myNiconicoUserID,
-           userID.replacingOccurrences(of: "nicolive:", with: "") == String(myID) {
-            return
+        if let myID = myNiconicoUserID {
+            // "nicolive:" は先頭の接頭辞としてだけ取り除いて比べる
+            // (ID の途中に同じ文字列があっても壊さないため)。
+            var strippedID = userID
+            if strippedID.hasPrefix("nicolive:") {
+                strippedID = String(strippedID.dropFirst("nicolive:".count))
+            }
+            if strippedID == String(myID) { return }
         }
         let parsed = NicoCommentCommand.parse(chat["mail"] as? String)
         // ミュート設定の絞り込み (録画のコメントと同じものを使う)。
@@ -510,9 +516,19 @@ final class LiveCommentSession {
             displayTime: initialCommentsReceived ? nowProvider() + delayProvider() : 0)
         if !initialCommentsReceived {
             initialBuffer.append(comment)
+            // 終わりの合図が来ない応答でも際限なく溜めないよう、
+            // 上限を超えたら古いものから落とす。
+            if initialBuffer.count > 5000 {
+                initialBuffer.removeFirst(initialBuffer.count - 5000)
+            }
             return
         }
         deliveryQueue.append(comment)
+        // 一時停止が長く続いても際限なく溜めないよう、上限を超えたら
+        // 古いものから落とす。
+        if deliveryQueue.count > 1000 {
+            deliveryQueue.removeFirst(deliveryQueue.count - 1000)
+        }
         startDeliveryTimerIfNeeded()
     }
 

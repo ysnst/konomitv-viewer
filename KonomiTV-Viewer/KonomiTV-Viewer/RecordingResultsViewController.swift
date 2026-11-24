@@ -142,6 +142,9 @@ final class RecordingResultsViewController: UIViewController, UITableViewDataSou
             } catch {
                 if self.results.isEmpty {
                     self.statusLabel.text = "読み込めませんでした。\n接続先とネットワークを確認してください。"
+                } else {
+                    // 一覧が出ている状態での失敗も、古い一覧のまま黙らない。
+                    self.showFailureNotice("読み直しに失敗しました。前の一覧を表示しています。")
                 }
             }
             self.isLoading = false
@@ -168,14 +171,25 @@ final class RecordingResultsViewController: UIViewController, UITableViewDataSou
     /// (開き先でも番組情報の表示に材料が要るため)。
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        guard let recordedID = results[indexPath.row].recorded_id else { return }
+        guard results.indices.contains(indexPath.row),
+              let recordedID = results[indexPath.row].recorded_id else { return }
         Task { [weak self] in
             guard let self else { return }
             if let program = await APIClient.shared.fetchVideo(videoID: recordedID) {
                 self.navigationController?.pushViewController(
                     PlayerViewController(program: program), animated: true)
+            } else {
+                self.showFailureNotice("録画の情報を取り込めませんでした。接続先とネットワークを確認してください。")
             }
         }
+    }
+
+    /// 失敗を短く知らせる (一覧が出ているとき用)。
+    private func showFailureNotice(_ message: String) {
+        guard presentedViewController == nil else { return }
+        let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
 }
 

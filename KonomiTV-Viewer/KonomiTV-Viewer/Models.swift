@@ -702,8 +702,26 @@ enum TimeFormat {
                   let whole = Range(match.range, in: result) else { continue }
             var calendar = Calendar(identifier: .gregorian)
             calendar.locale = Locale(identifier: "ja_JP")
-            let year = calendar.component(.year, from: Date())
-            guard let date = calendar.date(from: DateComponents(year: year, month: month, day: day)),
+            // 年の無い表記なので、いまの年・前年・翌年の候補のうち
+            // 今日に一番近い日付を選ぶ (年末年始をまたぐ表示で年を
+            // 取り違えないため)。2月29日のようにその年に無い日は、
+            // 日付の組み立て結果が入力と一致しないため候補から外れる。
+            let thisYear = calendar.component(.year, from: Date())
+            let now = Date()
+            var bestDate: Date?
+            for candidateYear in [thisYear - 1, thisYear, thisYear + 1] {
+                guard let candidate = calendar.date(
+                    from: DateComponents(year: candidateYear, month: month, day: day))
+                else { continue }
+                let parts = calendar.dateComponents([.month, .day], from: candidate)
+                guard parts.month == month, parts.day == day else { continue }
+                if let current = bestDate,
+                   abs(candidate.timeIntervalSince(now)) >= abs(current.timeIntervalSince(now)) {
+                    continue
+                }
+                bestDate = candidate
+            }
+            guard let date = bestDate,
                   let previous = calendar.date(byAdding: .day, value: -1, to: date) else { continue }
             let pc = calendar.dateComponents([.month, .day, .weekday], from: previous)
             let weekdays = ["日", "月", "火", "水", "木", "金", "土"]
