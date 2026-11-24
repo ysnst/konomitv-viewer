@@ -90,6 +90,20 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
     /// なぞり始める前に各項目が選択されていたかどうか。範囲から
     /// 外れたときに、なぞる前の状態へ戻すために持つ。
     private var dragBaseline: [Int: Bool] = [:]
+    /// なぞり選択専用の指の動きの受け口。一覧のスクロールとは
+    /// 切り離してあり、なぞっている間は一覧を指に付いて動かさず、
+    /// 指が画面の端に来たときだけ自動で少しずつ流す。
+    private let dragSelectionGesture = UIPanGestureRecognizer()
+    /// 指の位置 (画面全体での座標)。端に近いかの判定に使う。
+    private var dragFingerPoint: CGPoint?
+    /// 端での自動スクロールを進めるための、表示の刻み。
+    private var dragScrollLink: CADisplayLink?
+    private var dragScrollLastTime: CFTimeInterval = 0
+    /// 自動スクロールが効く端の幅と、最も速いときの速さ (1秒あたり)。
+    private static let dragEdgeLength: CGFloat = 72
+    private static let dragMaxScrollSpeed: CGFloat = 280
+    /// なぞり選択の最中かどうか。
+    private var isDragSelecting: Bool { dragAnchorRow != nil }
     /// まとめて操作の実行中かどうか (二重実行の防止)。
     private var isBulkRunning = false
     /// 保持期間 (日)。取得前はサーバーの既定値 30 で仮置きし、
@@ -137,10 +151,12 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
         refreshControl.tintColor = AppPalette.accent
         refreshControl.addTarget(self, action: #selector(refresh), for: .valueChanged)
         tableView.refreshControl = refreshControl
-        // 選択中になぞって連続で選べるよう、一覧のスクロール操作に
-        // なぞり選択の処理を相乗りさせる (スクロール自体は今までどおり)。
-        tableView.panGestureRecognizer.addTarget(
+        // 選択中になぞって連続で選べるよう、なぞり選択専用の
+        // 指の動きの受け口を付ける。一覧自体のスクロールとは
+        // 切り離してある (handleDragSelection を参照)。
+        dragSelectionGesture.addTarget(
             self, action: #selector(handleDragSelection(_:)))
+        tableView.addGestureRecognizer(dragSelectionGesture)
         view.addSubview(tableView)
 
         statusLabel.textAlignment = .center
@@ -368,6 +384,12 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
     /// ゴミ箱の中身を取り直す。未ログインのときは通信せず案内だけ出す
     /// (ゴミ箱の口はログイン必須)。
     private func reloadTrash() {
+        // なぞり選択の最中は読み直さない (並びが入れ替わると
+        // 選択の範囲が崩れるため)。更新の表示だけ止めて戻る。
+        guard !isDragSelecting else {
+            refreshControl.endRefreshing()
+            return
+        }
         guard !isLoading else {
             refreshControl.endRefreshing()
             return
@@ -539,28 +561,100 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
     /// 選択中にカードへ触れたまま指を動かしたときの処理 (写真アプリの
     /// なぞって選択と同じ感覚)。指の下にある行と、なぞり始めの行の間の
     /// 範囲をまとめて選択／解除する。逆向きに戻れば、範囲から外れた分は
-    /// なぞる前の状態へ戻る。一覧のスクロールはスクロール側の操作が
-    /// そのまま担うので、指の動きに合わせて中身が流れ、止まっている
-    /// 指の下でも行が入れ替わって範囲が伸びる。
+    /// なぞる前の状態へ戻る。
+    ///
+    /// なぞっている間、一覧自体のスクロール (指に付いて動く動き) は
+    /// 止める。以前は一覧のスクロールに相乗りしていたため、指を動かすと
+    /// 一覧も一緒に動いて指の下の項目が変わらず、範囲が広げられな
+    /// かったうえ、指の下の行が境目で小刻みに切り替わって、表示が
+    /// 震えて見えた。今は指が項目の上を移動した分だけで範囲を広げ、
+    /// 画面の端に指を持っていったときだけ、端からの近さに応じた
+    /// 速さで一覧が少しずつ流れる (stepDragAutoScroll)。
     @objc private func handleDragSelection(_ gesture: UIPanGestureRecognizer) {
         switch gesture.state {
         case .began:
-            guard isSelectionMode, !isBulkRunning else { return }
+            guard isSelectionMode, !isBulkRunning, !isLoading else { return }
             guard let row = dragRow(at: gesture.location(in: tableView)) else { return }
             dragAnchorRow = row
             dragSelecting = !selectedIDs.contains(displayItems[row].program.id)
             dragRangeIDs = []
             dragBaseline = [:]
+            dragFingerPoint = gesture.location(in: view)
+            // 一覧が指に付いて動かないようにし、流れかけていた
+            // 勢いも止める。引っ張って更新も、最中は止める。
+            tableView.isScrollEnabled = false
+            tableView.setContentOffset(tableView.contentOffset, animated: false)
+            refreshControl.isEnabled = false
             applyDragSelection(toRow: row)
+            startDragAutoScroll()
         case .changed:
             guard isSelectionMode, dragAnchorRow != nil else { return }
+            dragFingerPoint = gesture.location(in: view)
             if let row = dragRow(at: gesture.location(in: tableView)) {
                 applyDragSelection(toRow: row)
             }
         default:
-            dragAnchorRow = nil
-            dragRangeIDs = []
-            dragBaseline = [:]
+            finishDragSelection()
+        }
+    }
+
+    /// なぞり選択を終える。一覧のスクロールと引っ張って更新を
+    /// 元に戻し、途中の控えを片付ける。
+    private func finishDragSelection() {
+        dragScrollLink?.invalidate()
+        dragScrollLink = nil
+        dragAnchorRow = nil
+        dragRangeIDs = []
+        dragBaseline = [:]
+        dragFingerPoint = nil
+        tableView.isScrollEnabled = true
+        refreshControl.isEnabled = true
+    }
+
+    /// 端での自動スクロールの刻みを始める。
+    private func startDragAutoScroll() {
+        dragScrollLink?.invalidate()
+        dragScrollLastTime = 0
+        let link = CADisplayLink(
+            target: self, selector: #selector(stepDragAutoScroll(_:)))
+        link.add(to: .main, forMode: .common)
+        dragScrollLink = link
+    }
+
+    /// 表示の刻みごとに、指が画面の端にあれば一覧を少し流す。
+    /// 端に近いほど速くなり、端から離れれば止まる。最も速いときでも
+    /// 1秒に数行分ほどに抑えてあるので、狙った行で止められる。
+    @objc private func stepDragAutoScroll(_ link: CADisplayLink) {
+        guard dragAnchorRow != nil, let finger = dragFingerPoint else { return }
+        defer { dragScrollLastTime = link.timestamp }
+        guard dragScrollLastTime > 0 else { return }
+        let dt = min(link.timestamp - dragScrollLastTime, 0.05)
+        // 一覧の見えている範囲 (画面全体での座標)。下端は、選択中の
+        // 操作帯に隠れる分を差し引く。
+        let visibleTop = tableView.frame.minY
+        let visibleBottom = tableView.frame.maxY
+            - (isSelectionMode ? Self.bulkBarHeight : 0)
+        var delta: CGFloat = 0
+        if finger.y < visibleTop + Self.dragEdgeLength {
+            let ratio = min(1, max(0,
+                (visibleTop + Self.dragEdgeLength - finger.y) / Self.dragEdgeLength))
+            delta = -Self.dragMaxScrollSpeed * ratio * ratio * CGFloat(dt)
+        } else if finger.y > visibleBottom - Self.dragEdgeLength {
+            let ratio = min(1, max(0,
+                (finger.y - (visibleBottom - Self.dragEdgeLength)) / Self.dragEdgeLength))
+            delta = Self.dragMaxScrollSpeed * ratio * ratio * CGFloat(dt)
+        }
+        guard delta != 0 else { return }
+        let minOffset = -tableView.contentInset.top
+        let maxOffset = max(minOffset,
+            tableView.contentSize.height + tableView.contentInset.bottom
+                - tableView.bounds.height)
+        let newY = min(maxOffset, max(minOffset, tableView.contentOffset.y + delta))
+        guard newY != tableView.contentOffset.y else { return }
+        tableView.contentOffset = CGPoint(x: tableView.contentOffset.x, y: newY)
+        // 流れた分、止まっている指の下の行が変わるので、範囲を取り直す。
+        if let row = dragRow(at: tableView.convert(finger, from: view)) {
+            applyDragSelection(toRow: row)
         }
     }
 
@@ -751,9 +845,7 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
     /// 選択中を終える。選んでいた内容は破棄する。
     private func exitSelectionMode() {
         isSelectionMode = false
-        dragAnchorRow = nil
-        dragRangeIDs = []
-        dragBaseline = [:]
+        finishDragSelection()
         selectedIDs = []
         selectButton.setTitle("選択する", for: .normal)
         updateControlsVisibility()
