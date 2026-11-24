@@ -46,6 +46,15 @@ final class HighlightReelStore {
         index = 0
     }
 
+    /// 次の区間を、キューを進めずに覗く。もう無ければ nil。
+    /// 別の録画の区間は、取り込めてから進めるかどうかを決めるために
+    /// 使う (先に進めてから取り込みに失敗すると、キューの指す録画と
+    /// 画面の録画が食い違ったまま止まってしまうため)。
+    var nextItem: Item? {
+        let next = index + 1
+        return next < items.count ? items[next] : nil
+    }
+
     /// 次の区間へ進む。進んだ先の区間を返し、もう無ければ nil を返す
     /// (その場合はキューも破棄する)。
     @discardableResult

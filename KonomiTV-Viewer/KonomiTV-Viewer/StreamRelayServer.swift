@@ -261,6 +261,12 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
     /// 生放送の字幕で、最後に知らせた先端の映像の時刻印。
     private var liveCaptionLastEdge: Int64?
     private var playlistBody = Data()
+    /// プレイリストの本文が上限を超えたかどうか。超えたら受け取りを
+    /// 止め、失敗として返す (際限なくメモリに溜め込まないため)。
+    private var playlistOverflow = false
+    /// プレイリスト本文の上限。通常のプレイリストは長くても
+    /// 数MBに収まるため、その何倍かを見込んだ大きさにしている。
+    private static let playlistBodyLimit = 16_000_000
     private var headSent = false
     private var finished = false
     /// 送り終わっていない量 (詰まり具合の目安)。受け取りを止める・再開する
@@ -315,7 +321,19 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
                     // 頭の後に同じ便で届いていた分は、本体の先頭として引き継ぐ。
                     self.requestBody = self.requestBuffer.subdata(in: headEnd.upperBound ..< self.requestBuffer.count)
                     self.requestBuffer = Data()
-                    self.expectedBodyLength = Self.contentLength(from: self.requestHead ?? "")
+                    // 本体の長さが読めない・大きすぎる要求は、長さを
+                    // 丸めて受け付けず、その場で断る。丸めて受けると、
+                    // 切り詰めた本体が元のサーバーへ渡ってしまうため。
+                    switch Self.parseContentLength(from: self.requestHead ?? "") {
+                    case .length(let length):
+                        self.expectedBodyLength = length
+                    case .invalid:
+                        self.respondSimple(status: 400)
+                        return
+                    case .tooLarge:
+                        self.respondSimple(status: 413)
+                        return
+                    }
                 } else {
                     self.requestBody.append(data)
                 }
@@ -338,19 +356,36 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
         }
     }
 
-    /// 要求の頭から、本体の長さ (Content-Length) を取り出す。無ければ 0。
-    /// 負の数や大きすぎる値は、そのまま使うと本体の取り出しで落ちたり
-    /// 際限なく受け続けたりするため、受け付ける範囲 (0〜概ね1MB) に収める。
-    private static func contentLength(from head: String) -> Int {
+    /// 本体の長さ (Content-Length) の読み取り結果。
+    private enum ContentLengthParse {
+        /// 正しく読めた長さ。
+        case length(Int)
+        /// 数字として読めない、負の数、食い違う値の重複など。
+        case invalid
+        /// 受け付ける上限 (概ね1MB) を超えている。
+        case tooLarge
+    }
+
+    /// 要求の頭から、本体の長さを取り出す。無ければ 0 として扱う。
+    /// 読めない値や大きすぎる値を丸めて受け付けると、切り詰めた本体を
+    /// 元のサーバーへ渡したり、際限なく受け続けたりするため、丸めずに
+    /// 呼び出し側で断ってもらう。
+    private static func parseContentLength(from head: String) -> ContentLengthParse {
+        var values: [String] = []
         for line in head.components(separatedBy: "\r\n") {
             let lower = line.lowercased()
             if lower.hasPrefix("content-length:") {
-                let value = Int(lower.dropFirst("content-length:".count)
-                    .trimmingCharacters(in: .whitespaces)) ?? 0
-                return min(max(value, 0), 1_000_000)
+                values.append(String(lower.dropFirst("content-length:".count))
+                    .trimmingCharacters(in: .whitespaces))
             }
         }
-        return 0
+        guard let first = values.first else { return .length(0) }
+        // 同じ値の重複は1つにまとめるが、食い違う値が混ざっていたら
+        // どちらが本当の長さか決められないので不正とする。
+        guard values.allSatisfy({ $0 == first }) else { return .invalid }
+        guard let value = Int(first), value >= 0 else { return .invalid }
+        if value > 1_000_000 { return .tooLarge }
+        return .length(value)
     }
 
     private func handleRequest(head: String, body: Data) {
@@ -481,7 +516,15 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         if isPlaylist {
+            // プレイリストは全部受けてから返すため、流す経路のような
+            // 送り量での絞りが効かない。本文の大きさに上限を設け、
+            // 超えたら受け取りを止める (異常な応答でメモリが
+            // 際限なく増えないようにするため)。
             playlistBody.append(data)
+            if playlistBody.count > Self.playlistBodyLimit {
+                playlistOverflow = true
+                task?.cancel()
+            }
             return
         }
         // 字幕の抜き取り: 区切りファイルの中身は、流すついでに読み取る。
@@ -518,6 +561,16 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
             reportLiveCaptionPackets(final: true)
         }
         if isPlaylist {
+            if playlistOverflow {
+                // 上限を超えたプレイリストは、本文が揃っていないので
+                // 書き換えて返さず、失敗として返す。
+                if !headSent {
+                    respondSimple(status: 502)
+                } else {
+                    finish()
+                }
+                return
+            }
             if error == nil, let http {
                 // 字幕の抜き取り: 区切りの長さの一覧を渡す
                 // (書き換え前の本文から読む)。
