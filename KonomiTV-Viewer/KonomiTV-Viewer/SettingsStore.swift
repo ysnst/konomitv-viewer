@@ -52,6 +52,7 @@ enum ServerAuthMethod: String {
     case none = "none"
     case cloudflareAccess = "cloudflare_access"
     case basic = "basic"
+    case customHeader = "custom_header"
 
     /// プルダウンに出す名前。
     var displayName: String {
@@ -59,6 +60,7 @@ enum ServerAuthMethod: String {
         case .none: return "なし"
         case .cloudflareAccess: return "Cloudflare Access (サービストークン)"
         case .basic: return "Basic認証"
+        case .customHeader: return "カスタムヘッダ"
         }
     }
 }
@@ -88,6 +90,8 @@ final class SettingsStore {
         static let cfClientSecret = "viewer_cf_client_secret"
         static let authMethod = "viewer_auth_method"
         static let basicUsername = "viewer_basic_username"
+        static let customHeaderName1 = "viewer_custom_header_name_1"
+        static let customHeaderName2 = "viewer_custom_header_name_2"
         static let quality = "viewer_quality"
         static let dataSaverMode = "viewer_data_saver_mode"
         static let username = "viewer_username"
@@ -200,6 +204,8 @@ final class SettingsStore {
         static let password = "konomi_password"
         static let accessToken = "konomi_access_token"
         static let basicPassword = "basic_auth_password"
+        static let customHeaderValue1 = "custom_header_value_1"
+        static let customHeaderValue2 = "custom_header_value_2"
     }
 
     private let defaults = UserDefaults.standard
@@ -1028,6 +1034,30 @@ final class SettingsStore {
         set { KeychainStore.setString(newValue, forKey: KeychainKey.basicPassword) }
     }
 
+    /// カスタムヘッダの名前 (1組目・2組目)。自作のリバースプロキシ等で
+    /// 独自の合言葉ヘッダを見ている環境向けで、名前は自由に決められる。
+    var customHeaderName1: String {
+        get { defaults.string(forKey: Key.customHeaderName1) ?? "" }
+        set { defaults.set(newValue, forKey: Key.customHeaderName1) }
+    }
+
+    var customHeaderName2: String {
+        get { defaults.string(forKey: Key.customHeaderName2) ?? "" }
+        set { defaults.set(newValue, forKey: Key.customHeaderName2) }
+    }
+
+    /// カスタムヘッダの値は合言葉なので、パスワードと同じく
+    /// キーチェーンに保存する (UserDefaults には置かない)。
+    var customHeaderValue1: String {
+        get { KeychainStore.string(forKey: KeychainKey.customHeaderValue1) ?? "" }
+        set { KeychainStore.setString(newValue, forKey: KeychainKey.customHeaderValue1) }
+    }
+
+    var customHeaderValue2: String {
+        get { KeychainStore.string(forKey: KeychainKey.customHeaderValue2) ?? "" }
+        set { KeychainStore.setString(newValue, forKey: KeychainKey.customHeaderValue2) }
+    }
+
     /// 接続先サーバーへの通信に付ける、認証のヘッダー。
     /// 選ばれている方式のものだけを返す (方式が違うヘッダーは付けない)。
     /// 値がそろっていない方式では何も付けない。
@@ -1043,6 +1073,16 @@ final class SettingsStore {
             guard !user.isEmpty, !pass.isEmpty else { return [:] }
             let credential = Data("\(user):\(pass)".utf8).base64EncodedString()
             return ["Authorization": "Basic \(credential)"]
+        case .customHeader:
+            // 名前と値がそろっている組だけを付ける (1組だけでもよい)。
+            var headers: [String: String] = [:]
+            for (name, value) in [(customHeaderName1, customHeaderValue1),
+                                  (customHeaderName2, customHeaderValue2)] {
+                let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmedName.isEmpty, !value.isEmpty else { continue }
+                headers[trimmedName] = value
+            }
+            return headers
         }
     }
 }
