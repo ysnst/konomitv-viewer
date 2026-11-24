@@ -217,7 +217,7 @@ final class JikkyoSettingsViewController: SettingsDetailViewController {
                 // 確認できなかっただけでは「未連携」とは言えない。
                 // 連携済みの人が不要な連携のやり直しを始めないよう、
                 // 失敗と分かる表示に分ける。
-                self?.niconicoState = .checkFailed
+                self.niconicoState = .checkFailed
             }
         }
     }
