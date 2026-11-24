@@ -889,6 +889,12 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             refreshControl.endRefreshing()
             return
         }
+        // まとめて操作の実行中も読み直さない (実行中の処理が使って
+        // いる一覧の中身が入れ替わり、表示や件数が食い違うため)。
+        guard !isBulkRunning else {
+            refreshControl.endRefreshing()
+            return
+        }
         // 読み込み中なら二重に始めない (更新中の表示だけ止めて戻る)。
         guard !isLoading else {
             refreshControl.endRefreshing()
@@ -928,6 +934,9 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         guard !isLoading else { return }
         guard SettingsStore.shared.isConfigured else {
             statusLabel.text = "設定タブで接続先 URL を設定してください。"
+            // 引っ張って更新から来た場合に、更新中の表示が止まらなく
+            // ならないよう、この経路でも止める。
+            refreshControl.endRefreshing()
             return
         }
         isLoading = true

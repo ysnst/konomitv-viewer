@@ -136,11 +136,15 @@ final class HighlightsViewController: UIViewController {
             guard let self else { return }
             let todayStart = Calendar.current.startOfDay(for: Date())
             // 今日の録画を新しい順に集める (今日より古い番組が出たら打ち切る)。
+            // 取得に失敗したかどうかは控えておく (失敗を「盛り上がりが
+            // 無かった」と取り違えないよう、表示を分けるため)。
             var todaysPrograms: [RecordedProgram] = []
+            var listLoadFailed = false
             var page = 1
             var total = Int.max
             while todaysPrograms.count < total, page <= 10 {
                 guard let response = try? await APIClient.shared.fetchVideos(page: page, order: "desc") else {
+                    listLoadFailed = true
                     break
                 }
                 total = response.total
@@ -162,10 +166,19 @@ final class HighlightsViewController: UIViewController {
             // (コメント取得の負荷を抑えるため対象は12件まで)。
             var found: [HighlightReelStore.Item] = []
             var programs: [Int: RecordedProgram] = [:]
+            var commentFetchAttempts = 0
+            var commentFetchFailures = 0
             for program in todaysPrograms.reversed().prefix(12) {
                 programs[program.id] = program
-                guard let comments = await APIClient.shared.fetchJikkyoComments(videoID: program.id),
-                      comments.is_success else { continue }
+                commentFetchAttempts += 1
+                // 取れなかった (通信の失敗) 場合だけ失敗として数える。
+                // 取れたが「コメントなし」の応答だった録画は、失敗では
+                // なく対象外として飛ばす。
+                guard let comments = await APIClient.shared.fetchJikkyoComments(videoID: program.id) else {
+                    commentFetchFailures += 1
+                    continue
+                }
+                guard comments.is_success else { continue }
                 let density = computeCommentDensity(
                     positions: comments.comments.map { $0.time },
                     duration: program.recorded_video.duration)
@@ -187,18 +200,25 @@ final class HighlightsViewController: UIViewController {
             self.items = found
             self.programsByID = programs
             self.isLoading = false
-            self.applyResults()
+            // 失敗と「盛り上がりが無かった」を区別する。一覧が取れ
+            // なかった場合と、対象の録画すべてのコメント取得に失敗
+            // した場合は、失敗と分かる文にする。
+            let loadFailed = listLoadFailed
+                || (commentFetchAttempts > 0 && commentFetchFailures == commentFetchAttempts)
+            self.applyResults(loadFailed: loadFailed)
         }
     }
 
     /// 抽出結果を画面へ反映する。
-    private func applyResults() {
+    private func applyResults(loadFailed: Bool) {
         for arranged in listStack.arrangedSubviews {
             listStack.removeArrangedSubview(arranged)
             arranged.removeFromSuperview()
         }
         if items.isEmpty {
-            summaryLabel.text = "今日の録画に、コメントの盛り上がり区間は見つかりませんでした"
+            summaryLabel.text = loadFailed
+                ? "読み込めませんでした。\n接続先とネットワークを確認してください。"
+                : "今日の録画に、コメントの盛り上がり区間は見つかりませんでした"
         } else {
             let totalSeconds = items.reduce(0.0) { $0 + ($1.end - $1.start) }
             summaryLabel.text = "\(items.count) 区間・合計 \(Self.playbackTime(totalSeconds)) "

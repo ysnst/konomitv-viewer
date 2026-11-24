@@ -31,6 +31,10 @@ final class StreamRelayServer {
     private var listener: NWListener?
     private var port: NWEndpoint.Port?
     private var connections: [ObjectIdentifier: RelayConnection] = [:]
+    /// 待ち受けの用意ができるのを待っている側 (relayURL の待ち)。
+    /// 中継のキューとは別に、鍵つきで守る (待つ側はキューの外にいるため)。
+    private let readyWaitersLock = NSLock()
+    private var readyWaiters: [DispatchSemaphore] = []
 
     /// 字幕の抜き取り口 (録画の H.265 / HEVC 再生中だけ、再生画面が登録する)。
     /// 中継を通るプレイリストと区切りファイルから、字幕表示に必要な材料
@@ -84,16 +88,36 @@ final class StreamRelayServer {
     fileprivate func currentLiveCaptionTap() -> LiveCaptionTap? { liveCaptionTap }
 
     /// 中継を立ち上げる (まだなら)。何度呼ばれてもよい。
+    /// 立ち上げに失敗した場合は控えを空に戻すため、次に呼ばれたときに
+    /// 試し直せる (失敗したまま「立ち上げ済み」扱いにしない)。
     func startIfNeeded() {
         queue.async { [weak self] in
             guard let self, self.listener == nil else { return }
             let parameters = NWParameters.tcp
             // 端末の外からは受け付けない (同じ端末内だけ)。
             parameters.requiredInterfaceType = .loopback
-            guard let listener = try? NWListener(using: parameters, on: .any) else { return }
+            guard let listener = try? NWListener(using: parameters, on: .any) else {
+                // 作ること自体に失敗したときも、待っている側は起こす
+                // (この回は中継なしに落ち、次回は試し直される)。
+                self.signalReadyWaiters()
+                return
+            }
             listener.stateUpdateHandler = { [weak self] state in
-                if case .ready = state {
-                    self?.port = listener.port
+                guard let self else { return }
+                switch state {
+                case .ready:
+                    self.port = listener.port
+                    self.signalReadyWaiters()
+                case .failed, .cancelled:
+                    // 失敗を残したままにすると二度と試し直せないため、
+                    // この待ち受けの控えだけ空に戻す。
+                    if self.listener === listener {
+                        self.listener = nil
+                        self.port = nil
+                    }
+                    self.signalReadyWaiters()
+                default:
+                    break
                 }
             }
             listener.newConnectionHandler = { [weak self] connection in
@@ -104,13 +128,47 @@ final class StreamRelayServer {
         }
     }
 
+    /// 待ち受けの用意ができた (または失敗が確定した) ことを、待っている
+    /// 側へ知らせる。中継のキューの上で呼ぶこと。
+    private func signalReadyWaiters() {
+        readyWaitersLock.lock()
+        let waiters = readyWaiters
+        readyWaiters = []
+        readyWaitersLock.unlock()
+        for waiter in waiters {
+            waiter.signal()
+        }
+    }
+
     /// 元の URL に対応する中継の URL。経路 (パスとクエリ) は元のまま、
     /// 向き先だけ 127.0.0.1 の中継に替えたもの。
-    /// 中継がまだ立ち上がっていない・元の URL が http(s) でない場合は nil。
+    /// 立ち上げの最中なら、用意ができるまで少しだけ待つ (起動直後の
+    /// 最初の再生で、番号が決まる前に中継なしで始めてしまい、認証が
+    /// 通らず失敗するのを避けるため)。待っても用意できなかった・
+    /// 元の URL が http(s) でない場合は nil。
     /// 中継のキューの外から呼ぶこと (キュー内からは relayURLOnQueue を使う)。
     func relayURL(for originURL: URL) -> URL? {
         startIfNeeded()
         // port は中継のキューで書かれるため、同期して読む。
+        if let url = queue.sync(execute: { relayURLOnQueue(for: originURL) }) {
+            return url
+        }
+        // 番号がまだ決まっていない間は、用意ができるまで待ってから
+        // 作り直す (待ちは最大2秒。それでも駄目ならこの回は nil)。
+        let waiter = DispatchSemaphore(value: 0)
+        readyWaitersLock.lock()
+        readyWaiters.append(waiter)
+        readyWaitersLock.unlock()
+        // 待ち始める直前に用意ができていた場合は、知らせが行き違いに
+        // なるため、キュー側から改めて起こしてもらう。
+        queue.async { [weak self] in
+            guard let self, self.port != nil else { return }
+            self.signalReadyWaiters()
+        }
+        _ = waiter.wait(timeout: .now() + 2)
+        readyWaitersLock.lock()
+        readyWaiters.removeAll { $0 === waiter }
+        readyWaitersLock.unlock()
         return queue.sync { relayURLOnQueue(for: originURL) }
     }
 
@@ -264,12 +322,15 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
     }
 
     /// 要求の頭から、本体の長さ (Content-Length) を取り出す。無ければ 0。
+    /// 負の数や大きすぎる値は、そのまま使うと本体の取り出しで落ちたり
+    /// 際限なく受け続けたりするため、受け付ける範囲 (0〜概ね1MB) に収める。
     private static func contentLength(from head: String) -> Int {
         for line in head.components(separatedBy: "\r\n") {
             let lower = line.lowercased()
             if lower.hasPrefix("content-length:") {
-                return Int(lower.dropFirst("content-length:".count)
+                let value = Int(lower.dropFirst("content-length:".count)
                     .trimmingCharacters(in: .whitespaces)) ?? 0
+                return min(max(value, 0), 1_000_000)
             }
         }
         return 0

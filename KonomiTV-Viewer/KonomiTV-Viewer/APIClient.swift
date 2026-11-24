@@ -825,7 +825,9 @@ final class APIClient {
         // Digest認証とクライアント証明書は、サーバーからの求めへの
         // 応答が要るため、AVPlayer 単独では通せない。アプリ内の
         // 中継経由にすると、中継側の通信が求めに応答する
-        // (中継が使えないときは元の URL)。
+        // (中継側の relayURL は、用意ができるまで少し待つ。起動直後の
+        // 最初の再生で中継なしに始めて認証が通らず失敗するのを避ける
+        // ため。それでも中継が使えないときは元の URL)。
         // URLパラメータ (合言葉) も同じく中継経由にする。プレイリストの
         // URL に付けても、中の分割ファイルの URL には付かないため、
         // 中継側で取り分ごとに付け直す必要がある。
@@ -838,6 +840,33 @@ final class APIClient {
             "AVURLAssetHTTPHeaderFieldsKey": SettingsStore.shared.serverAuthHeaders,
         ])
     }
+}
+
+/// 利用者設定の保存 (サーバーの設定を丸ごと取ってきて、自分の項目だけ
+/// 直して、丸ごと送り返すやり方) を、1つずつ順番に行うための受け口。
+/// 視聴履歴の保存・各種設定の保存・番組表の設定の保存が重なると、
+/// 後から送った方が古い控えを土台にしていて、先の変更を黙って
+/// 上書きしてしまうため、保存どうしはここで直列に並べる。
+actor ClientSettingsSaveQueue {
+    static let shared = ClientSettingsSaveQueue()
+
+    private var lastTask: Task<Void, Never>?
+
+    /// 処理を順番待ちの最後に足し、その処理が終わるまで待つ。
+    func run(_ operation: @escaping @Sendable () async -> Void) async {
+        let previous = lastTask
+        let task = Task {
+            await previous?.value
+            await operation()
+        }
+        lastTask = task
+        await task.value
+    }
+}
+
+/// 直列化した保存処理の結果 (真偽値) を受け渡すための箱。
+final class BoolResultBox: @unchecked Sendable {
+    var value = false
 }
 
 /// Web 版と共通の視聴履歴 (利用者設定の watched_history) への読み書き。
@@ -878,6 +907,15 @@ final class WatchedHistorySync {
     /// 422 が返ったら1回だけ取り直してやり直す。既に履歴に無い場合は
     /// 「消えた状態」として成功扱いにする。
     static func removeEntry(videoID: Int) async -> Bool {
+        // 他の設定保存と重なって互いを上書きしないよう、保存の順番待ちに並ぶ。
+        let box = BoolResultBox()
+        await ClientSettingsSaveQueue.shared.run {
+            box.value = await Self.removeEntrySerial(videoID: videoID)
+        }
+        return box.value
+    }
+
+    private static func removeEntrySerial(videoID: Int) async -> Bool {
         guard isEnabled else { return false }
         for _ in 0..<2 {
             do {
@@ -925,6 +963,14 @@ final class WatchedHistorySync {
     ///   経過時間を見て決める。登録時は最大件数を超える分を、最も古い
     ///   (created_at が最小の) ものから落とす (Web 版の動きと同じ)。
     static func syncPosition(videoID: Int, position: Double, registerIfNeeded: Bool) async {
+        // 他の設定保存と重なって互いを上書きしないよう、保存の順番待ちに並ぶ。
+        await ClientSettingsSaveQueue.shared.run {
+            await Self.syncPositionSerial(
+                videoID: videoID, position: position, registerIfNeeded: registerIfNeeded)
+        }
+    }
+
+    private static func syncPositionSerial(videoID: Int, position: Double, registerIfNeeded: Bool) async {
         guard isEnabled else { return }
         // 1回だけやり直す (初回 + 再試行1回)。
         for _ in 0..<2 {

@@ -152,10 +152,17 @@ final class LiveCommentSession {
     private var started = false
     private var destroyed = false
     private var reconnecting = false
+    /// 接続の組み立ての世代。組み立てを始めるたびと止めるたびに進める。
+    /// 接続先情報の取得中に画面を離れて戻ると、古い組み立てが後から
+    /// 進んで接続が二重に張られてしまうため、古い世代の組み立ては
+    /// 途中で打ち切る。
+    private var connectGeneration = 0
     /// disconnect の知らせが届いた後かどうか (閉じた合図を二重に扱わない)。
     private var disconnectMessageReceived = false
 
     private struct PendingPost {
+        /// 投稿ごとの印 (結果が来ない投稿の時間切れの判定に使う)。
+        let id = UUID()
         let text: String
         /// 送信時に選んだ表示 (自分のコメントを一覧と流れる表示へ
         /// 足すときに使う)。
@@ -187,6 +194,9 @@ final class LiveCommentSession {
         destroyed = true
         started = false
         reconnecting = false
+        // 進んでいる組み立てがあれば無効にする (後から接続が
+        // 張られてしまわないため)。
+        connectGeneration += 1
         teardownSockets()
     }
 
@@ -199,10 +209,16 @@ final class LiveCommentSession {
 
     /// ユーザー情報を取り、接続先情報を取って、視聴セッションを開く。
     private func connect() async {
+        // この組み立ての世代を控える。取得の途中で止められたり、
+        // 新しい組み立てが始まったりしたら、この組み立ては打ち切る
+        // (古い組み立てが進んで接続が二重に張られるのを防ぐ)。
+        connectGeneration += 1
+        let generation = connectGeneration
         // ユーザー情報 (連携の状態) を先に取る。取れなくても続ける
         // (未ログインでも NX-Jikkyo 側は使えるため)。
         if SettingsStore.shared.isLoggedIn,
            let user = try? await APIClient.shared.fetchCurrentUser() {
+            guard generation == connectGeneration, !destroyed else { return }
             myNiconicoUserID = user.niconico_user_id
             myNiconicoPremium = user.niconico_user_premium
         }
@@ -210,11 +226,12 @@ final class LiveCommentSession {
         do {
             info = try await APIClient.shared.fetchJikkyoWebSocketInfo(channelID: channelID)
         } catch {
+            guard generation == connectGeneration, !destroyed else { return }
             setInitFailure("コメント受信用 WebSocket API の情報を取得できませんでした。")
             reconnecting = false
             return
         }
-        guard !destroyed else { return }
+        guard generation == connectGeneration, !destroyed else { return }
         websocketInfo = info
         guard let nxWatchURL = info.watch_session_url else {
             setInitFailure("このチャンネルはニコニコ実況に対応していません。")
@@ -242,6 +259,7 @@ final class LiveCommentSession {
             reconnecting = false
             return
         }
+        guard generation == connectGeneration, !destroyed else { return }
         openWatchSession(url: watchURL)
     }
 
@@ -570,12 +588,26 @@ final class LiveCommentSession {
             guard let base = vposBaseTime else { return 0 }
             return Int((Date().timeIntervalSince(base) * 100).rounded())
         }()
-        pendingPosts.append(PendingPost(
+        let pending = PendingPost(
             text: text,
             colorHex: NicoCommentCommand.colorTable[colorName] ?? "#FFEAEA",
             type: position == "ue" ? "top" : (position == "shita" ? "bottom" : "right"),
             size: size,
-            completion: completion))
+            completion: completion)
+        pendingPosts.append(pending)
+        // 結果が返ってこない投稿があると、その投稿の完了知らせが
+        // 永遠に呼ばれず、後から届いた結果の対応づけもずれ続ける。
+        // 15秒たっても結果が来なければ、その投稿だけを時間切れとして
+        // 片付ける (対応づけ自体はサーバー側に投稿を識別する材料が
+        // 無いため、被害をこの範囲に留める部分的な対応)。
+        let pendingID = pending.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+            guard let self, !self.destroyed,
+                  let index = self.pendingPosts.firstIndex(where: { $0.id == pendingID })
+            else { return }
+            let expired = self.pendingPosts.remove(at: index)
+            expired.completion("コメントの送信結果が返ってきませんでした。")
+        }
         sendWatchJSON([
             "type": "postComment",
             "data": [

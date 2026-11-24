@@ -248,24 +248,68 @@ final class SyncedSettingsStore {
     /// 上書きしないよう、送信は1つずつ順番に行う。
     private var pendingSave: SyncedClientSettings?
     private var isSaving = false
+    /// 送信に続けて失敗した回数 (自動で試し直す回数の上限に使う)。
+    private var consecutiveSaveFailures = 0
+
+    /// サーバー側にあった、アプリが読み解けない形の登録の控え。
+    /// 読み取りで落としたものを、送り返しのときにそのまま足し戻して、
+    /// Web 版などで作った登録が保存のたびに消えないようにする。
+    /// 端末内の控えには残らないため、効くのは取り込んでから次に
+    /// 保存するまでの間 (部分的な対応)。
+    private var preservedMutedKeywordEntries: [Any] = []
+    private var preservedMylistEntries: [Any] = []
+    /// アプリが知らない名前だった字幕フォントの値と、そのときに
+    /// 端末側で効いていた値 (利用者が選び直したら控えは捨てる)。
+    private var preservedCaptionFont: String?
+    private var captionFontWhenPreserved: String?
 
     /// 値を差し替える。端末内の控えへはその場で書き、同期が効いている
     /// ときはサーバーへも送る (送信は裏で行い、失敗しても握りつぶす)。
     func update(_ settings: SyncedClientSettings) {
+        // 知らない名前のフォントを、利用者が自分で選び直した場合は、
+        // サーバー側の控えはもう足し戻さない。
+        if let whenPreserved = captionFontWhenPreserved,
+           settings.captionFont != whenPreserved {
+            preservedCaptionFont = nil
+            captionFontWhenPreserved = nil
+        }
         current = settings
         saveToLocal(settings)
         guard Self.isSyncEnabled else { return }
         pendingSave = settings
         guard !isSaving else { return }
         isSaving = true
+        consecutiveSaveFailures = 0
         Task { await self.drainSaveQueue() }
     }
 
     /// 送信待ちの値を、古い順に1つずつ送る。
+    /// 送信に失敗した分は待ちに戻し、少し置いてから自動で試し直す
+    /// (回数の上限あり)。戻さないと、その変更はサーバーへ二度と
+    /// 送られなくなってしまうため。
     private func drainSaveQueue() async {
         while let settings = pendingSave {
             pendingSave = nil
-            await saveToServer(settings)
+            if await saveToServer(settings) {
+                consecutiveSaveFailures = 0
+                continue
+            }
+            // その間に新しい変更が来ていたら、そちらが最新なので
+            // 古い分は戻さない。
+            if pendingSave == nil {
+                pendingSave = settings
+            }
+            consecutiveSaveFailures += 1
+            isSaving = false
+            if consecutiveSaveFailures <= 3 {
+                Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: 15_000_000_000)
+                    guard let self, self.pendingSave != nil, !self.isSaving else { return }
+                    self.isSaving = true
+                    await self.drainSaveQueue()
+                }
+            }
+            return
         }
         isSaving = false
     }
@@ -275,9 +319,13 @@ final class SyncedSettingsStore {
     /// ときは何もせず false を返す。
     func refreshFromServer() async -> Bool {
         guard Self.isSyncEnabled else { return false }
+        // 送信待ちの変更があるときは取り込まない。取り込むと、送る前の
+        // 変更までサーバーの古い値で上書きされてしまうため。
+        guard pendingSave == nil, !isSaving else { return false }
         guard let settings = try? await APIClient.shared.fetchClientSettings() else {
             return false
         }
+        capturePreservedEntries(from: settings)
         let server = Self.settings(fromClientSettings: settings, fallback: current)
         guard server != current else { return false }
         current = server
@@ -312,6 +360,7 @@ final class SyncedSettingsStore {
         guard serverSyncedAt > 0 else { return }
         // サーバー側の値を正として取り込み、同期を有効にする
         // (Web 版の「強制的にサーバーから同期」と同じ扱い)。
+        capturePreservedEntries(from: settings)
         let server = Self.settings(fromClientSettings: settings, fallback: current)
         current = server
         saveToLocal(server)
@@ -319,6 +368,34 @@ final class SyncedSettingsStore {
         store.syncSettings = true
         // 番組表の表示設定も、同期が有効になったので合わせて取り込む。
         _ = await TimeTableSettingsStore.shared.refreshFromServer()
+    }
+
+    /// サーバー側の利用者設定から、アプリが読み解けない形の登録を
+    /// 控える。読み解けたものは控えない (送り返しで二重にならないため)。
+    private func capturePreservedEntries(from clientSettings: [String: Any]) {
+        if let rawEntries = clientSettings["muted_comment_keywords"] as? [Any] {
+            preservedMutedKeywordEntries = rawEntries.filter { raw in
+                guard let entry = raw as? [String: Any],
+                      let pattern = entry["pattern"] as? String, !pattern.isEmpty
+                else { return true }
+                return false
+            }
+        }
+        if let rawEntries = clientSettings["mylist"] as? [Any] {
+            preservedMylistEntries = rawEntries.filter { raw in
+                guard let entry = raw as? [String: Any] else { return true }
+                return MylistEntry(dictionary: entry) == nil
+            }
+        }
+        if let font = clientSettings["caption_font"] as? String {
+            if SyncedClientSettings.captionFontOptions.contains(where: { $0.value == font }) {
+                preservedCaptionFont = nil
+                captionFontWhenPreserved = nil
+            } else {
+                preservedCaptionFont = font
+                captionFontWhenPreserved = current.captionFont
+            }
+        }
     }
 
     // MARK: - 端末内の控え
@@ -440,11 +517,22 @@ final class SyncedSettingsStore {
 
     // MARK: - サーバーとのやり取り
 
-    /// 変更をサーバーへ送る。手順は番組表・視聴履歴と同じ:
+    /// 変更をサーバーへ送る。送れたかどうかを返す。
+    /// 実際の送信は、他の保存 (視聴履歴・番組表の設定) と重なって
+    /// 互いを上書きしないよう、保存の順番待ちに並んでから行う。
+    private func saveToServer(_ settings: SyncedClientSettings) async -> Bool {
+        let box = BoolResultBox()
+        await ClientSettingsSaveQueue.shared.run {
+            box.value = await self.saveToServerSerial(settings)
+        }
+        return box.value
+    }
+
+    /// 変更をサーバーへ送る本体。手順は番組表・視聴履歴と同じ:
     /// 送る直前に最新を取得 → この設定一式の項目だけ差し替え →
     /// last_synced_at を今に更新して送る。422 (その間に他の端末が先に
     /// 更新した) が返ったら、1回だけ取り直してやり直す。
-    private func saveToServer(_ settings: SyncedClientSettings) async {
+    private func saveToServerSerial(_ settings: SyncedClientSettings) async -> Bool {
         for _ in 0..<2 {
             do {
                 var clientSettings = try await APIClient.shared.fetchClientSettings()
@@ -469,6 +557,20 @@ final class SyncedSettingsStore {
                 clientSettings["muted_comment_keywords"] = settings.mutedCommentKeywords.map {
                     ["match": $0.match, "pattern": $0.pattern]
                 }
+                // 読み取りで落とした、形の違う登録はそのまま足し戻す
+                // (落としたまま送ると、サーバーから消えてしまうため)。
+                if !preservedMutedKeywordEntries.isEmpty {
+                    let typed: [Any] = settings.mutedCommentKeywords.map {
+                        ["match": $0.match, "pattern": $0.pattern] as [String: Any]
+                    }
+                    clientSettings["muted_comment_keywords"] = typed + preservedMutedKeywordEntries
+                }
+                // アプリが知らない名前の字幕フォントも、利用者が
+                // 選び直していない間はそのまま残す。
+                if let preservedCaptionFont,
+                   settings.captionFont == captionFontWhenPreserved {
+                    clientSettings["caption_font"] = preservedCaptionFont
+                }
                 clientSettings["muted_niconico_user_ids"] = settings.mutedNiconicoUserIDs
                 clientSettings["video_watched_history_max_count"] = settings.videoWatchedHistoryMaxCount
                 clientSettings["video_panel_active_tab"] = settings.videoPanelActiveTab
@@ -479,15 +581,20 @@ final class SyncedSettingsStore {
                     settings.showOriginalBroadcastTimeDuringPlayback
                 clientSettings["pinned_channel_ids"] = settings.pinnedChannelIDs
                 clientSettings["mylist"] = settings.mylist.map { $0.dictionary }
+                if !preservedMylistEntries.isEmpty {
+                    clientSettings["mylist"] = settings.mylist.map { $0.dictionary as Any }
+                        + preservedMylistEntries
+                }
                 clientSettings["last_synced_at"] = Date().timeIntervalSince1970
                 try await APIClient.shared.updateClientSettings(clientSettings)
-                return
+                return true
             } catch let APIError.badStatus(code) where code == 422 {
                 continue  // 取り直して1回だけやり直す。
             } catch {
-                return  // それ以外の失敗は、この回の送信を諦める。
+                return false  // それ以外の失敗は、この回の送信を諦める。
             }
         }
+        return false
     }
 
     /// 利用者設定の辞書から設定一式を組み立てる。項目が無い・形が違う
@@ -543,9 +650,14 @@ final class SyncedSettingsStore {
         if let value = clientSettings["mute_comment_keywords_normalize_alphanumeric_width_case"] as? Bool {
             result.muteCommentKeywordsNormalize = value
         }
-        if let entries = clientSettings["muted_comment_keywords"] as? [[String: Any]] {
-            result.mutedCommentKeywords = entries.compactMap { entry in
-                guard let pattern = entry["pattern"] as? String, !pattern.isEmpty else { return nil }
+        if let rawEntries = clientSettings["muted_comment_keywords"] as? [Any] {
+            // 1件ずつ読む (1件の形違いで全体を落とさないため)。
+            // 読み解けなかったものは capturePreservedEntries 側で控え、
+            // 送り返しのときにそのまま足し戻す。
+            result.mutedCommentKeywords = rawEntries.compactMap { raw in
+                guard let entry = raw as? [String: Any],
+                      let pattern = entry["pattern"] as? String, !pattern.isEmpty
+                else { return nil }
                 return MutedCommentKeyword(
                     match: entry["match"] as? String ?? "partial", pattern: pattern)
             }
@@ -577,10 +689,14 @@ final class SyncedSettingsStore {
         if let ids = clientSettings["pinned_channel_ids"] as? [String] {
             result.pinnedChannelIDs = ids
         }
-        if let entries = clientSettings["mylist"] as? [[String: Any]] {
+        if let rawEntries = clientSettings["mylist"] as? [Any] {
             // 形の違うものは読み飛ばすが、シリーズなど種類の違う登録は
             // そのまま保持する (保存のときに落とさないため)。
-            result.mylist = entries.compactMap(MylistEntry.init(dictionary:))
+            // 読み飛ばしたものは capturePreservedEntries 側で控え、
+            // 送り返しのときにそのまま足し戻す。
+            result.mylist = rawEntries.compactMap { raw in
+                (raw as? [String: Any]).flatMap(MylistEntry.init(dictionary:))
+            }
         }
         return result
     }

@@ -1461,6 +1461,8 @@ final class PlayerViewController: UIViewController {
     @discardableResult
     private func switchProfile(to newProfile: PlaybackProfile) -> String {
         guard newProfile != profile else { return quality }
+        // 画質の切り替えと同じく、止めていた場合は作り直した後も止めたままにする。
+        let wasPlaying = isCurrentlyPlaying()
         // 全画面表示中に仕組みが切り替わる場合は、全画面を閉じてから作り直す
         // (切り替え後に実際に使う画質で判定する)。
         let effectiveBase = audioOnly
@@ -1487,6 +1489,10 @@ final class PlayerViewController: UIViewController {
         // 画質が変わるのでセッションも作り直す (画質切り替えと同じ)。
         sessionID = UUID().uuidString
         startPlayback(at: current.isFinite ? current : 0)
+        if !wasPlaying {
+            pauseEngine()
+            updatePlayPauseIcon()
+        }
         messageLabel.text = newProfile == .cellular
             ? "モバイル回線向けの画質プロファイルに切り替えました。"
             : "Wi-Fi 回線向けの画質プロファイルに切り替えました。"
@@ -3030,7 +3036,9 @@ final class PlayerViewController: UIViewController {
     /// その再生画面を開く。最後の区間が終わったら、キューを破棄して
     /// 止め、終わったことを知らせる。
     private func updateHighlightReel(current: Double) {
-        guard reelActive, !didLeaveScreen else { return }
+        // 一時停止中は進めない (CM自動スキップ等の見張いと揃える)。
+        // 条件が無いと、区間の終わり近くで止めただけで次へ進んでしまう。
+        guard reelActive, isCurrentlyPlaying(), !didLeaveScreen else { return }
         let now = Date().timeIntervalSince1970
         guard now - lastReelCheckAt >= 0.5 else { return }
         lastReelCheckAt = now
@@ -3381,6 +3389,9 @@ final class PlayerViewController: UIViewController {
 
     private func switchQuality(_ newQuality: String) {
         guard newQuality != quality else { return }
+        // 止めている間の切り替えで勝手に再開しないよう、作り直す前に
+        // 再生中だったかを控え、止めていた場合は作り直した後も止める。
+        let wasPlaying = isCurrentlyPlaying()
         let current = currentPosition()
         quality = newQuality
         // 画質が変わるとサーバー側のストリームが別物になるため、セッションも作り直す。
@@ -3389,6 +3400,10 @@ final class PlayerViewController: UIViewController {
         qualityButton.menu = makeQualityMenu()
         buttonsFlowView.setNeedsLayout()
         startPlayback(at: current.isFinite ? current : 0)
+        if !wasPlaying {
+            pauseEngine()
+            updatePlayPauseIcon()
+        }
     }
 
     /// フルスクリーン表示へ移る。AVPlayer 経路は同じプレイヤーを共有し、
@@ -3572,6 +3587,14 @@ extension PlayerViewController: VLCMediaPlayerDelegate {
     func mediaPlayerStateChanged(_ aNotification: Notification) {
         DispatchQueue.main.async { [weak self] in
             guard let self, let vlcPlayer = self.vlcPlayer else { return }
+            // 送り主が今のプレイヤーでなければ無視する。プレイヤーを
+            // 作り直した直後に前のプレイヤーからの遅れた知らせが届くと、
+            // 開始位置の控えや失敗表示が今の再生のものとして扱われて
+            // ずれてしまうため。
+            if let sender = aNotification.object as? VLCMediaPlayer,
+               sender !== vlcPlayer {
+                return
+            }
             if vlcPlayer.state == .playing {
                 self.vlcDidStartPlaying = true
                 self.vlcStartWatchdog?.invalidate()

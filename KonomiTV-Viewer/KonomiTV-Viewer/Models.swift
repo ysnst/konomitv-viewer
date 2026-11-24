@@ -1,5 +1,27 @@
 import Foundation
 
+/// 1件だけ読み解けなかった要素を、値なしとして受けるための包み。
+/// 一覧系の応答で使う。1件の形が想定と違っても、その1件だけを
+/// 飛ばして一覧全体は表示できるようにするため。
+private struct FailableElement<T: Decodable>: Decodable {
+    let value: T?
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        value = try? container.decode(T.self)
+    }
+}
+
+private extension KeyedDecodingContainer {
+    /// 指定したキーの配列を、読み解けなかった要素だけ飛ばして読む。
+    /// キー自体が無い・null の場合は空にする。
+    func decodeLossyArray<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> [T] {
+        guard let elements = try decodeIfPresent([FailableElement<T>].self, forKey: key)
+        else { return [] }
+        return elements.compactMap(\.value)
+    }
+}
+
 /// CM 区間 (サーバーの番組データに含まれる cm_sections の1要素)。
 struct CMSection: Codable {
     let start_time: Double
@@ -160,6 +182,25 @@ struct RecordedProgram: Codable {
 struct RecordedProgramsResponse: Codable {
     let total: Int
     let recorded_programs: [RecordedProgram]
+
+    private enum CodingKeys: String, CodingKey {
+        case total, recorded_programs
+    }
+
+    init(total: Int, recorded_programs: [RecordedProgram]) {
+        self.total = total
+        self.recorded_programs = recorded_programs
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // 1件の形違いでページ全体を落とさないよう、読めなかった
+        // 番組だけを飛ばす。
+        recorded_programs = try container.decodeLossyArray(
+            RecordedProgram.self, forKey: .recorded_programs)
+        total = try container.decodeIfPresent(Int.self, forKey: .total)
+            ?? recorded_programs.count
+    }
 }
 
 /// しおり1件 (改造サーバーの GET /api/videos/{id}/bookmarks の要素)。
@@ -373,6 +414,22 @@ struct LiveChannelsResponse: Codable {
     let SKY: [LiveChannel]
     let BS4K: [LiveChannel]
 
+    private enum CodingKeys: String, CodingKey {
+        case GR, BS, CS, CATV, SKY, BS4K
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // 種別のどれかが応答に無くても、また1局の形が違っても、
+        // 一覧全体を落とさない (無い種別は空、読めなかった局は飛ばす)。
+        GR = try container.decodeLossyArray(LiveChannel.self, forKey: .GR)
+        BS = try container.decodeLossyArray(LiveChannel.self, forKey: .BS)
+        CS = try container.decodeLossyArray(LiveChannel.self, forKey: .CS)
+        CATV = try container.decodeLossyArray(LiveChannel.self, forKey: .CATV)
+        SKY = try container.decodeLossyArray(LiveChannel.self, forKey: .SKY)
+        BS4K = try container.decodeLossyArray(LiveChannel.self, forKey: .BS4K)
+    }
+
     var groups: [(type: String, channels: [LiveChannel])] {
         [("GR", GR), ("BS", BS), ("CS", CS), ("CATV", CATV), ("SKY", SKY), ("BS4K", BS4K)]
             .filter { !$0.channels.isEmpty }
@@ -440,6 +497,17 @@ struct TimeTableProgram: Codable {
 struct TimeTableSubchannel: Codable {
     let channel: ChannelInfo
     let programs: [TimeTableProgram]
+
+    private enum CodingKeys: String, CodingKey {
+        case channel, programs
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        channel = try container.decode(ChannelInfo.self, forKey: .channel)
+        // 1番組の形違いで列全体を落とさないよう、読めなかった番組だけ飛ばす。
+        programs = try container.decodeLossyArray(TimeTableProgram.self, forKey: .programs)
+    }
 }
 
 /// 番組表のチャンネル1列分。
@@ -447,6 +515,18 @@ struct TimeTableChannelEntry: Codable {
     let channel: ChannelInfo
     let programs: [TimeTableProgram]
     let subchannels: [TimeTableSubchannel]?
+
+    private enum CodingKeys: String, CodingKey {
+        case channel, programs, subchannels
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        channel = try container.decode(ChannelInfo.self, forKey: .channel)
+        programs = try container.decodeLossyArray(TimeTableProgram.self, forKey: .programs)
+        subchannels = try container.decodeLossyArray(
+            TimeTableSubchannel.self, forKey: .subchannels)
+    }
 }
 
 /// 番組データが存在する日時の範囲 (日付移動の上限・下限)。
@@ -479,6 +559,24 @@ struct TimeTableResponse: Codable {
     /// 予約の取得に失敗したときなどは空で返る。通常のサーバーの応答には
     /// 項目自体が無いため任意にしている。
     let tuner_busy_intervals: [TimeTableTunerBusyInterval]?
+
+    private enum CodingKeys: String, CodingKey {
+        case channels, date_range, tuner_busy_intervals
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // 読めなかった列だけを飛ばし、番組表全体は表示できるようにする。
+        channels = try container.decodeLossyArray(
+            TimeTableChannelEntry.self, forKey: .channels)
+        // 日付の範囲が無い応答でも番組表自体は出せるため、空で受ける
+        // (日付が取れない扱いになり、移動の上限・下限だけ効かなくなる)。
+        date_range = try container.decodeIfPresent(
+            TimeTableDateRange.self, forKey: .date_range)
+            ?? TimeTableDateRange(earliest: "", latest: "")
+        tuner_busy_intervals = try container.decodeIfPresent(
+            [TimeTableTunerBusyInterval].self, forKey: .tuner_busy_intervals)
+    }
 }
 
 enum DateParser {
@@ -845,6 +943,17 @@ struct Reservation: Decodable {
 struct ReservationsResponse: Decodable {
     let total: Int
     let reservations: [Reservation]
+
+    private enum CodingKeys: String, CodingKey {
+        case total, reservations
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // 1件の形違いで一覧全体を落とさないよう、読めなかった予約だけ飛ばす。
+        reservations = try container.decodeLossyArray(Reservation.self, forKey: .reservations)
+        total = try container.decodeIfPresent(Int.self, forKey: .total) ?? reservations.count
+    }
 }
 
 /// 録画設定プリセット1件 (一覧のうち id が 0 のものが既定の録画設定)。
@@ -992,4 +1101,23 @@ struct JikkyoCommentsResponse: Codable {
     let is_success: Bool
     let comments: [JikkyoComment]
     let detail: String
+
+    private enum CodingKeys: String, CodingKey {
+        case is_success, comments, detail
+    }
+
+    init(is_success: Bool, comments: [JikkyoComment], detail: String) {
+        self.is_success = is_success
+        self.comments = comments
+        self.detail = detail
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        is_success = try container.decodeIfPresent(Bool.self, forKey: .is_success) ?? false
+        // 1件の形違いでコメント全体を落とさないよう、読めなかった
+        // コメントだけを飛ばす。
+        comments = try container.decodeLossyArray(JikkyoComment.self, forKey: .comments)
+        detail = try container.decodeIfPresent(String.self, forKey: .detail) ?? ""
+    }
 }

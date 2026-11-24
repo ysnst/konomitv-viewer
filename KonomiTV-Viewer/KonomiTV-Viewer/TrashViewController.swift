@@ -536,6 +536,12 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
             refreshControl.endRefreshing()
             return
         }
+        // まとめて操作の実行中も読み直さない (実行中の処理が使って
+        // いる一覧の中身が入れ替わり、表示や件数が食い違うため)。
+        guard !isBulkRunning else {
+            refreshControl.endRefreshing()
+            return
+        }
         guard !isLoading else {
             refreshControl.endRefreshing()
             return

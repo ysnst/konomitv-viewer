@@ -1817,6 +1817,13 @@ final class LivePlayerViewController: UIViewController {
     /// 低遅延の効き方も区分ごとに違うため、つなぎ直しで一緒に切り替わる。
     private func switchProfile(to newProfile: PlaybackProfile) {
         guard newProfile != profile else { return }
+        // 止めている間の切り替えで勝手に再開しないよう、つなぎ直す前に
+        // 再生中だったかを控える (画質・音声のみの切り替えと同じ)。
+#if canImport(MobileVLCKit)
+        let wasPlaying = vlcPlayer?.isPlaying ?? false
+#else
+        let wasPlaying = false
+#endif
         profile = newProfile
         SettingsStore.shared.lastQualityProfileType = newProfile
         updateProfileButtonTitle()
@@ -1827,10 +1834,15 @@ final class LivePlayerViewController: UIViewController {
         qualityButton.setTitle("画質: \(quality)", for: .normal)
         qualityButton.menu = makeQualityMenu()
         startStream()
-        playPauseButton.setImage(
-            UIImage(systemName: "pause.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 36)),
-            for: .normal
-        )
+        if wasPlaying {
+            playPauseButton.setImage(
+                UIImage(systemName: "pause.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 36)),
+                for: .normal
+            )
+        } else {
+            // 止めていた場合は、つなぎ直した後も止めたままにする。
+            pauseStream()
+        }
         messageLabel.text = newProfile == .cellular
             ? "モバイル回線向けの画質プロファイルに切り替えました。"
             : "Wi-Fi 回線向けの画質プロファイルに切り替えました。"
@@ -1840,28 +1852,50 @@ final class LivePlayerViewController: UIViewController {
     /// 音声のみの最中でも、映像を止めたまま切り替わる (startStream が状態を見て付ける)。
     private func switchQuality(_ newQuality: String) {
         guard newQuality != quality else { return }
+        // 止めている間の切り替えで勝手に再開しないよう、つなぎ直す前に
+        // 再生中だったかを控える。
+#if canImport(MobileVLCKit)
+        let wasPlaying = vlcPlayer?.isPlaying ?? false
+#else
+        let wasPlaying = false
+#endif
         quality = newQuality
         qualityButton.setTitle("画質: \(quality)", for: .normal)
         qualityButton.menu = makeQualityMenu()
         startStream()
-        playPauseButton.setImage(
-            UIImage(systemName: "pause.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 36)),
-            for: .normal
-        )
+        if wasPlaying {
+            playPauseButton.setImage(
+                UIImage(systemName: "pause.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 36)),
+                for: .normal
+            )
+        } else {
+            pauseStream()
+        }
     }
 
     /// 音声のみ: 映像の通り道を止めて繋ぎ直す (通信量も減る)。
     @objc private func toggleAudioOnly() {
+        // 止めている間の切り替えで勝手に再開しないよう、つなぎ直す前に
+        // 再生中だったかを控える (画質の切り替えと同じ)。
+#if canImport(MobileVLCKit)
+        let wasPlaying = vlcPlayer?.isPlaying ?? false
+#else
+        let wasPlaying = false
+#endif
         audioOnly.toggle()
         audioOnlyButton.setTitle(audioOnly ? "音声のみ: ON" : "音声のみ: OFF", for: .normal)
         videoView.isHidden = audioOnly
         applyCaptionDisplayState()
         applyCommentDisplayState()
         startStream()
-        playPauseButton.setImage(
-            UIImage(systemName: "pause.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 36)),
-            for: .normal
-        )
+        if wasPlaying {
+            playPauseButton.setImage(
+                UIImage(systemName: "pause.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 36)),
+                for: .normal
+            )
+        } else {
+            pauseStream()
+        }
     }
 
     // MARK: - データ放送 (重ね合わせ)
@@ -2583,6 +2617,13 @@ extension LivePlayerViewController: VLCMediaPlayerDelegate {
     func mediaPlayerStateChanged(_ aNotification: Notification) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            // 送り主が今のプレイヤーでなければ無視する (録画側と同じ)。
+            // 作り直した直後に前のプレイヤーの遅れた知らせが届くと、
+            // 失敗表示の出し消しが今の再生のものとして扱われてずれるため。
+            if let sender = aNotification.object as? VLCMediaPlayer,
+               sender !== self.vlcPlayer {
+                return
+            }
             // 開始に失敗したら、真っ黒のまま無言にせず、その旨を表示する
             // (録画側と同じ扱い。再生の仕組み自体は変えていない)。
             if self.vlcPlayer?.state == .error {

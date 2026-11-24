@@ -211,6 +211,14 @@ final class TimeTableSettingsStore {
     /// ジャンル色は、サーバー側にある分を土台にアプリが知っている
     /// ジャンルだけを上書きする (知らないジャンルがあっても落とさない)。
     private func saveToServer(_ settings: TimeTableDisplaySettings) async {
+        // 他の保存 (視聴履歴・各種設定) と重なって互いを上書きしないよう、
+        // 保存の順番待ちに並んでから本体を行う。
+        await ClientSettingsSaveQueue.shared.run {
+            await self.saveToServerSerial(settings)
+        }
+    }
+
+    private func saveToServerSerial(_ settings: TimeTableDisplaySettings) async {
         for _ in 0..<2 {
             do {
                 var clientSettings = try await APIClient.shared.fetchClientSettings()
