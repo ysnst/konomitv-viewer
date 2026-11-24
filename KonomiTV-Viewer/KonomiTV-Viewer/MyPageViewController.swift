@@ -359,7 +359,9 @@ final class MyPageViewController: UIViewController {
     /// App version の行のタップ。7回タップで「改造版サーバーの機能」の
     /// 区分 (「このアプリの設定」の中) が解放される。残り3回からは
     /// 「あと○回」と知らせ、解放できたらその旨を知らせる。
-    /// 一度解放したら区分は残り続ける (状態は端末ごとに保存される)。
+    /// 解放の状態は端末ごとに保存される。専用画面で「拡張機能を
+    /// 無効にする」を実行すると解放が戻るため、そのときはここから
+    /// 解放をやり直す形になる。
     @objc private func appVersionRowTapped() {
         guard !SettingsStore.shared.customizedServerFeaturesUnlocked else { return }
         appVersionTapCount += 1

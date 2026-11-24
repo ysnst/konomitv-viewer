@@ -837,9 +837,12 @@ final class SettingsStore {
         set { defaults.set(newValue, forKey: Key.customizedTunerInUseEnabled) }
     }
 
-    /// 「改造版サーバーの機能」の区分が解放済みかどうか。
-    /// マイページの App version の行を7回タップすると解放され、一度解放
-    /// したら残り続ける。端末ごとに持つ状態で、同期対象ではない。
+    /// 「改造版サーバーの機能」の区分が解放済みかどうか。全体の
+    /// 有効・無効もこの状態と一体で、解放が戻ると機能も全部止まる。
+    /// マイページの App version の行を7回タップすると解放される。
+    /// 専用画面の「拡張機能を無効にする」を実行すると解放が戻り、
+    /// 再び使うには解放をやり直す (個別トグルの状態は保持される)。
+    /// 端末ごとに持つ状態で、同期対象ではない。
     var customizedServerFeaturesUnlocked: Bool {
         get { defaults.bool(forKey: Key.customizedFeaturesUnlocked) }
         set { defaults.set(newValue, forKey: Key.customizedFeaturesUnlocked) }

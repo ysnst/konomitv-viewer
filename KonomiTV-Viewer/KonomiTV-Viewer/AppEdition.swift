@@ -26,36 +26,47 @@ import Foundation
 /// トグルの置き場所は「このアプリの設定」の「改造版サーバーの
 /// 機能」の行から入る専用画面で、その行自体はマイページの
 /// App version の行を7回タップすると解放される (解放の状態も
-/// 端末ごとに保存される)。データ放送は素のサーバーの機能なので、
-/// この出し分けの対象にはしない。
+/// 端末ごとに保存される)。
+///
+/// 全体の有効・無効は解放の状態と一体になっている。専用画面の
+/// 「拡張機能を無効にする」を実行すると解放が戻り、入口の行自体が
+/// 消えて、機能も全部止まる (Android の開発者向けオプションの
+/// オフと同じ扱い)。個別トグルの状態は保持されるため、解放し直せば
+/// そのままの状態で復帰する。データ放送は素のサーバーの機能
+/// なので、この出し分けの対象にはしない。
 enum AppEdition {
+    /// 全体が有効かどうか (解放済みかどうかと一体)。
+    private static var overallEnabled: Bool {
+        SettingsStore.shared.customizedServerFeaturesUnlocked
+    }
+
     /// 録画の保護のトグルがオンかどうか。
     static var protectionEnabled: Bool {
-        SettingsStore.shared.customizedProtectionEnabled
+        overallEnabled && SettingsStore.shared.customizedProtectionEnabled
     }
 
     /// ゴミ箱のトグルがオンかどうか。
     static var trashEnabled: Bool {
-        SettingsStore.shared.customizedTrashEnabled
+        overallEnabled && SettingsStore.shared.customizedTrashEnabled
     }
 
     /// 前の話・次の話ボタンと、次の話の自動再生のトグルがオンかどうか。
     static var episodeNavigationEnabled: Bool {
-        SettingsStore.shared.customizedEpisodesEnabled
+        overallEnabled && SettingsStore.shared.customizedEpisodesEnabled
     }
 
     /// しおりと場面一覧のトグルがオンかどうか。
     static var bookmarksAndScenesEnabled: Bool {
-        SettingsStore.shared.customizedBookmarksScenesEnabled
+        overallEnabled && SettingsStore.shared.customizedBookmarksScenesEnabled
     }
 
     /// 録画結果一覧のトグルがオンかどうか。
     static var recordingResultsEnabled: Bool {
-        SettingsStore.shared.customizedRecordingResultsEnabled
+        overallEnabled && SettingsStore.shared.customizedRecordingResultsEnabled
     }
 
     /// チューナー使用中のチャンネル表示のトグルがオンかどうか。
     static var tunerInUseEnabled: Bool {
-        SettingsStore.shared.customizedTunerInUseEnabled
+        overallEnabled && SettingsStore.shared.customizedTunerInUseEnabled
     }
 }

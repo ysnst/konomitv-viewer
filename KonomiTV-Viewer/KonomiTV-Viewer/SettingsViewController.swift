@@ -52,6 +52,10 @@ final class SettingsViewController: UIViewController {
         [urlField, cfIDField, cfSecretField, usernameField, passwordField]
     }
 
+    /// 「改造版サーバーの機能」の区分。専用画面で無効化された場合に
+    /// 戻ってきた時点で隠し直すため、組み立てたものを保持する。
+    private var customizedGroupView: UIStackView?
+
     // ログイン状態で出し分けるため、ユーザー名とパスワードの欄のグループを保持する。
     private var usernameFieldGroup: UIStackView?
     private var passwordFieldGroup: UIStackView?
@@ -140,6 +144,9 @@ final class SettingsViewController: UIViewController {
         // 戻るボタンは、タブの先頭画面ではなく押し込まれた先として
         // 開かれたときだけ出す。
         backButton.isHidden = navigationController?.viewControllers.first === self
+        // 「改造版サーバーの機能」の区分は、専用画面で無効化されると
+        // 入口自体が消えるため、戻ってきた時点の解放状態で付け直す。
+        customizedGroupView?.isHidden = !SettingsStore.shared.customizedServerFeaturesUnlocked
         // 設定アプリ側で変更された場合も含め、現在の保存値を表示する。
         loadValues()
         installKeyboardAvoidance()
@@ -427,6 +434,7 @@ final class SettingsViewController: UIViewController {
         customizedField.spacing = 14
         let customizedGroup = itemGroup(title: "改造版サーバーの機能", field: customizedField)
         customizedGroup.isHidden = !SettingsStore.shared.customizedServerFeaturesUnlocked
+        customizedGroupView = customizedGroup
 
         // 項目どうしの間隔は Web 版の項目の margin-top と同じ 24px。
         // 接続先のグループとログインのグループの間には区切り線を引く。

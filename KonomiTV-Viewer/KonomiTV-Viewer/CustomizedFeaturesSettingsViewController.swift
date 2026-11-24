@@ -14,7 +14,15 @@ import UIKit
 ///
 /// 値はいずれも端末ごとに持つ設定で、デバイス間同期の対象には
 /// しない。切り替えはその場で保存する。
+///
+/// 画面の一番上には「拡張機能を無効にする」も置く。実行すると
+/// 解放が戻り、「このアプリの設定」の中の入口の行自体が消えて、
+/// 機能が全部止まる (Android の開発者向けオプションのオフと
+/// 同じ扱い)。個別トグルの状態は保持されるため、マイページの
+/// App version の行を7回タップして解放し直せば、そのままの
+/// 状態で復帰する。誤って消さないよう、実行前に確認を出す。
 final class CustomizedFeaturesSettingsViewController: SettingsDetailViewController {
+    private let disableButton = RippleButton()
     private let protectionSwitch = WebToggle()
     private let trashSwitch = WebToggle()
     private let episodesSwitch = WebToggle()
@@ -36,6 +44,22 @@ final class CustomizedFeaturesSettingsViewController: SettingsDetailViewControll
     }
 
     private func buildItems() {
+        // 無効化のボタンは、データ放送の設定のリセットと同じく
+        // 注意の色 (赤地) にする。
+        disableButton.setTitle("無効にする", for: .normal)
+        disableButton.backgroundColor = AppPalette.error
+        disableButton.setTitleColor(.white, for: .normal)
+        disableButton.titleLabel?.font = .scaledSystemFont(ofSize: 15.5)
+        disableButton.layer.cornerRadius = 4
+        disableButton.heightAnchor.constraint(equalToConstant: 45).isActive = true
+        disableButton.addTarget(self, action: #selector(disablePressed), for: .touchUpInside)
+        let disableField = UIStackView(arrangedSubviews: [
+            makeDescriptionLabel("無効にすると、この画面への入口が設定から消えて、機能が全部止まります。再び使うには、マイページの「App version」の行を7回タップしてください。機能ごとのトグルの状態は、そのまま残ります。"),
+            disableButton,
+        ])
+        disableField.axis = .vertical
+        disableField.spacing = 14
+
         protectionSwitch.addTarget(self, action: #selector(protectionChanged), for: .valueChanged)
         trashSwitch.addTarget(self, action: #selector(trashChanged), for: .valueChanged)
         episodesSwitch.addTarget(self, action: #selector(episodesChanged), for: .valueChanged)
@@ -45,6 +69,8 @@ final class CustomizedFeaturesSettingsViewController: SettingsDetailViewControll
 
         for view in [
             makeDescriptionLabel("konomitv-customizations を適用した改造版サーバー向けの機能を、機能ごとに切り替えます。素の KonomiTV サーバーでは使えません。この設定はこの端末だけに保存されます。"),
+            itemGroup(title: "拡張機能を無効にする", field: disableField),
+            makeDivider(),
             itemGroup(
                 title: "録画の保護",
                 field: makeFeatureField(
@@ -102,6 +128,23 @@ final class CustomizedFeaturesSettingsViewController: SettingsDetailViewControll
         field.axis = .vertical
         field.spacing = 14
         return field
+    }
+
+    /// 拡張機能全体の無効化。入口自体が消える操作なので、実行前に
+    /// 確認を出す。無効化は解放を戻すことで行い、個別トグルの状態は
+    /// 触らない (解放し直せばそのまま復帰する)。前の画面へ戻ると、
+    /// 入口の行は消えた状態で表示される。
+    @objc private func disablePressed() {
+        let alert = UIAlertController(
+            title: "拡張機能を無効にしますか",
+            message: "「改造版サーバーの機能」の入口が設定から消えて、機能が全部止まります。再び使うには、マイページの「App version」の行を7回タップしてください。機能ごとのトグルの状態は、そのまま残ります。",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "キャンセル", style: .cancel))
+        alert.addAction(UIAlertAction(title: "無効にする", style: .destructive) { [weak self] _ in
+            SettingsStore.shared.customizedServerFeaturesUnlocked = false
+            self?.navigationController?.popViewController(animated: true)
+        })
+        present(alert, animated: true)
     }
 
     // MARK: - 値の読み書き (変更はその場で保存する)
