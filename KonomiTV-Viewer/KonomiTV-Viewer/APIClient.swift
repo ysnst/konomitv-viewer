@@ -10,6 +10,9 @@ enum APIError: Error {
     case protectionUnavailable
     /// サーバーからの応答内容をもとに作った、ユーザー向けの文が入っている失敗。
     case message(String)
+    /// ログインの応答が返るまでの間に、接続先の変更・ログアウト・
+    /// 別のログインがあり、この試行が古くなった (応答は保存しない)。
+    case loginSuperseded
 
     /// 保護の切り替えに失敗した理由を、ユーザー向けの文にする。
     var protectionFailureMessage: String {
@@ -239,9 +242,25 @@ final class APIClient {
 
     // MARK: - ログイン
 
+    /// ログインの試行の通し番号。新しい試行のたびに進む。
+    /// 応答が返るまでの間に別の試行が始まっていたら、古い試行の
+    /// 応答は保存しない (遅れて届いた応答が、新しいログインを
+    /// 上書きしてしまうため)。
+    private var latestLoginAttempt = 0
+
     /// ユーザー名とパスワードでアクセストークンを取り、ログイン情報として保存する。
     /// トークンの口は OAuth2 形式 (フォーム送信) で、応答は JSON。
     func login(username: String, password: String) async throws {
+        // 始めた時点の接続先・認証の世代・試行の番号を控える。
+        // 応答が返るまでの間に接続先の変更 (前のログインの失効) や
+        // ログアウト・別のログインがあったら、この応答は古い試行の
+        // ものなので保存しない。保存してしまうと、接続先変更で
+        // 消したはずのログインが復活してしまう。
+        let store = SettingsStore.shared
+        let baseURLAtStart = store.baseURL
+        let generationAtStart = store.authGeneration
+        latestLoginAttempt += 1
+        let attempt = latestLoginAttempt
         var request = try request(forPath: "/api/users/token", method: "POST")
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         let body = "username=\(Self.formEncode(username))&password=\(Self.formEncode(password))"
@@ -249,7 +268,12 @@ final class APIClient {
         let (data, response) = try await session.data(for: request)
         try check(response)
         let token = try JSONDecoder().decode(TokenResponse.self, from: data)
-        SettingsStore.shared.saveLogin(username: username, password: password, token: token.access_token)
+        guard attempt == latestLoginAttempt,
+              store.authGeneration == generationAtStart,
+              store.baseURL == baseURLAtStart else {
+            throw APIError.loginSuperseded
+        }
+        store.saveLogin(username: username, password: password, token: token.access_token)
         // まだ同期したことのない端末では、サーバーに保存済みの
         // 設定があればログインのついでに自動で取り込む (Web 版と同じ
         // 動き)。アプリだけで完結するため常時有効。
@@ -972,18 +996,24 @@ final class WatchedHistorySync {
     /// 「消えた状態」として成功扱いにする。
     static func removeEntry(videoID: Int) async -> Bool {
         // 他の設定保存と重なって互いを上書きしないよう、保存の順番待ちに並ぶ。
+        // 認証の世代は、並ぶ前の (操作が起きた) 時点で確定させる。
+        // 実行が始まってから読むと、待ちの間にログインが切り替わった
+        // ときに、前のログインの削除を次のログインの世代として扱い、
+        // 次のログインへ書き込んでしまうため。
+        let generation = SettingsStore.shared.authGeneration
         let box = BoolResultBox()
         await ClientSettingsSaveQueue.shared.run {
-            box.value = await Self.removeEntrySerial(videoID: videoID)
+            box.value = await Self.removeEntrySerial(videoID: videoID, expectedGeneration: generation)
         }
         return box.value
     }
 
-    private static func removeEntrySerial(videoID: Int) async -> Bool {
+    private static func removeEntrySerial(videoID: Int, expectedGeneration: Int) async -> Bool {
         guard isEnabled else { return false }
-        // 開始時点の認証の世代を控え、取得のあとで照合する
-        // (途中でログインし直していたら、この回の削除は打ち切る)。
-        let generation = SettingsStore.shared.authGeneration
+        // 順番待ちの間にログインが変わっていたら、前のログインの
+        // 削除なので打ち切る。以後の照合も、操作時点の世代で行う。
+        let generation = expectedGeneration
+        guard SettingsStore.shared.authGeneration == generation else { return false }
         for _ in 0..<2 {
             do {
                 var settings = try await APIClient.shared.fetchClientSettings()
@@ -1038,17 +1068,24 @@ final class WatchedHistorySync {
     ///   (created_at が最小の) ものから落とす (Web 版の動きと同じ)。
     static func syncPosition(videoID: Int, position: Double, registerIfNeeded: Bool) async {
         // 他の設定保存と重なって互いを上書きしないよう、保存の順番待ちに並ぶ。
+        // 認証の世代は、並ぶ前の (操作が起きた) 時点で確定させる
+        // (removeEntry と同じ理由)。
+        let generation = SettingsStore.shared.authGeneration
         await ClientSettingsSaveQueue.shared.run {
             await Self.syncPositionSerial(
-                videoID: videoID, position: position, registerIfNeeded: registerIfNeeded)
+                videoID: videoID, position: position, registerIfNeeded: registerIfNeeded,
+                expectedGeneration: generation)
         }
     }
 
-    private static func syncPositionSerial(videoID: Int, position: Double, registerIfNeeded: Bool) async {
+    private static func syncPositionSerial(
+        videoID: Int, position: Double, registerIfNeeded: Bool, expectedGeneration: Int
+    ) async {
         guard isEnabled else { return }
-        // 開始時点の認証の世代を控え、取得のあとで照合する
-        // (途中でログインし直していたら、この回の更新は打ち切る)。
-        let generation = SettingsStore.shared.authGeneration
+        // 順番待ちの間にログインが変わっていたら、前のログインの
+        // 更新なので打ち切る。以後の照合も、操作時点の世代で行う。
+        let generation = expectedGeneration
+        guard SettingsStore.shared.authGeneration == generation else { return }
         // 1回だけやり直す (初回 + 再試行1回)。
         for _ in 0..<2 {
             do {

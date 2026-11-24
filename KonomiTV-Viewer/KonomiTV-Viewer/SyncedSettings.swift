@@ -246,7 +246,9 @@ final class SyncedSettingsStore {
     /// サーバーへの送信待ちの最新値と、送信中かどうかの控え。
     /// 変更が短時間に重なっても、古い内容の送信が新しい内容を
     /// 上書きしないよう、送信は1つずつ順番に行う。
-    private var pendingSave: SyncedClientSettings?
+    /// 送信待ちには、変更が起きた時点の認証の世代も持たせる。
+    /// 世代が今と違う送信待ちは、前のログインの変更なので送らない。
+    private var pendingSave: (settings: SyncedClientSettings, generation: Int)?
     private var isSaving = false
     /// 送信に続けて失敗した回数 (自動で試し直す回数の上限に使う)。
     private var consecutiveSaveFailures = 0
@@ -289,7 +291,11 @@ final class SyncedSettingsStore {
         current = settings
         saveToLocal(settings)
         guard Self.isSyncEnabled else { return }
-        pendingSave = settings
+        // 世代は変更が起きたこの時点で確定させる。送る係の開始時点や
+        // 共有の順番待ちの実行時点で読むと、待ちの間にログインが
+        // 切り替わったときに、前のログインの変更を次のログインの
+        // 世代として扱ってしまうため。
+        pendingSave = (settings, SettingsStore.shared.authGeneration)
         guard !isSaving else { return }
         isSaving = true
         consecutiveSaveFailures = 0
@@ -300,38 +306,60 @@ final class SyncedSettingsStore {
     /// 送信に失敗した分は待ちに戻し、少し置いてから自動で試し直す
     /// (回数の上限あり)。戻さないと、その変更はサーバーへ二度と
     /// 送られなくなってしまうため。
+    /// 送る係は、前のログインの分の処理で終わらないよう、世代の
+    /// 違う送信待ちは取り下げ、今のログインの送信待ちが残って
+    /// いれば続けて送る (古い係の終了処理が、新しいログインの
+    /// 送信待ちを取り残したり消したりしないため)。
     private func drainSaveQueue() async {
-        let generationAtStart = SettingsStore.shared.authGeneration
-        while let settings = pendingSave {
+        while let item = pendingSave {
             pendingSave = nil
-            if await saveToServer(settings) {
+            // 前のログインの変更は送らない。
+            guard item.generation == SettingsStore.shared.authGeneration else { continue }
+            if await saveToServer(item.settings, expectedGeneration: item.generation) {
                 consecutiveSaveFailures = 0
                 continue
             }
-            // 認証の世代が変わっていたら、前のログインの変更なので
-            // 戻さない (新しいログインへ送ってしまうため)。
-            guard SettingsStore.shared.authGeneration == generationAtStart else {
-                isSaving = false
-                return
-            }
-            // その間に新しい変更が来ていたら、そちらが最新なので
-            // 古い分は戻さない。
-            if pendingSave == nil {
-                pendingSave = settings
-            }
+            // 送信の途中でログインが変わっていたら、この変更は
+            // 前のログインのものなので戻さない。
+            guard SettingsStore.shared.authGeneration == item.generation else { continue }
+            // その間に新しい変更が来ていたら、そちらが最新 (設定は
+            // 一式の控えなので、新しい分に失敗した分の変更も含まれる)
+            // ため、古い分は戻さず、新しい分を続けて送る。
+            guard pendingSave == nil else { continue }
+            pendingSave = item
             consecutiveSaveFailures += 1
-            isSaving = false
-            if consecutiveSaveFailures <= 3 {
-                Task { [weak self] in
-                    try? await Task.sleep(nanoseconds: 15_000_000_000)
-                    guard let self, self.pendingSave != nil, !self.isSaving else { return }
-                    self.isSaving = true
-                    await self.drainSaveQueue()
-                }
+            guard consecutiveSaveFailures <= 3 else {
+                // 試し直しの上限。諦めた分は待ちに残さない。
+                pendingSave = nil
+                continue
             }
-            return
+            // 少し間を置いてから試し直す (通信が戻るのを待つ)。
+            // 待つ間も係は続ける。途中で別のログインの変更が来たら、
+            // 次の周でそちらが扱われる。
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            // 待っている間にログアウトされていたら、送信待ちを
+            // 取り下げて係を終える (同期が切れている間に来た変更は、
+            // 待ちに残っていないため、ここには来ない)。
+            guard Self.isSyncEnabled else {
+                if pendingSave?.generation == item.generation {
+                    pendingSave = nil
+                }
+                break
+            }
         }
         isSaving = false
+        restartDrainIfNeeded()
+    }
+
+    /// 送る係を終えるときの後始末。終わる間際に今のログインの
+    /// 変更が来ていたら (係が動いていたため立て直せなかった分)、
+    /// 続けて送る係を立てる。
+    private func restartDrainIfNeeded() {
+        guard let item = pendingSave,
+              item.generation == SettingsStore.shared.authGeneration,
+              !isSaving else { return }
+        isSaving = true
+        Task { await self.drainSaveQueue() }
     }
 
     /// サーバー側の値を取り込んで、現在の値と違えば差し替える。
@@ -559,10 +587,13 @@ final class SyncedSettingsStore {
     /// 変更をサーバーへ送る。送れたかどうかを返す。
     /// 実際の送信は、他の保存 (視聴履歴・番組表の設定) と重なって
     /// 互いを上書きしないよう、保存の順番待ちに並んでから行う。
-    private func saveToServer(_ settings: SyncedClientSettings) async -> Bool {
+    /// 世代は呼び出し側が変更の時点で確定させたものを受け取る
+    /// (順番待ちの実行時点で読み直さない)。
+    private func saveToServer(_ settings: SyncedClientSettings, expectedGeneration: Int) async -> Bool {
         let box = BoolResultBox()
         await ClientSettingsSaveQueue.shared.run {
-            box.value = await self.saveToServerSerial(settings)
+            box.value = await self.saveToServerSerial(
+                settings, expectedGeneration: expectedGeneration)
         }
         return box.value
     }
@@ -571,12 +602,15 @@ final class SyncedSettingsStore {
     /// 送る直前に最新を取得 → この設定一式の項目だけ差し替え →
     /// last_synced_at を今に更新して送る。422 (その間に他の端末が先に
     /// 更新した) が返ったら、1回だけ取り直してやり直す。
-    private func saveToServerSerial(_ settings: SyncedClientSettings) async -> Bool {
-        // 開始時点の認証の世代を控え、取得のあと・送信の直前に
-        // 照合する。途中でログインし直していたら、取得は前の
-        // アカウント・送信は新しいアカウントになってしまうため、
-        // この回の保存は打ち切る。
-        let generation = SettingsStore.shared.authGeneration
+    private func saveToServerSerial(
+        _ settings: SyncedClientSettings, expectedGeneration: Int
+    ) async -> Bool {
+        // 照合は、変更が起きた時点の世代で行う。順番待ちの間に
+        // ログインし直していたら、取得は前のログイン・送信は
+        // 新しいログインになってしまうため、この回の保存は打ち切る。
+        let generation = expectedGeneration
+        guard SettingsStore.shared.authGeneration == generation,
+              SettingsStore.shared.isLoggedIn else { return false }
         for _ in 0..<2 {
             do {
                 var clientSettings = try await APIClient.shared.fetchClientSettings()

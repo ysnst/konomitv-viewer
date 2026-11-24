@@ -154,6 +154,19 @@ final class LiveCommentSession {
     /// 遅れて届く結果が残っている可能性のある接続では、それ以上
     /// 送らない。接続を張り直して、新しい接続が開けた時点で外す。
     private var postBlockedUntilReconnect = false
+    /// 今の視聴セッションで、サーバー側の視聴の準備が済んだ印。
+    /// startWatching への応答 (room / messageServer) が届いた時点で
+    /// 立つ。応答が届く前は、サーバー側にコメントの届け先がまだ
+    /// 組み上がっていないため、投稿は待ち行列に留めて送らない
+    /// (張り直しの直後に、待っていた投稿が準備の前に流れてしまう
+    /// のを防ぐ)。接続ごとに立て直す。
+    private var watchSessionReady = false
+    /// 送信済みだが結果が分からなくなった投稿を片付けるときの文
+    /// (時間切れ・切断・送信そのものの失敗で共用)。すでに投稿
+    /// されている可能性があるため「失敗」とは断定せず、自動では
+    /// 送り直さない。
+    private static let postResultUnknownMessage =
+        "コメントの送信結果が確認できませんでした。投稿されている可能性があります。"
     /// 自分のニコニコユーザー ID とプレミアムかどうか (ユーザー情報から)。
     private var myNiconicoUserID: Int?
     private var myNiconicoPremium: Bool?
@@ -317,6 +330,9 @@ final class LiveCommentSession {
     private func openWatchSession(url: URL) {
         disconnectMessageReceived = false
         commentSessionStarted = false
+        // 視聴の準備の印は接続ごとに立て直す。startWatching への
+        // 応答が届くまでは、待ち行列の投稿を送らない。
+        watchSessionReady = false
         // 張り直しが実って接続が開けたので、予約の印はここで消す。
         // 消さないままだと、成功したあとの切断では「すでに予約済み」と
         // 誤判定されて、二度と張り直されなくなる。
@@ -330,10 +346,12 @@ final class LiveCommentSession {
         // 「開けた」の合図が無いため、resume の直後に送る
         // (送信は接続が確立してから実際に行われる)。
         sendWatchJSON(["type": "startWatching", "data": ["reconnect": false]])
-        // 新しい接続が開けたので、時間切れによる投稿の停止を外し、
-        // 待ち行列に残っている投稿の続きを送る。
+        // 新しい接続が開けたので、時間切れによる投稿の停止は外す。
+        // ただし、待ち行列の投稿はまだ送らない。サーバー側の視聴の
+        // 準備が済んだ合図 (room / messageServer の応答) が届いて
+        // から送る (届く前に送ると、届け先が組み上がっておらず、
+        // 拒否されたり消えたりする可能性があるため)。
         postBlockedUntilReconnect = false
-        pumpPostQueue()
     }
 
     private func sendWatchJSON(_ object: [String: Any]) {
@@ -403,6 +421,9 @@ final class LiveCommentSession {
                     threadID: payload["threadId"] as? String ?? "",
                     postKey: payload["yourPostKey"] as? String)
             }
+            // startWatching への応答が届いた = サーバー側の視聴の
+            // 準備が済んだ合図。待ち行列の投稿はここから送る。
+            markWatchSessionReady()
         case "messageServer":
             // ニコニコ実況側の応答。コメントセッションは常に
             // NX-Jikkyo 側へ張る (Web 版と同じ)。
@@ -413,6 +434,8 @@ final class LiveCommentSession {
                     url: url, threadID: "",
                     postKey: hashed.map { "nicolive:\($0)" })
             }
+            // room と同じく、視聴の準備が済んだ合図。
+            markWatchSessionReady()
         case "postCommentResult":
             resolvePendingPost(error: nil)
         case "error":
@@ -665,11 +688,18 @@ final class LiveCommentSession {
         pumpPostQueue()
     }
 
+    /// サーバー側の視聴の準備が済んだ合図を受けた。待ち行列に
+    /// 残っている投稿の続きを送る。
+    private func markWatchSessionReady() {
+        watchSessionReady = true
+        pumpPostQueue()
+    }
+
     /// 待ち行列の先頭を送る。結果待ちが空いていて、接続が生きて
-    /// いて、時間切れによる停止中でないときだけ送る (結果待ちは
-    /// 常に最大1件)。
+    /// いて、視聴の準備が済んでいて、時間切れによる停止中でない
+    /// ときだけ送る (結果待ちは常に最大1件)。
     private func pumpPostQueue() {
-        guard pendingPost == nil, !postBlockedUntilReconnect,
+        guard pendingPost == nil, !postBlockedUntilReconnect, watchSessionReady,
               let watchTask, watchTask.state == .running,
               !queuedPosts.isEmpty else { return }
         let post = queuedPosts.removeFirst()
@@ -680,7 +710,7 @@ final class LiveCommentSession {
             guard let base = vposBaseTime else { return 0 }
             return Int((Date().timeIntervalSince(base) * 100).rounded())
         }()
-        sendWatchJSON([
+        let object: [String: Any] = [
             "type": "postComment",
             "data": [
                 "text": post.text,
@@ -690,19 +720,41 @@ final class LiveCommentSession {
                 "vpos": vpos,
                 "isAnonymous": true,
             ],
-        ])
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: object),
+              let text = String(data: data, encoding: .utf8) else {
+            // 送る形にできなかった (実際には起きない想定)。送って
+            // いないので、失敗として片付けて続きを送る。
+            pendingPost = nil
+            post.completion("コメントの送信に失敗しました。")
+            pumpPostQueue()
+            return
+        }
+        let pendingID = post.id
+        watchTask.send(.string(text)) { [weak self] error in
+            guard error != nil else { return }
+            // 送信そのものが失敗した。届いているかどうかは分からない
+            // ため、結果不明として片付ける (時間切れと同じ扱い)。
+            // 切断の合図の側で先に片付けられていたら何もしない。
+            guard let self, !self.destroyed,
+                  let current = self.pendingPost, current.id == pendingID
+            else { return }
+            self.pendingPost = nil
+            current.completion(Self.postResultUnknownMessage)
+            self.postBlockedUntilReconnect = true
+            self.scheduleReconnect(after: 0)
+        }
         // 15秒たっても結果が来なければ、その投稿は結果不明として
         // 片付ける。すでに投稿されている可能性があるため、自動では
         // 送り直さない。さらに、その接続には遅れて届く結果が残って
         // いる可能性があるため、この接続ではそれ以上送らず、接続を
         // 張り直して新しい接続が開けてから続きを送る。
-        let pendingID = post.id
         DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
             guard let self, !self.destroyed,
                   let expired = self.pendingPost, expired.id == pendingID
             else { return }
             self.pendingPost = nil
-            expired.completion("コメントの送信結果が確認できませんでした。投稿されている可能性があります。")
+            expired.completion(Self.postResultUnknownMessage)
             self.postBlockedUntilReconnect = true
             self.scheduleReconnect(after: 0)
         }
@@ -749,10 +801,13 @@ final class LiveCommentSession {
         }
     }
 
-    /// 窓口とタイマーを片付ける。結果待ちの投稿は、結果が二度と
-    /// 来ないため失敗として片付ける。まだ送っていない待ち行列は、
-    /// 張り直しのときは残しておき (新しい接続が開けたら続きを
-    /// 送る)、画面を離れるときだけ失敗として片付ける。
+    /// 窓口とタイマーを片付ける。結果待ちの投稿は、すでに送信
+    /// 済みで結果だけが来なくなった状態なので、「失敗」とは断定
+    /// せず結果不明として片付ける (サーバーが受け取っている
+    /// 可能性があり、利用者が手で送り直すと重複するため。自動
+    /// でも送り直さない)。まだ送っていない待ち行列は、張り直し
+    /// のときは残しておき (新しい接続が開けて準備が済んだら
+    /// 続きを送る)、画面を離れるときだけ失敗として片付ける。
     private func teardownSockets(keepQueuedPosts: Bool = false) {
         keepSeatTimer?.invalidate()
         keepSeatTimer = nil
@@ -764,9 +819,10 @@ final class LiveCommentSession {
         commentTask?.cancel(with: .normalClosure, reason: nil)
         commentTask = nil
         commentSessionStarted = false
+        watchSessionReady = false
         if let post = pendingPost {
             pendingPost = nil
-            post.completion("コメントの送信に失敗しました。WebSocket 接続が確立されていません。")
+            post.completion(Self.postResultUnknownMessage)
         }
         if !keepQueuedPosts {
             let posts = queuedPosts
