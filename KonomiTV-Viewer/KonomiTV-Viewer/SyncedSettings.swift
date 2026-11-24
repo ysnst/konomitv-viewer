@@ -257,17 +257,16 @@ final class SyncedSettingsStore {
     /// 送信に続けて失敗した回数 (自動で試し直す回数の上限に使う)。
     private var consecutiveSaveFailures = 0
 
-    /// サーバー側にあった、アプリが読み解けない形の登録の控え。
-    /// 読み取りで落としたものを、送り返しのときにそのまま足し戻して、
-    /// Web 版などで作った登録が保存のたびに消えないようにする。
-    /// 端末内の控えには残らないため、効くのは取り込んでから次に
-    /// 保存するまでの間 (部分的な対応)。
-    private var preservedMutedKeywordEntries: [Any] = []
-    private var preservedMylistEntries: [Any] = []
-    /// アプリが知らない名前だった字幕フォントの値と、そのときに
-    /// 端末側で効いていた値 (利用者が選び直したら控えは捨てる)。
-    private var preservedCaptionFont: String?
-    private var captionFontWhenPreserved: String?
+    /// 利用者が字幕フォントを自分で選び直したかどうか。
+    /// サーバー側にアプリが知らない名前のフォントがあるときは、
+    /// 利用者が明示的に選び直した場合だけ送る値で置き換える
+    /// (保存のたびに、知らないフォントが端末側の値で消えないため)。
+    /// 判定は保存の直前に取得した最新のサーバー値に対して行う。
+    private var captionFontEditedByUser = false
+
+    /// 取り込みの通し番号。取り込みが重なったとき、遅れて届いた
+    /// 古い応答が、新しい応答で取り込んだ値を上書きしないために使う。
+    private var refreshSequence = 0
 
     /// ログアウトで端末内の控えが消されたあと、今の値を控えから
     /// 読み直す (控えが無くなった項目は既定値に戻る)。送信待ちの
@@ -275,22 +274,18 @@ final class SyncedSettingsStore {
     /// 送らないため)。
     func reloadFromLocalAfterLogout() {
         pendingSave = nil
-        preservedMutedKeywordEntries = []
-        preservedMylistEntries = []
-        preservedCaptionFont = nil
-        captionFontWhenPreserved = nil
+        captionFontEditedByUser = false
         current = Self.loadFromLocal()
     }
 
     /// 値を差し替える。端末内の控えへはその場で書き、同期が効いている
     /// ときはサーバーへも送る (送信は裏で行い、失敗しても握りつぶす)。
     func update(_ settings: SyncedClientSettings) {
-        // 知らない名前のフォントを、利用者が自分で選び直した場合は、
-        // サーバー側の控えはもう足し戻さない。
-        if let whenPreserved = captionFontWhenPreserved,
-           settings.captionFont != whenPreserved {
-            preservedCaptionFont = nil
-            captionFontWhenPreserved = nil
+        // 利用者が字幕フォントを選び直したら、その印を立てる
+        // (サーバー側の知らない名前のフォントを、保存時に置き換えて
+        // よいのはこの場合だけ)。
+        if settings.captionFont != current.captionFont {
+            captionFontEditedByUser = true
         }
         current = settings
         saveToLocal(settings)
@@ -330,6 +325,11 @@ final class SyncedSettingsStore {
             // 送信の途中でログインが変わっていたら、この変更は
             // 前のログインのものなので戻さない。
             guard SettingsStore.shared.authGeneration == item.generation else { continue }
+            // 同期が切り替わって無効になった変更も戻さない。戻すと、
+            // 送り直しの待ち時間 (15秒) を無効な分が占有して、
+            // 新しい保存がその間ずっと待たされてしまうため。
+            guard item.syncGeneration == SettingsStore.shared.syncGeneration,
+                  Self.isSyncEnabled else { continue }
             // その間に新しい変更が来ていたら、そちらが最新 (設定は
             // 一式の控えなので、新しい分に失敗した分の変更も含まれる)
             // ため、古い分は戻さず、新しい分を続けて送る。
@@ -345,10 +345,12 @@ final class SyncedSettingsStore {
             // 待つ間も係は続ける。途中で別のログインの変更が来たら、
             // 次の周でそちらが扱われる。
             try? await Task.sleep(nanoseconds: 15_000_000_000)
-            // 待っている間にログアウトされていたら、送信待ちを
-            // 取り下げて係を終える (同期が切れている間に来た変更は、
-            // 待ちに残っていないため、ここには来ない)。
-            guard Self.isSyncEnabled else {
+            // 待っている間にログアウトされていたり、同期が切り替わって
+            // この分が無効になっていたら、送信待ちを取り下げて係を
+            // 終える (同期が切れている間に来た変更は、待ちに残って
+            // いないため、ここには来ない)。
+            guard Self.isSyncEnabled,
+                  SettingsStore.shared.syncGeneration == item.syncGeneration else {
                 if pendingSave?.generation == item.generation,
                    pendingSave?.syncGeneration == item.syncGeneration {
                     pendingSave = nil
@@ -382,6 +384,9 @@ final class SyncedSettingsStore {
         guard pendingSave == nil, !isSaving else { return false }
         let currentAtStart = current
         let generationAtStart = SettingsStore.shared.authGeneration
+        let syncGenerationAtStart = SettingsStore.shared.syncGeneration
+        refreshSequence += 1
+        let sequence = refreshSequence
         guard let settings = try? await APIClient.shared.fetchClientSettings() else {
             return false
         }
@@ -390,11 +395,18 @@ final class SyncedSettingsStore {
         // 変えたときの巻き戻しを防ぐ)。開始時点の確かめだけでは、
         // 取得の合間に始まった変更を取りこぼすため、取得のあとでも
         // もう一度確かめる。
+        // 同期が切り替わっていたら、その取得はもう無効なので反映
+        // しない (同期を切った後に、取得済みの値が端末へ反映されて
+        // しまうのを防ぐ。切って入れ直した場合も、古い取得は
+        // 受け付けない)。取り込みが重なったときは、新しい方の
+        // 応答だけを反映する (遅れて届いた古い応答に巻き戻されないため)。
         guard pendingSave == nil, !isSaving, current == currentAtStart,
-              SettingsStore.shared.authGeneration == generationAtStart else {
+              SettingsStore.shared.authGeneration == generationAtStart,
+              Self.isSyncEnabled,
+              SettingsStore.shared.syncGeneration == syncGenerationAtStart,
+              sequence == refreshSequence else {
             return false
         }
-        capturePreservedEntries(from: settings)
         let server = Self.settings(fromClientSettings: settings, fallback: current)
         guard server != current else { return false }
         current = server
@@ -423,6 +435,12 @@ final class SyncedSettingsStore {
         // この端末が一度でも同期していたら、同期を切ったのは意図的と
         // みなして何もしない。
         guard store.lastSyncedAt == 0 else { return }
+        // 開始時点の状態を控える。取得の間に利用者が設定を編集したり、
+        // 同期を自分で切り替えたりしたら、古いサーバー値での適用は
+        // しない (利用者の操作を優先する)。
+        let authGenerationAtStart = store.authGeneration
+        let syncGenerationAtStart = store.syncGeneration
+        let currentAtStart = current
         guard let settings = try? await APIClient.shared.fetchClientSettings() else {
             // 一時的な通信失敗で二度と試さなくならないよう、試した印を
             // 戻す (次の機会に試し直せる。アカウントが変わっていたら触らない)。
@@ -430,14 +448,20 @@ final class SyncedSettingsStore {
             return
         }
         // 取得の途中でログアウトやアカウント切り替えがあったら、
-        // 前の状態で取ってきた設定では上書きしない。
-        guard store.isLoggedIn, store.accessToken == token else { return }
+        // 前の状態で取ってきた設定では上書きしない。同期の切り替え・
+        // 設定の編集・他の経路での同期があった場合も同じで、開始時点
+        // の状態と食い違っていたら適用しない。
+        guard store.isLoggedIn, store.accessToken == token,
+              store.authGeneration == authGenerationAtStart,
+              store.syncGeneration == syncGenerationAtStart,
+              !store.syncSettings,
+              store.lastSyncedAt == 0,
+              current == currentAtStart else { return }
         // サーバー側に保存済みの設定が無ければ何もしない。
         let serverSyncedAt = (settings["last_synced_at"] as? NSNumber)?.doubleValue ?? 0
         guard serverSyncedAt > 0 else { return }
         // サーバー側の値を正として取り込み、同期を有効にする
         // (Web 版の「強制的にサーバーから同期」と同じ扱い)。
-        capturePreservedEntries(from: settings)
         let server = Self.settings(fromClientSettings: settings, fallback: current)
         current = server
         saveToLocal(server)
@@ -445,34 +469,6 @@ final class SyncedSettingsStore {
         store.syncSettings = true
         // 番組表の表示設定も、同期が有効になったので合わせて取り込む。
         _ = await TimeTableSettingsStore.shared.refreshFromServer()
-    }
-
-    /// サーバー側の利用者設定から、アプリが読み解けない形の登録を
-    /// 控える。読み解けたものは控えない (送り返しで二重にならないため)。
-    private func capturePreservedEntries(from clientSettings: [String: Any]) {
-        if let rawEntries = clientSettings["muted_comment_keywords"] as? [Any] {
-            preservedMutedKeywordEntries = rawEntries.filter { raw in
-                guard let entry = raw as? [String: Any],
-                      let pattern = entry["pattern"] as? String, !pattern.isEmpty
-                else { return true }
-                return false
-            }
-        }
-        if let rawEntries = clientSettings["mylist"] as? [Any] {
-            preservedMylistEntries = rawEntries.filter { raw in
-                guard let entry = raw as? [String: Any] else { return true }
-                return MylistEntry(dictionary: entry) == nil
-            }
-        }
-        if let font = clientSettings["caption_font"] as? String {
-            if SyncedClientSettings.captionFontOptions.contains(where: { $0.value == font }) {
-                preservedCaptionFont = nil
-                captionFontWhenPreserved = nil
-            } else {
-                preservedCaptionFont = font
-                captionFontWhenPreserved = current.captionFont
-            }
-        }
     }
 
     // MARK: - 端末内の控え
@@ -637,7 +633,18 @@ final class SyncedSettingsStore {
                       SettingsStore.shared.syncGeneration == expectedSyncGeneration,
                       SettingsStore.shared.syncSettings,
                       SettingsStore.shared.isLoggedIn else { return false }
-                clientSettings["caption_font"] = settings.captionFont
+                // 字幕フォント：サーバー側の値がアプリの知らない名前で、
+                // 利用者が自分で選び直してもいないときは、そのまま
+                // 残す (無関係な設定の保存で、他の端末が入れたフォントが
+                // 端末側の値に置き換わって消えないため)。利用者が
+                // 選び直したときだけ、送る値で置き換える。
+                if let latestFont = clientSettings["caption_font"] as? String,
+                   !SyncedClientSettings.captionFontOptions.contains(where: { $0.value == latestFont }),
+                   !captionFontEditedByUser {
+                    // 取得した値が既に入っているので、何もしない。
+                } else {
+                    clientSettings["caption_font"] = settings.captionFont
+                }
                 clientSettings["always_border_caption_text"] = settings.alwaysBorderCaptionText
                 clientSettings["specify_caption_opacity"] = settings.specifyCaptionOpacity
                 clientSettings["caption_opacity"] = settings.captionOpacity
@@ -655,24 +662,17 @@ final class SyncedSettingsStore {
                     settings.muteConsecutiveSameCharactersComments
                 clientSettings["mute_comment_keywords_normalize_alphanumeric_width_case"] =
                     settings.muteCommentKeywordsNormalize
-                clientSettings["muted_comment_keywords"] = settings.mutedCommentKeywords.map {
-                    ["match": $0.match, "pattern": $0.pattern]
-                }
-                // 読み取りで落とした、形の違う登録はそのまま足し戻す
-                // (落としたまま送ると、サーバーから消えてしまうため)。
-                if !preservedMutedKeywordEntries.isEmpty {
-                    let typed: [Any] = settings.mutedCommentKeywords.map {
-                        ["match": $0.match, "pattern": $0.pattern] as [String: Any]
-                    }
-                    clientSettings["muted_comment_keywords"] = typed + preservedMutedKeywordEntries
-                }
-                // アプリが知らない名前の字幕フォントも、利用者が
-                // 選び直していない間はそのまま残す。
-                if let preservedCaptionFont,
-                   settings.captionFont == captionFontWhenPreserved {
-                    clientSettings["caption_font"] = preservedCaptionFont
-                }
-                clientSettings["muted_niconico_user_ids"] = settings.mutedNiconicoUserIDs
+                // 配列の項目は、以前に取得した控えではなく、いま取得した
+                // 最新のサーバー値を土台に差し替える。形の違う要素は
+                // そのまま残し、利用者が消した既知の要素は落とし、
+                // 利用者が足した要素だけを加える (他の端末が保存の
+                // 直前に追加した、形の違う登録が消えないため)。
+                clientSettings["muted_comment_keywords"] = Self.mergedKeywordEntries(
+                    latest: clientSettings["muted_comment_keywords"],
+                    desired: settings.mutedCommentKeywords)
+                clientSettings["muted_niconico_user_ids"] = Self.mergedStringEntries(
+                    latest: clientSettings["muted_niconico_user_ids"],
+                    desired: settings.mutedNiconicoUserIDs)
                 clientSettings["video_watched_history_max_count"] = settings.videoWatchedHistoryMaxCount
                 clientSettings["video_panel_active_tab"] = settings.videoPanelActiveTab
                 clientSettings["tv_panel_active_tab"] = settings.tvPanelActiveTab
@@ -681,14 +681,17 @@ final class SyncedSettingsStore {
                 clientSettings["show_original_broadcast_time_during_playback"] =
                     settings.showOriginalBroadcastTimeDuringPlayback
                 clientSettings["pinned_channel_ids"] = settings.pinnedChannelIDs
-                clientSettings["mylist"] = settings.mylist.map { $0.dictionary }
-                if !preservedMylistEntries.isEmpty {
-                    clientSettings["mylist"] = settings.mylist.map { $0.dictionary as Any }
-                        + preservedMylistEntries
-                }
+                clientSettings["mylist"] = Self.mergedMylistEntries(
+                    latest: clientSettings["mylist"], desired: settings.mylist)
                 clientSettings["last_synced_at"] = Date().timeIntervalSince1970
                 try await APIClient.shared.updateClientSettings(
                     clientSettings, expectedAuthGeneration: generation)
+                // 送れたら、フォントの「利用者が選び直した」印は下ろす
+                // (より新しい編集が控えているときは、その編集の印を
+                // 消さないよう、送った値と現在の値が同じときだけ)。
+                if settings.captionFont == current.captionFont {
+                    captionFontEditedByUser = false
+                }
                 return true
             } catch let APIError.badStatus(code) where code == 422 {
                 continue  // 取り直して1回だけやり直す。
@@ -697,6 +700,88 @@ final class SyncedSettingsStore {
             }
         }
         return false
+    }
+
+    /// ミュートキーワードの配列を、最新のサーバー値を土台に組み直す。
+    /// 形の違う要素 (辞書でない・キーワードが空など) はそのまま残す。
+    /// 読み解ける要素は、利用者の一覧にあるものだけをサーバー側の
+    /// 形のまま残し、一覧に無いものは利用者が消したものとして落とす。
+    /// 利用者の一覧にあってサーバー側に無いものは、末尾に足す。
+    private static func mergedKeywordEntries(
+        latest: Any?, desired: [MutedCommentKeyword]
+    ) -> [Any] {
+        func key(match: String, pattern: String) -> String { match + "\u{1}" + pattern }
+        let desiredKeys = Set(desired.map { key(match: $0.match, pattern: $0.pattern) })
+        var result: [Any] = []
+        var seen = Set<String>()
+        if let rawEntries = latest as? [Any] {
+            for raw in rawEntries {
+                guard let entry = raw as? [String: Any],
+                      let pattern = entry["pattern"] as? String, !pattern.isEmpty
+                else {
+                    result.append(raw)
+                    continue
+                }
+                let entryKey = key(match: entry["match"] as? String ?? "partial",
+                                   pattern: pattern)
+                if desiredKeys.contains(entryKey) {
+                    result.append(raw)
+                    seen.insert(entryKey)
+                }
+            }
+        }
+        for keyword in desired
+        where !seen.contains(key(match: keyword.match, pattern: keyword.pattern)) {
+            result.append(["match": keyword.match, "pattern": keyword.pattern] as [String: Any])
+        }
+        return result
+    }
+
+    /// マイリストの配列を、最新のサーバー値を土台に組み直す。
+    /// キーワードと同じ考え方で、照合の鍵は種類と番号の組。
+    /// 読み解ける要素のうち利用者の一覧に無いものは、利用者が
+    /// 消したものとして落とす (消した登録が復活しないため)。
+    private static func mergedMylistEntries(
+        latest: Any?, desired: [MylistEntry]
+    ) -> [Any] {
+        func key(type: String, id: Int) -> String { type + "#" + String(id) }
+        let desiredKeys = Set(desired.map { key(type: $0.type, id: $0.id) })
+        var result: [Any] = []
+        var seen = Set<String>()
+        if let rawEntries = latest as? [Any] {
+            for raw in rawEntries {
+                guard let entry = raw as? [String: Any],
+                      let parsed = MylistEntry(dictionary: entry)
+                else {
+                    result.append(raw)
+                    continue
+                }
+                let entryKey = key(type: parsed.type, id: parsed.id)
+                if desiredKeys.contains(entryKey) {
+                    result.append(raw)
+                    seen.insert(entryKey)
+                }
+            }
+        }
+        for entry in desired where !seen.contains(key(type: entry.type, id: entry.id)) {
+            result.append(entry.dictionary as Any)
+        }
+        return result
+    }
+
+    /// 文字列の配列 (ミュートするユーザー ID) を、最新のサーバー値を
+    /// 土台に組み直す。文字列でない要素はそのまま残す。
+    private static func mergedStringEntries(latest: Any?, desired: [String]) -> [Any] {
+        guard let rawEntries = latest as? [Any] else { return desired }
+        var result: [Any] = rawEntries.filter { raw in
+            guard let value = raw as? String else { return true }
+            return desired.contains(value)
+        }
+        for value in desired
+        where !rawEntries.contains(where: { ($0 as? String) == value }) {
+            result.append(value)
+        }
+        return result
     }
 
     /// 利用者設定の辞書から設定一式を組み立てる。項目が無い・形が違う
@@ -754,8 +839,8 @@ final class SyncedSettingsStore {
         }
         if let rawEntries = clientSettings["muted_comment_keywords"] as? [Any] {
             // 1件ずつ読む (1件の形違いで全体を落とさないため)。
-            // 読み解けなかったものは capturePreservedEntries 側で控え、
-            // 送り返しのときにそのまま足し戻す。
+            // 読み解けなかったものは、保存のときに最新のサーバー値を
+            // 土台にしてそのまま残す (送り返しで落とさない)。
             result.mutedCommentKeywords = rawEntries.compactMap { raw in
                 guard let entry = raw as? [String: Any],
                       let pattern = entry["pattern"] as? String, !pattern.isEmpty
@@ -794,8 +879,8 @@ final class SyncedSettingsStore {
         if let rawEntries = clientSettings["mylist"] as? [Any] {
             // 形の違うものは読み飛ばすが、シリーズなど種類の違う登録は
             // そのまま保持する (保存のときに落とさないため)。
-            // 読み飛ばしたものは capturePreservedEntries 側で控え、
-            // 送り返しのときにそのまま足し戻す。
+            // 読み飛ばしたものは、保存のときに最新のサーバー値を
+            // 土台にしてそのまま残す。
             result.mylist = rawEntries.compactMap { raw in
                 (raw as? [String: Any]).flatMap(MylistEntry.init(dictionary:))
             }

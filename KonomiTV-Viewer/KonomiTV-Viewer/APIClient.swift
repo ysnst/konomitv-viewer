@@ -1017,25 +1017,36 @@ final class WatchedHistorySync {
         // 認証の世代は、並ぶ前の (操作が起きた) 時点で確定させる。
         // 実行が始まってから読むと、待ちの間にログインが切り替わった
         // ときに、前のログインの削除を次のログインの世代として扱い、
-        // 次のログインへ書き込んでしまうため。
+        // 次のログインへ書き込んでしまうため。同期の世代も同じ理由で、
+        // 操作時点で確定させる (待ちの間や取得の間に同期を切られたら、
+        // この削除は送らない)。
         let generation = SettingsStore.shared.authGeneration
+        let syncGeneration = SettingsStore.shared.syncGeneration
         let box = BoolResultBox()
         await ClientSettingsSaveQueue.shared.run {
-            box.value = await Self.removeEntrySerial(videoID: videoID, expectedGeneration: generation)
+            box.value = await Self.removeEntrySerial(
+                videoID: videoID, expectedGeneration: generation,
+                expectedSyncGeneration: syncGeneration)
         }
         return box.value
     }
 
-    private static func removeEntrySerial(videoID: Int, expectedGeneration: Int) async -> Bool {
+    private static func removeEntrySerial(
+        videoID: Int, expectedGeneration: Int, expectedSyncGeneration: Int
+    ) async -> Bool {
         guard isEnabled else { return false }
         // 順番待ちの間にログインが変わっていたら、前のログインの
         // 削除なので打ち切る。以後の照合も、操作時点の世代で行う。
+        // 同期が切り替わっていた場合も打ち切る。
         let generation = expectedGeneration
-        guard SettingsStore.shared.authGeneration == generation else { return false }
+        guard SettingsStore.shared.authGeneration == generation,
+              SettingsStore.shared.syncGeneration == expectedSyncGeneration else { return false }
         for _ in 0..<2 {
             do {
                 var settings = try await APIClient.shared.fetchClientSettings()
                 guard SettingsStore.shared.authGeneration == generation,
+                      SettingsStore.shared.syncGeneration == expectedSyncGeneration,
+                      SettingsStore.shared.syncSettings,
                       SettingsStore.shared.isLoggedIn else { return false }
                 // 履歴は生の配列のまま扱い、辞書の形の要素だけを
                 // 対象にする (形の違う要素が1件あるだけで全体が
@@ -1087,28 +1098,35 @@ final class WatchedHistorySync {
     static func syncPosition(videoID: Int, position: Double, registerIfNeeded: Bool) async {
         // 他の設定保存と重なって互いを上書きしないよう、保存の順番待ちに並ぶ。
         // 認証の世代は、並ぶ前の (操作が起きた) 時点で確定させる
-        // (removeEntry と同じ理由)。
+        // (removeEntry と同じ理由)。同期の世代も同じく操作時点で
+        // 確定させる (同期を切った後に、この更新が送られないため)。
         let generation = SettingsStore.shared.authGeneration
+        let syncGeneration = SettingsStore.shared.syncGeneration
         await ClientSettingsSaveQueue.shared.run {
             await Self.syncPositionSerial(
                 videoID: videoID, position: position, registerIfNeeded: registerIfNeeded,
-                expectedGeneration: generation)
+                expectedGeneration: generation, expectedSyncGeneration: syncGeneration)
         }
     }
 
     private static func syncPositionSerial(
-        videoID: Int, position: Double, registerIfNeeded: Bool, expectedGeneration: Int
+        videoID: Int, position: Double, registerIfNeeded: Bool, expectedGeneration: Int,
+        expectedSyncGeneration: Int
     ) async {
         guard isEnabled else { return }
         // 順番待ちの間にログインが変わっていたら、前のログインの
         // 更新なので打ち切る。以後の照合も、操作時点の世代で行う。
+        // 同期が切り替わっていた場合も打ち切る。
         let generation = expectedGeneration
-        guard SettingsStore.shared.authGeneration == generation else { return }
+        guard SettingsStore.shared.authGeneration == generation,
+              SettingsStore.shared.syncGeneration == expectedSyncGeneration else { return }
         // 1回だけやり直す (初回 + 再試行1回)。
         for _ in 0..<2 {
             do {
                 var settings = try await APIClient.shared.fetchClientSettings()
                 guard SettingsStore.shared.authGeneration == generation,
+                      SettingsStore.shared.syncGeneration == expectedSyncGeneration,
+                      SettingsStore.shared.syncSettings,
                       SettingsStore.shared.isLoggedIn else { return }
                 // 履歴は生の配列のまま扱い、辞書の形の要素だけを
                 // 対象にする (形の違う要素はそのまま残す)。

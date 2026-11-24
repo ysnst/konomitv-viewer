@@ -169,6 +169,10 @@ final class TimeTableSettingsStore {
     private var pendingSave: (settings: TimeTableDisplaySettings, generation: Int, syncGeneration: Int)?
     private var isSaving = false
 
+    /// 取り込みの通し番号。取り込みが重なったとき、遅れて届いた
+    /// 古い応答が、新しい応答で取り込んだ値を上書きしないために使う。
+    private var refreshSequence = 0
+
     /// ログアウトで端末内の控えが消されたあと、今の値を既定値に戻す
     /// (控えが消えた状態は、初期化のときに既定値で受けるのと同じ)。
     /// 送信待ちの変更も取り下げる。
@@ -218,6 +222,12 @@ final class TimeTableSettingsStore {
             // 送信の途中でログインが変わっていたら、この変更は
             // 前のログインのものなので戻さない。
             guard SettingsStore.shared.authGeneration == item.generation else { continue }
+            // 同期が切り替わって無効になった変更も戻さない。戻すと、
+            // 送り直しの待ち時間 (15秒) を無効な分が占有して、
+            // 新しい保存がその間ずっと待たされてしまうため
+            // (共通設定の同期と同じ扱い)。
+            guard item.syncGeneration == SettingsStore.shared.syncGeneration,
+                  Self.isSyncEnabled else { continue }
             // その間に新しい変更が来ていたら、そちらが最新なので
             // 古い分は戻さず、新しい分を続けて送る。
             guard pendingSave == nil else { continue }
@@ -240,9 +250,11 @@ final class TimeTableSettingsStore {
             // 次の周でそちらが扱われる (以前は、待つ間に来た新しい
             // ログインの変更まで消してしまっていた)。
             try? await Task.sleep(nanoseconds: 15_000_000_000)
-            // 待っている間にログアウトされていたら、送信待ちを
-            // 取り下げて係を終える。
-            guard Self.isSyncEnabled else {
+            // 待っている間にログアウトされていたり、同期が切り替わって
+            // この分が無効になっていたら、送信待ちを取り下げて係を
+            // 終える。
+            guard Self.isSyncEnabled,
+                  SettingsStore.shared.syncGeneration == item.syncGeneration else {
                 if pendingSave?.generation == item.generation,
                    pendingSave?.syncGeneration == item.syncGeneration {
                     pendingSave = nil
@@ -270,18 +282,30 @@ final class TimeTableSettingsStore {
     /// 差し替えたかどうかを返す (呼び出し側は true のときだけ組み直す)。
     /// 同期が効いていない・取得に失敗したときは何もせず false を返す。
     /// 送信待ちの変更があるとき・取り込みの最中に利用者が変更した
-    /// とき・認証の世代が変わったときは取り込まない (送る前の変更や
-    /// 別のログインの値を、古いサーバー値で上書きしないため)。
+    /// とき・認証や同期の世代が変わったときは取り込まない (送る前の
+    /// 変更や別のログインの値を、古いサーバー値で上書きしないため。
+    /// 同期を切った後に取得済みの値が反映されてしまうのも防ぐ)。
     func refreshFromServer() async -> Bool {
         guard Self.isSyncEnabled else { return false }
         guard pendingSave == nil, !isSaving else { return false }
         let currentAtStart = current
         let generationAtStart = SettingsStore.shared.authGeneration
+        let syncGenerationAtStart = SettingsStore.shared.syncGeneration
+        refreshSequence += 1
+        let sequence = refreshSequence
         guard let settings = try? await APIClient.shared.fetchClientSettings() else {
             return false
         }
+        // 同期が切り替わっていたら、その取得はもう無効なので反映
+        // しない (同期を切った後に、取得済みの値が端末へ反映されて
+        // しまうのを防ぐ。切って入れ直した場合も、古い取得は
+        // 受け付けない)。取り込みが重なったときは、新しい方の
+        // 応答だけを反映する。
         guard pendingSave == nil, !isSaving, current == currentAtStart,
-              SettingsStore.shared.authGeneration == generationAtStart else {
+              SettingsStore.shared.authGeneration == generationAtStart,
+              Self.isSyncEnabled,
+              SettingsStore.shared.syncGeneration == syncGenerationAtStart,
+              sequence == refreshSequence else {
             return false
         }
         let server = Self.settings(fromClientSettings: settings, fallback: current)
