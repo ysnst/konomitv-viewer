@@ -1307,6 +1307,9 @@ final class LivePlayerViewController: UIViewController {
 
     /// 実況コメントの接続を始める (画面を開いたときに1回だけ)。
     private func startCommentSession() {
+        // 【切り分け用の版】生放送へ入ると落ちる症状の切り分けのため、
+        // 実況コメントの接続は開始しない (0.19)。原因が切り分けできたら戻す。
+        return
         let session = LiveCommentSession(channelID: channel.id)
         session.nowProvider = { [weak self] in self?.liveCommentNow() ?? 0 }
         session.delayProvider = { [weak self] in self?.liveCommentDelaySeconds ?? 0 }
@@ -1529,6 +1532,10 @@ final class LivePlayerViewController: UIViewController {
     /// 抜き取り口を登録して、更新タイマーを回し始める
     /// (録画の H.265 経路と同じ作り)。
     private func startLiveCaptions() {
+        // 【切り分け用の版】生放送へ入ると落ちる症状の切り分けのため、
+        // 字幕の抜き取り口の登録と更新タイマーは動かさない (0.19)。
+        // 原因が切り分けできたら戻す。
+        return
         captionEngine.resetForNewPlayback()
         liveCaptionBasePTS = nil
         captionProbePacketCount = 0
