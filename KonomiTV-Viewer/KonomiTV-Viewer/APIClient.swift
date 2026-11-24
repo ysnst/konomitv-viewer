@@ -88,13 +88,6 @@ final class APIClient {
     init() {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
-        // API の応答は、端末内の HTTP キャッシュから出さない。
-        // 既定の作りのままだと、サーバーや中間の仕組みが付けた
-        // 保存の目印次第で、古い応答がそのまま返り続けることがあり、
-        // 生放送一覧の勢いやチューナーの空き具合などが更新されなく
-        // なるため (個別の要求側でも同じ方針を指定している)。
-        config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        config.urlCache = nil
         session = URLSession(configuration: config, delegate: authDelegate, delegateQueue: nil)
     }
 
@@ -119,9 +112,6 @@ final class APIClient {
         guard let url = url(forPath: path) else { throw APIError.notConfigured }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        // 端末内のキャッシュは使わず、毎回サーバーへ取りに行く
-        // (セッション側の設定と同じ方針を、要求ごとに明示する)。
-        request.cachePolicy = .reloadIgnoringLocalCacheData
         for (key, value) in SettingsStore.shared.serverAuthHeaders {
             request.setValue(value, forHTTPHeaderField: key)
         }
