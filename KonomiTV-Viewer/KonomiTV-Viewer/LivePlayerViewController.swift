@@ -238,9 +238,30 @@ final class LivePlayerViewController: UIViewController {
 
     /// 実況コメントの接続を始めたかどうか (1回だけ始める)。
     private var commentSessionStarted = false
+    /// 画面を離れるときに再生とコメント接続を止めたかどうか。
+    /// 戻ってきたときに再開するために使う (全画面で覆われただけの
+    /// ときは止めないため、その場合は印も付かない)。
+    private var stoppedOnDisappear = false
+    /// 離れる直前に再生中だったかどうか。戻ってきたときに、止めて
+    /// いた場合は作り直したあとも止めたままにするため。
+    private var wasPlayingBeforeStop = true
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        if stoppedOnDisappear {
+            // 上に重ねた画面 (ミュート設定など) から戻ってきたときは、
+            // 離れるときに止めた再生と実況コメントを再開する。
+            // コメントの接続は、止めた側を使い回さず新しく張り直す
+            // (止めた側に残っている張り直しの予約と重ならないため)。
+            stoppedOnDisappear = false
+            commentOverlay.start()
+            startStream()
+            if !wasPlayingBeforeStop {
+                pauseStream()
+            }
+            startCommentSession()
+            return
+        }
         guard !commentSessionStarted else { return }
         commentSessionStarted = true
         startCommentSession()
@@ -278,6 +299,14 @@ final class LivePlayerViewController: UIViewController {
 #endif
         hideRemotePanelImmediately()
         stopDataBroadcast()
+        // 戻ってきたときに再開できるよう、止めることと、再生中だった
+        // かどうかを控えておく。
+        stoppedOnDisappear = true
+#if canImport(MobileVLCKit)
+        wasPlayingBeforeStop = vlcPlayer?.isPlaying ?? false
+#else
+        wasPlayingBeforeStop = false
+#endif
         // 実況コメントの接続と流れる表示も止める。
         commentSession?.stop()
         commentOverlay.stop()

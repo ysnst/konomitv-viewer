@@ -261,6 +261,10 @@ final class LiveCommentSession {
     private func openWatchSession(url: URL) {
         disconnectMessageReceived = false
         commentSessionStarted = false
+        // 張り直しが実って接続が開けたので、予約の印はここで消す。
+        // 消さないままだと、成功したあとの切断では「すでに予約済み」と
+        // 誤判定されて、二度と張り直されなくなる。
+        reconnecting = false
         let task = urlSession.webSocketTask(with: url)
         watchTask = task
         task.resume()

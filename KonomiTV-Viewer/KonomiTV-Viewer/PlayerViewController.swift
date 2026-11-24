@@ -258,6 +258,11 @@ final class PlayerViewController: UIViewController {
     /// 画面を離れる処理が済んだかどうか。開始位置の取得 (非同期) が
     /// 離れた後に返ってきた場合、再生を始め直さないための印。
     private var didLeaveScreen = false
+    /// 画面を離れるときに控えた再生位置と、再生中だったかどうか。
+    /// 次の話などへ進んでから戻ってきたとき、片付け済みの再生を
+    /// 同じ位置から作り直すために使う。
+    private var positionBeforeLeave: Double = 0
+    private var wasPlayingBeforeLeave = true
 
     private let videoContainer = UIView()
     /// 映像の描画先。操作類の重ね物と兄弟にし、タップの受け口を映像だけに分ける。
@@ -648,6 +653,14 @@ final class PlayerViewController: UIViewController {
             self?.updateHeaderClock()
         }
         updateHeaderClock()
+        // 次の話など別の画面へ進んで戻ってきたときは、離れるときに
+        // 片付けた再生を作り直す (この画面が閉じられた場合はここへは
+        // 来ない)。全画面で覆われて戻った場合は片付けていないため、
+        // 仕組みが残っているかどうかで対象外になる。
+        if didLeaveScreen, !hasActiveEngine {
+            didLeaveScreen = false
+            resumePlaybackAfterReturn()
+        }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -2226,6 +2239,26 @@ final class PlayerViewController: UIViewController {
         captionMetadataOutput = nil
     }
 
+    /// 別の画面へ進んで戻ってきたときに、片付け済みの再生を作り直す。
+    /// 離れる直前の位置から再開し、離れる前に止めていた場合は
+    /// 作り直したあとも止めたままにする。コメントの流れる表示と
+    /// ロック画面の受け口も、画面を開いたときと同じように用意し直す。
+    private func resumePlaybackAfterReturn() {
+        commentOverlay.start()
+        beginNowPlaying()
+        startPlayback(at: positionBeforeLeave)
+        if !wasPlayingBeforeLeave {
+            pauseEngine()
+            updatePlayPauseIcon()
+        }
+        // おやすみタイマー (分数指定) の刻みが止まっていたら回し直す。
+        if sleepTimerRemainingSeconds != nil, sleepTimerTicker == nil {
+            sleepTimerTicker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                self?.tickSleepTimer()
+            }
+        }
+    }
+
     private func stopPlayback() {
         commentOverlay.stop()
         cancelAutoplayCountdown()
@@ -2240,6 +2273,11 @@ final class PlayerViewController: UIViewController {
         // 離れるときは最後の再生位置を報告する (Web 版が破棄時に報告するのと同じ)。
         if hasActiveEngine {
             let current = currentPosition()
+            // 戻ってきたときの作り直し用に、位置と再生中だったかを控える。
+            if current.isFinite {
+                positionBeforeLeave = current
+                wasPlayingBeforeLeave = isCurrentlyPlaying()
+            }
             if current.isFinite, current > lastReportedPosition {
                 lastReportedPosition = current
                 let videoID = program.id
