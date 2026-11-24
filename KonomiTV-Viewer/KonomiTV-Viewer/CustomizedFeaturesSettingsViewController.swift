@@ -53,7 +53,7 @@ final class CustomizedFeaturesSettingsViewController: SettingsDetailViewControll
         tunerInUseSwitch.addTarget(self, action: #selector(tunerInUseChanged), for: .valueChanged)
 
         for view in [
-            makeSwitchRow(text: "拡張オプションを使用", toggle: masterSwitch),
+            makeSwitchRow(text: "拡張オプションを使用", toggle: masterSwitch, headingStyle: true),
             makeDescriptionLabel("改造版サーバー向けの機能を、機能ごとに切り替えます。素のサーバーでは使えません。設定はこの端末だけに保存されます。"),
             makeDivider(),
             itemGroup(

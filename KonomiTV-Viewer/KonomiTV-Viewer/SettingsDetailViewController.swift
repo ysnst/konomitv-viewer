@@ -305,8 +305,11 @@ class SettingsDetailViewController: UIViewController {
 
     /// 説明文とスイッチを横に並べた行。文が残りの幅で折り返し、
     /// スイッチが右端に収まる組み方 (他の設定画面と同じ)。
-    func makeSwitchRow(text: String, toggle: WebToggle) -> UIStackView {
-        let label = makeDescriptionLabel(text)
+    /// headingStyle が true のときは、文を説明文ではなく項目の
+    /// 見出し (16.5px) と同じ大きさ・色で出す (上に見出しの無い、
+    /// 単独で立つ行用)。
+    func makeSwitchRow(text: String, toggle: WebToggle, headingStyle: Bool = false) -> UIStackView {
+        let label = headingStyle ? makeItemHeading(text) : makeDescriptionLabel(text)
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         label.setContentHuggingPriority(.defaultLow, for: .horizontal)
         toggle.setContentCompressionResistancePriority(.required, for: .horizontal)
