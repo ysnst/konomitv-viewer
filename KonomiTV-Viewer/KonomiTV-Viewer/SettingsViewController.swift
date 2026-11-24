@@ -1,6 +1,6 @@
 import UIKit
 
-/// 接続先 URL と Cloudflare Access のサービストークン、KonomiTV ログインを設定する画面。
+/// 接続先 URL と認証方式 (なし / Cloudflare Access / Basic認証)、KonomiTV ログインを設定する画面。
 /// 画質まわりは別画面 (「画質」) に分け、入口は設定の分類一覧
 /// (SettingsCategoryViewController) 側に置く (この画面と重複させない)。
 /// 初回起動時 (URL 未設定) の入力画面と、分類一覧の「このアプリの設定」の先で使う。
@@ -26,6 +26,18 @@ final class SettingsViewController: UIViewController {
     private let urlField = UITextField()
     private let cfIDField = UITextField()
     private let cfSecretField = UITextField()
+    /// 認証方式を選ぶプルダウンと、Basic認証の入力欄。
+    private let authMethodButton = RippleButton()
+    private let basicUserField = UITextField()
+    private let basicPasswordField = UITextField()
+    /// この画面で選ばれている認証方式。保存するまでは端末の設定へは
+    /// 反映しない (他の入力欄と同じ扱い)。
+    private var selectedAuthMethod: ServerAuthMethod = SettingsStore.shared.authMethod
+    /// 認証方式で出し分けるため、方式ごとの入力欄のグループを保持する。
+    private var cfIDGroupView: UIStackView?
+    private var cfSecretGroupView: UIStackView?
+    private var basicUserGroupView: UIStackView?
+    private var basicPasswordGroupView: UIStackView?
     private let statusLabel = UILabel()
     private let usernameField = UITextField()
     private let passwordField = UITextField()
@@ -47,9 +59,20 @@ final class SettingsViewController: UIViewController {
     /// (表示の大きさの変更で組み直すたびに、新しいものへ差し替える)。
     private weak var scrollView: UIScrollView?
 
-    /// リターンキーで移動する順番の入力欄。
+    /// リターンキーで移動する順番の入力欄。認証方式の欄は、
+    /// 選ばれている方式のものだけが入る。
     private var orderedFields: [UITextField] {
-        [urlField, cfIDField, cfSecretField, usernameField, passwordField]
+        var fields = [urlField]
+        switch selectedAuthMethod {
+        case .cloudflareAccess:
+            fields += [cfIDField, cfSecretField]
+        case .basic:
+            fields += [basicUserField, basicPasswordField]
+        case .none:
+            break
+        }
+        fields += [usernameField, passwordField]
+        return fields
     }
 
     /// 「拡張オプション」の区分。専用画面で無効化された場合に
@@ -312,12 +335,22 @@ final class SettingsViewController: UIViewController {
         view.addSubview(headingBar)
 
         let note = makeDescriptionLabel(
-            "KonomiTV サーバーの URL を入力してください。Cloudflare Access のサービストークンは、外から接続する場合に必要です (任意)。")
+            "KonomiTV サーバーの URL を入力してください。サーバーに認証が掛かっている場合は、「認証方式」で方式を選んでください (任意)。")
 
         configure(urlField, placeholder: "https://example.com:7000", keyboard: .URL)
         configure(cfIDField, placeholder: "Client ID", keyboard: .asciiCapable)
         configure(cfSecretField, placeholder: "Client Secret", keyboard: .asciiCapable)
         cfSecretField.isSecureTextEntry = true
+
+        // 認証方式のプルダウン (表示の大きさの選択ボタンと同じ形)。
+        // 選んだ方式の入力欄だけを出す (出し分けは refreshAuthFieldVisibility)。
+        styleScaleSelectButton(authMethodButton)
+        updateAuthMethodControls()
+        configure(basicUserField, placeholder: "ユーザー名", keyboard: .asciiCapable)
+        basicUserField.textContentType = .username
+        configure(basicPasswordField, placeholder: "パスワード", keyboard: .asciiCapable)
+        basicPasswordField.isSecureTextEntry = true
+        basicPasswordField.textContentType = .password
 
         // リターンキーの表示は、表示中の欄に合わせて refreshReturnKeyTypes() で付ける。
 
@@ -438,12 +471,24 @@ final class SettingsViewController: UIViewController {
 
         // 項目どうしの間隔は Web 版の項目の margin-top と同じ 24px。
         // 接続先のグループとログインのグループの間には区切り線を引く。
+        let cfIDGroup = itemGroup(title: "Access Client ID", field: cfIDField)
+        let cfSecretGroup = itemGroup(title: "Access Client Secret", field: cfSecretField)
+        let basicUserGroup = itemGroup(title: "Basic認証 ユーザー名", field: basicUserField)
+        let basicPasswordGroup = itemGroup(title: "Basic認証 パスワード", field: basicPasswordField)
+        cfIDGroupView = cfIDGroup
+        cfSecretGroupView = cfSecretGroup
+        basicUserGroupView = basicUserGroup
+        basicPasswordGroupView = basicPasswordGroup
+
         let connectionDivider = makeDivider()
         let stack = UIStackView(arrangedSubviews: [
             note,
             itemGroup(title: "KonomiTV の URL", field: urlField),
-            itemGroup(title: "Access Client ID (任意)", field: cfIDField),
-            itemGroup(title: "Access Client Secret (任意)", field: cfSecretField),
+            itemGroup(title: "認証方式", field: authMethodButton),
+            cfIDGroup,
+            cfSecretGroup,
+            basicUserGroup,
+            basicPasswordGroup,
             uiScaleGroup,
             connectionDivider,
             usernameGroup,
@@ -498,6 +543,34 @@ final class SettingsViewController: UIViewController {
             stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -24),
             stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -32),
         ])
+        refreshAuthFieldVisibility()
+        refreshReturnKeyTypes()
+    }
+
+    // MARK: - 認証方式
+
+    /// 認証方式のプルダウンの表示と選択肢を、現在の選択に合わせて付け直す。
+    private func updateAuthMethodControls() {
+        authMethodButton.setTitle(selectedAuthMethod.displayName, for: .normal)
+        let methods: [ServerAuthMethod] = [.none, .cloudflareAccess, .basic]
+        authMethodButton.menu = UIMenu(children: methods.map { method in
+            UIAction(title: method.displayName,
+                     state: method == selectedAuthMethod ? .on : .off) { [weak self] _ in
+                guard let self else { return }
+                self.selectedAuthMethod = method
+                self.updateAuthMethodControls()
+                self.refreshAuthFieldVisibility()
+            }
+        })
+    }
+
+    /// 選ばれている認証方式の入力欄だけを出す。
+    private func refreshAuthFieldVisibility() {
+        cfIDGroupView?.isHidden = selectedAuthMethod != .cloudflareAccess
+        cfSecretGroupView?.isHidden = selectedAuthMethod != .cloudflareAccess
+        basicUserGroupView?.isHidden = selectedAuthMethod != .basic
+        basicPasswordGroupView?.isHidden = selectedAuthMethod != .basic
+        // 隠れた欄はリターンキーの移動先からも外れるため、表示を付け直す。
         refreshReturnKeyTypes()
     }
 
@@ -529,8 +602,13 @@ final class SettingsViewController: UIViewController {
     private func loadValues() {
         let store = SettingsStore.shared
         urlField.text = store.rawURLString
+        selectedAuthMethod = store.authMethod
+        updateAuthMethodControls()
         cfIDField.text = store.cfClientID
         cfSecretField.text = store.cfClientSecret
+        basicUserField.text = store.basicUsername
+        basicPasswordField.text = store.basicPassword
+        refreshAuthFieldVisibility()
         usernameField.text = store.username
         passwordField.text = store.password
         syncSettingsSwitch.isOn = store.syncSettings
@@ -571,9 +649,14 @@ final class SettingsViewController: UIViewController {
             loginStatusLabel.text = "ユーザー名とパスワードを入力してください。"
             return
         }
-        // ログインの前に接続先 URL を保存しておく (未保存のまま押された場合の取りこぼし防止)。
+        // ログインの前に接続先 URL と認証方式を保存しておく (未保存のまま押された場合の取りこぼし防止)。
         let store = SettingsStore.shared
         store.rawURLString = urlField.text ?? ""
+        store.authMethod = selectedAuthMethod
+        store.cfClientID = cfIDField.text ?? ""
+        store.cfClientSecret = cfSecretField.text ?? ""
+        store.basicUsername = basicUserField.text ?? ""
+        store.basicPassword = basicPasswordField.text ?? ""
         guard store.isConfigured else {
             loginStatusLabel.text = "先に KonomiTV の URL を入力してください。"
             return
@@ -688,8 +771,11 @@ final class SettingsViewController: UIViewController {
     @objc private func save() {
         let store = SettingsStore.shared
         store.rawURLString = urlField.text ?? ""
+        store.authMethod = selectedAuthMethod
         store.cfClientID = cfIDField.text ?? ""
         store.cfClientSecret = cfSecretField.text ?? ""
+        store.basicUsername = basicUserField.text ?? ""
+        store.basicPassword = basicPasswordField.text ?? ""
         view.endEditing(true)
 
         guard store.isConfigured else {

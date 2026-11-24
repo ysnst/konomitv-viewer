@@ -46,6 +46,23 @@ enum KeychainStore {
     }
 }
 
+/// 接続先サーバーへの認証方式。「このアプリの設定」のプルダウンで選ぶ。
+/// 選ばれている方式のヘッダーだけが通信に付く (serverAuthHeaders)。
+enum ServerAuthMethod: String {
+    case none = "none"
+    case cloudflareAccess = "cloudflare_access"
+    case basic = "basic"
+
+    /// プルダウンに出す名前。
+    var displayName: String {
+        switch self {
+        case .none: return "なし"
+        case .cloudflareAccess: return "Cloudflare Access (サービストークン)"
+        case .basic: return "Basic認証"
+        }
+    }
+}
+
 /// 再生の対象。Web 版の設定の分け方に対応する (テレビ = 生放送、ビデオ = 録画)。
 enum PlaybackMedia {
     case tv
@@ -69,6 +86,8 @@ final class SettingsStore {
         static let url = "viewer_url"
         static let cfClientID = "viewer_cf_client_id"
         static let cfClientSecret = "viewer_cf_client_secret"
+        static let authMethod = "viewer_auth_method"
+        static let basicUsername = "viewer_basic_username"
         static let quality = "viewer_quality"
         static let dataSaverMode = "viewer_data_saver_mode"
         static let username = "viewer_username"
@@ -180,6 +199,7 @@ final class SettingsStore {
     private enum KeychainKey {
         static let password = "konomi_password"
         static let accessToken = "konomi_access_token"
+        static let basicPassword = "basic_auth_password"
     }
 
     private let defaults = UserDefaults.standard
@@ -975,5 +995,54 @@ final class SettingsStore {
             "CF-Access-Client-Id": id,
             "CF-Access-Client-Secret": secret,
         ]
+    }
+
+    // MARK: - 認証方式 (接続先サーバーへの認証)
+
+    /// 選ばれている認証方式。端末ごとに保存する。
+    /// 引き継ぎ: このキーがまだ無い端末は、Access の値が入っていれば
+    /// 「Cloudflare Access」、入っていなければ「なし」で受ける
+    /// (Access を設定済みの端末で、方式が勝手に外れたように見せないため)。
+    var authMethod: ServerAuthMethod {
+        get {
+            if let raw = defaults.string(forKey: Key.authMethod),
+               let method = ServerAuthMethod(rawValue: raw) {
+                return method
+            }
+            let hasAccessValues = !cfClientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !cfClientSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return hasAccessValues ? .cloudflareAccess : .none
+        }
+        set { defaults.set(newValue.rawValue, forKey: Key.authMethod) }
+    }
+
+    /// Basic認証のユーザー名。
+    var basicUsername: String {
+        get { defaults.string(forKey: Key.basicUsername) ?? "" }
+        set { defaults.set(newValue, forKey: Key.basicUsername) }
+    }
+
+    /// Basic認証のパスワードはキーチェーンに保存する (UserDefaults には置かない)。
+    var basicPassword: String {
+        get { KeychainStore.string(forKey: KeychainKey.basicPassword) ?? "" }
+        set { KeychainStore.setString(newValue, forKey: KeychainKey.basicPassword) }
+    }
+
+    /// 接続先サーバーへの通信に付ける、認証のヘッダー。
+    /// 選ばれている方式のものだけを返す (方式が違うヘッダーは付けない)。
+    /// 値がそろっていない方式では何も付けない。
+    var serverAuthHeaders: [String: String] {
+        switch authMethod {
+        case .none:
+            return [:]
+        case .cloudflareAccess:
+            return cfAccessHeaders
+        case .basic:
+            let user = basicUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+            let pass = basicPassword
+            guard !user.isEmpty, !pass.isEmpty else { return [:] }
+            let credential = Data("\(user):\(pass)".utf8).base64EncodedString()
+            return ["Authorization": "Basic \(credential)"]
+        }
     }
 }

@@ -335,8 +335,8 @@ private final class RelayConnection: NSObject, URLSessionDataDelegate {
                 request.setValue(value, forHTTPHeaderField: "Content-Type")
             }
         }
-        // Cloudflare Access の合言葉はここで付ける (中継の肝)。
-        for (key, value) in SettingsStore.shared.cfAccessHeaders {
+        // 認証の合言葉はここで付ける (中継の肝)。
+        for (key, value) in SettingsStore.shared.serverAuthHeaders {
             request.setValue(value, forHTTPHeaderField: key)
         }
         // 範囲指定はそのまま元のサーバーへ渡す。

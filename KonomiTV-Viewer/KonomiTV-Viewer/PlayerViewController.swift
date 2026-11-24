@@ -2112,9 +2112,9 @@ final class PlayerViewController: UIViewController {
         if audioOnly {
             media.addOption(":no-video")
         }
-        // Cloudflare Access のサービストークンをヘッダーとして付ける
+        // 認証の合言葉をヘッダーとして付ける
         // (中継を使わない場合の補い。上のコメント参照)。
-        for (key, value) in SettingsStore.shared.cfAccessHeaders {
+        for (key, value) in SettingsStore.shared.serverAuthHeaders {
             media.addOption(":http-header=\(key): \(value)")
         }
         vlc.media = media

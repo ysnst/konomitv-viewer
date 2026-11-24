@@ -67,7 +67,7 @@ enum APIError: Error {
 }
 
 /// KonomiTV サーバーへの通信をまとめたもの。
-/// Cloudflare Access のサービストークンが設定されていれば、全リクエストにヘッダーを付ける。
+/// 認証方式が選ばれていれば、全リクエストにその方式のヘッダーを付ける。
 final class APIClient {
     static let shared = APIClient()
 
@@ -86,10 +86,12 @@ final class APIClient {
         guard let url = url(forPath: path) else { throw APIError.notConfigured }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        for (key, value) in SettingsStore.shared.cfAccessHeaders {
+        for (key, value) in SettingsStore.shared.serverAuthHeaders {
             request.setValue(value, forHTTPHeaderField: key)
         }
         // 管理者ログインが必要な口には、ログイン済みのときだけ Bearer トークンを付ける。
+        // (Authorization は1つしか付けられないため、ログインが要る口では
+        // こちらを優先する。Basic認証のヘッダーは他の口に付く。)
         if authorized, SettingsStore.shared.isLoggedIn {
             request.setValue("Bearer \(SettingsStore.shared.accessToken)", forHTTPHeaderField: "Authorization")
         }
@@ -809,10 +811,10 @@ final class APIClient {
 
     // MARK: - AVPlayer 用
 
-    /// CF ヘッダーを付けた AVURLAsset を作る (プレイリストと分割ファイルの両方に同じヘッダーが付く)。
+    /// 認証のヘッダーを付けた AVURLAsset を作る (プレイリストと分割ファイルの両方に同じヘッダーが付く)。
     func playerAsset(url: URL) -> AVURLAsset {
         AVURLAsset(url: url, options: [
-            "AVURLAssetHTTPHeaderFieldsKey": SettingsStore.shared.cfAccessHeaders,
+            "AVURLAssetHTTPHeaderFieldsKey": SettingsStore.shared.serverAuthHeaders,
         ])
     }
 }
