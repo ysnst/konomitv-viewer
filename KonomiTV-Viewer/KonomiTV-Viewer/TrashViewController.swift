@@ -10,6 +10,8 @@ import UIKit
 /// - 管理者は「選択する」から複数選択に入れ、選んだ分をまとめて
 ///   復元・完全削除できる。まとめて削除も1件のときと同じ流儀で、
 ///   確認を挟み、項目ごとに事前確認を取ってから削除する。
+///   選択中は、カードに触れたまま指を動かすと通ったカードを連続で
+///   選べる (写真アプリのなぞって選択と同じ感覚)。
 /// - 見出しの下に保持期間の説明を出し、各カードには録画一覧と同じ
 ///   カード部品 (VideoCell) に「あと○日で完全に削除されます」の行と、
 ///   「復元する」「完全に削除」のボタンの行を足して出す。
@@ -78,6 +80,16 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
     /// 複数選択の状態 (この画面の中だけに持ち、保存はしない)。
     private var isSelectionMode = false
     private var selectedIDs: Set<Int> = []
+    /// なぞって選択の途中経過。選択中にカードへ触れたまま指を動かした
+    /// とき、触れた行を起点に範囲で選択を付け外しするための控え。
+    private var dragAnchorRow: Int?
+    /// なぞり始めた行が未選択なら選択に、選択済みなら解除にそろえる。
+    private var dragSelecting = true
+    /// いま指の範囲に入っている項目 (番組 id)。
+    private var dragRangeIDs: Set<Int> = []
+    /// なぞり始める前に各項目が選択されていたかどうか。範囲から
+    /// 外れたときに、なぞる前の状態へ戻すために持つ。
+    private var dragBaseline: [Int: Bool] = [:]
     /// まとめて操作の実行中かどうか (二重実行の防止)。
     private var isBulkRunning = false
     /// 保持期間 (日)。取得前はサーバーの既定値 30 で仮置きし、
@@ -125,6 +137,10 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
         refreshControl.tintColor = AppPalette.accent
         refreshControl.addTarget(self, action: #selector(refresh), for: .valueChanged)
         tableView.refreshControl = refreshControl
+        // 選択中になぞって連続で選べるよう、一覧のスクロール操作に
+        // なぞり選択の処理を相乗りさせる (スクロール自体は今までどおり)。
+        tableView.panGestureRecognizer.addTarget(
+            self, action: #selector(handleDragSelection(_:)))
         view.addSubview(tableView)
 
         statusLabel.textAlignment = .center
@@ -520,6 +536,77 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
         updateBulkBar()
     }
 
+    /// 選択中にカードへ触れたまま指を動かしたときの処理 (写真アプリの
+    /// なぞって選択と同じ感覚)。指の下にある行と、なぞり始めの行の間の
+    /// 範囲をまとめて選択／解除する。逆向きに戻れば、範囲から外れた分は
+    /// なぞる前の状態へ戻る。一覧のスクロールはスクロール側の操作が
+    /// そのまま担うので、指の動きに合わせて中身が流れ、止まっている
+    /// 指の下でも行が入れ替わって範囲が伸びる。
+    @objc private func handleDragSelection(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            guard isSelectionMode, !isBulkRunning else { return }
+            guard let row = dragRow(at: gesture.location(in: tableView)) else { return }
+            dragAnchorRow = row
+            dragSelecting = !selectedIDs.contains(displayItems[row].program.id)
+            dragRangeIDs = []
+            dragBaseline = [:]
+            applyDragSelection(toRow: row)
+        case .changed:
+            guard isSelectionMode, dragAnchorRow != nil else { return }
+            if let row = dragRow(at: gesture.location(in: tableView)) {
+                applyDragSelection(toRow: row)
+            }
+        default:
+            dragAnchorRow = nil
+            dragRangeIDs = []
+            dragBaseline = [:]
+        }
+    }
+
+    /// 指の位置にある行。行の外 (上下の端の外側) にあるときは一番近い
+    /// 行に寄せる (端までなぞったときに範囲が端まで届くように)。
+    private func dragRow(at point: CGPoint) -> Int? {
+        guard !displayItems.isEmpty else { return nil }
+        if let indexPath = tableView.indexPathForRow(at: point) {
+            return indexPath.row
+        }
+        let firstRect = tableView.rectForRow(at: IndexPath(row: 0, section: 0))
+        return point.y < firstRect.minY ? 0 : displayItems.count - 1
+    }
+
+    /// なぞった範囲へ選択の状態を反映する。範囲に入った項目はなぞり
+    /// 始めに決めた向き (選択／解除) にそろえ、範囲から外れた項目は
+    /// なぞる前の状態へ戻す。
+    private func applyDragSelection(toRow row: Int) {
+        guard let anchor = dragAnchorRow else { return }
+        var newRange: Set<Int> = []
+        for index in min(anchor, row)...max(anchor, row)
+        where displayItems.indices.contains(index) {
+            newRange.insert(displayItems[index].program.id)
+        }
+        for id in dragRangeIDs.union(newRange) {
+            if dragBaseline[id] == nil {
+                dragBaseline[id] = selectedIDs.contains(id)
+            }
+            let target = newRange.contains(id)
+                ? dragSelecting : (dragBaseline[id] ?? false)
+            guard selectedIDs.contains(id) != target else { continue }
+            if target {
+                selectedIDs.insert(id)
+            } else {
+                selectedIDs.remove(id)
+            }
+            if let index = displayItems.firstIndex(where: { $0.program.id == id }),
+               let cell = tableView.cellForRow(
+                   at: IndexPath(row: index, section: 0)) as? VideoCell {
+                cell.configureSelection(active: true, selected: target)
+            }
+        }
+        dragRangeIDs = newRange
+        updateBulkBar()
+    }
+
     /// 局ロゴを取ってきて、表示中の行がまだ同じ番組ならその場で反映する
     /// (録画一覧と同じ方式)。
     private func loadLogo(channelID: String, at indexPath: IndexPath) {
@@ -664,6 +751,9 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
     /// 選択中を終える。選んでいた内容は破棄する。
     private func exitSelectionMode() {
         isSelectionMode = false
+        dragAnchorRow = nil
+        dragRangeIDs = []
+        dragBaseline = [:]
         selectedIDs = []
         selectButton.setTitle("選択する", for: .normal)
         updateControlsVisibility()

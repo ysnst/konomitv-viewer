@@ -159,6 +159,18 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     /// 引ける形で持つ。
     private var isSelectionMode = false
     private var selectedProgramsByID: [Int: RecordedProgram] = [:]
+    /// なぞって選択の途中経過。選択中にカードへ触れたまま指を動かした
+    /// とき、触れた行を起点に範囲で選択を付け外しするための控え。
+    /// なぞれるのは表示中のページの中だけ (ページまたぎの選択は
+    /// 今までどおりタップと「すべて選択」で行う)。
+    private var dragAnchorRow: Int?
+    /// なぞり始めた行が未選択なら選択に、選択済みなら解除にそろえる。
+    private var dragSelecting = true
+    /// いま指の範囲に入っている項目 (番組 id)。
+    private var dragRangeIDs: Set<Int> = []
+    /// なぞり始める前に各項目が選択されていたかどうか。範囲から
+    /// 外れたときに、なぞる前の状態へ戻すために持つ。
+    private var dragBaseline: [Int: Bool] = [:]
     /// まとめて操作の実行中かどうか (二重実行の防止)。
     private var isBulkRunning = false
     /// 一覧の上に置くページ送り (見出し行の下に固定表示)。
@@ -408,6 +420,10 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         refreshControl.tintColor = AppPalette.accent
         refreshControl.addTarget(self, action: #selector(refresh), for: .valueChanged)
         tableView.refreshControl = refreshControl
+        // 選択中になぞって連続で選べるよう、一覧のスクロール操作に
+        // なぞり選択の処理を相乗りさせる (スクロール自体は今までどおり)。
+        tableView.panGestureRecognizer.addTarget(
+            self, action: #selector(handleDragSelection(_:)))
         view.addSubview(tableView)
         // フィルタのボタンの置き場所の制約を用意する。有効化の切り替えは
         // refreshHeadContainer で行う (installHeadContainer から呼ばれる
@@ -1438,6 +1454,80 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         navigationController?.pushViewController(player, animated: true)
     }
 
+    /// 選択中にカードへ触れたまま指を動かしたときの処理 (写真アプリの
+    /// なぞって選択と同じ感覚。ゴミ箱と同じ作り)。指の下にある行と、
+    /// なぞり始めの行の間の範囲をまとめて選択／解除する。逆向きに
+    /// 戻れば、範囲から外れた分はなぞる前の状態へ戻る。一覧の
+    /// スクロールはスクロール側の操作がそのまま担うので、指の動きに
+    /// 合わせて中身が流れ、止まっている指の下でも行が入れ替わって
+    /// 範囲が伸びる。範囲は表示中のページの中だけ。
+    @objc private func handleDragSelection(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            guard isSelectionMode, !isBulkRunning else { return }
+            guard let row = dragRow(at: gesture.location(in: tableView)) else { return }
+            dragAnchorRow = row
+            dragSelecting = selectedProgramsByID[programs[row].id] == nil
+            dragRangeIDs = []
+            dragBaseline = [:]
+            applyDragSelection(toRow: row)
+        case .changed:
+            guard isSelectionMode, dragAnchorRow != nil else { return }
+            if let row = dragRow(at: gesture.location(in: tableView)) {
+                applyDragSelection(toRow: row)
+            }
+        default:
+            dragAnchorRow = nil
+            dragRangeIDs = []
+            dragBaseline = [:]
+        }
+    }
+
+    /// 指の位置にある行。行の外 (上下の端の外側) にあるときは一番近い
+    /// 行に寄せる (端までなぞったときに範囲が端まで届くように)。
+    private func dragRow(at point: CGPoint) -> Int? {
+        guard !programs.isEmpty else { return nil }
+        if let indexPath = tableView.indexPathForRow(at: point) {
+            return indexPath.row
+        }
+        let firstRect = tableView.rectForRow(at: IndexPath(row: 0, section: 0))
+        return point.y < firstRect.minY ? 0 : programs.count - 1
+    }
+
+    /// なぞった範囲へ選択の状態を反映する。範囲に入った項目はなぞり
+    /// 始めに決めた向き (選択／解除) にそろえ、範囲から外れた項目は
+    /// なぞる前の状態へ戻す。
+    private func applyDragSelection(toRow row: Int) {
+        guard let anchor = dragAnchorRow else { return }
+        var newRange: Set<Int> = []
+        for index in min(anchor, row)...max(anchor, row)
+        where programs.indices.contains(index) {
+            newRange.insert(programs[index].id)
+        }
+        for id in dragRangeIDs.union(newRange) {
+            if dragBaseline[id] == nil {
+                dragBaseline[id] = selectedProgramsByID[id] != nil
+            }
+            let target = newRange.contains(id)
+                ? dragSelecting : (dragBaseline[id] ?? false)
+            guard (selectedProgramsByID[id] != nil) != target else { continue }
+            if target {
+                if let program = programs.first(where: { $0.id == id }) {
+                    selectedProgramsByID[id] = program
+                }
+            } else {
+                selectedProgramsByID[id] = nil
+            }
+            if let index = programs.firstIndex(where: { $0.id == id }),
+               let cell = tableView.cellForRow(
+                   at: IndexPath(row: index, section: 0)) as? VideoCell {
+                cell.configureSelection(active: true, selected: target)
+            }
+        }
+        dragRangeIDs = newRange
+        updateBulkBar()
+    }
+
     /// 長押しメニュー。「視聴済みにする」「マイリストに追加／から削除」と
     /// 「保護する／外す」を出す (保護の項目は拡張版だけ)。「ゴミ箱に移動する」は
     /// Web 版のカードのメニューと同じく、拡張版かつ管理者のときだけ出し、
@@ -1620,6 +1710,9 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     private func exitSelectionMode() {
         guard isSelectionMode else { return }
         isSelectionMode = false
+        dragAnchorRow = nil
+        dragRangeIDs = []
+        dragBaseline = [:]
         selectedProgramsByID = [:]
         selectButton.setTitle("選択する", for: .normal)
         updateSelectionChrome()
