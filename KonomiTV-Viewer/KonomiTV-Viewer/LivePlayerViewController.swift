@@ -78,20 +78,14 @@ final class LivePlayerViewController: UIViewController {
     /// 字幕表示のオン/オフ (操作帯の中。録画と同じ置き場所・同じ設定)。
     private let captionButton = RippleButton()
     /// 字幕の更新タイマー (0.25秒ごと)。再生部品の時計に合わせて字幕の
-    /// 絵を進め、確かめるための数字も更新する。
+    /// 絵を進める。
     private var captionTimer: Timer?
     /// 字幕の位置合わせの基準 (この接続での最初の映像の時刻印)。
     /// 接続が替わって基準が変わったら、蓄えを作り直す。
     private var liveCaptionBasePTS: Int64?
-    /// 字幕の時刻合わせの補正 (秒)。再生部品の時計と流れの時刻印の差が
-    /// 実機の確認で分かったら、この値を動かして合わせる。
+    /// 字幕の時刻合わせの補正 (秒)。実機の確認でずれが無いことが
+    /// 分かったため、0 のままで確定。
     private static let liveCaptionTimeOffset = 0.0
-    /// 確かめるための数字 (情報欄の小さい行に出す): 届いた包みの数、
-    /// 最新の包みの位置、先端の位置。
-    private var captionProbePacketCount = 0
-    private var captionProbeLatestPosition: Double?
-    private var captionProbeEdge: Double?
-    private let captionProbeLabel = UILabel()
 
     // MARK: - パネル (番組情報/チャンネル/コメント) と実況コメント
     /// パネルのタブ (Web 版と同じ3つ。値は利用者設定の保存名と同じ)。
@@ -454,14 +448,6 @@ final class LivePlayerViewController: UIViewController {
         statusLabel.font = .scaledSystemFont(ofSize: 12.5)
         statusLabel.numberOfLines = 0
 
-        // 字幕の時刻合わせを確かめるための数字 (届いた包みの数・最新の
-        // 包みの位置・再生部品の時計・流れの先端との差)。実機で字幕の
-        // ずれを見るときの物差しとして出す。
-        captionProbeLabel.text = "字幕の確認: まだ包みが届いていません"
-        captionProbeLabel.textColor = AppPalette.metaText
-        captionProbeLabel.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        captionProbeLabel.numberOfLines = 0
-
         // 次の番組 (NEXT): 見出し + 題名 + 時刻。
         nextHeaderLabel.text = "NEXT"
         nextHeaderLabel.textColor = AppPalette.text
@@ -528,7 +514,7 @@ final class LivePlayerViewController: UIViewController {
 
         let infoStack = UIStackView(arrangedSubviews: [
             messageLabel, broadcasterRow, infoTitleLabel, infoTimeLabel, descriptionLabel,
-            statusLabel, captionProbeLabel, nextHeaderLabel, nextTitleLabel, nextTimeLabel,
+            statusLabel, nextHeaderLabel, nextTitleLabel, nextTimeLabel,
             chipsRow, chipsRow2,
         ])
         infoStack.axis = .vertical
@@ -539,8 +525,7 @@ final class LivePlayerViewController: UIViewController {
         // Web 版パネルの余白: 番組名は局の並びから 16pt、時刻は 8pt、説明は 12pt。
         infoStack.setCustomSpacing(16, after: broadcasterRow)
         infoStack.setCustomSpacing(8, after: infoTitleLabel)
-        infoStack.setCustomSpacing(4, after: statusLabel)
-        infoStack.setCustomSpacing(16, after: captionProbeLabel)
+        infoStack.setCustomSpacing(16, after: statusLabel)
         infoStack.setCustomSpacing(4, after: nextHeaderLabel)
         infoStack.setCustomSpacing(2, after: nextTitleLabel)
         infoStack.setCustomSpacing(16, after: nextTimeLabel)
@@ -1589,9 +1574,6 @@ final class LivePlayerViewController: UIViewController {
     private func startLiveCaptions() {
         captionEngine.resetForNewPlayback()
         liveCaptionBasePTS = nil
-        captionProbePacketCount = 0
-        captionProbeLatestPosition = nil
-        captionProbeEdge = nil
         let marker = "/api/streams/live/\(channel.display_channel_id)/"
         StreamRelayServer.shared.setLiveCaptionTap(StreamRelayServer.LiveCaptionTap(
             pathMarker: marker,
@@ -1617,23 +1599,13 @@ final class LivePlayerViewController: UIViewController {
         if liveCaptionBasePTS != firstVideoPTS {
             captionEngine.resetForNewPlayback()
             liveCaptionBasePTS = firstVideoPTS
-            captionProbePacketCount = 0
-            captionProbeLatestPosition = nil
-            captionProbeEdge = nil
-        }
-        if let latestVideoPTS {
-            captionProbeEdge = Self.ptsDifferenceSeconds(latestVideoPTS, firstVideoPTS)
         }
         guard !packets.isEmpty else { return }
         captionEngine.ingestLivePackets(packets, firstVideoPTS: firstVideoPTS)
-        captionProbePacketCount += packets.count
-        if let latest = packets.map({ Self.ptsDifferenceSeconds($0.pts90, firstVideoPTS) }).max() {
-            captionProbeLatestPosition = max(captionProbeLatestPosition ?? -Double.infinity, latest)
-        }
     }
 
-    /// 再生部品の時計に合わせて字幕の絵を進め、確かめるための数字を
-    /// 更新する (0.25秒ごとのタイマーから呼ばれる)。
+    /// 再生部品の時計に合わせて字幕の絵を進める
+    /// (0.25秒ごとのタイマーから呼ばれる)。
     private func refreshLiveCaptions() {
         let vlcSeconds = currentVLCTimeSeconds()
         if !captionOverlayView.isHidden {
@@ -1646,11 +1618,6 @@ final class LivePlayerViewController: UIViewController {
                 videoArea.bringSubviewToFront(captionOverlayView)
             }
         }
-        let latestText = captionProbeLatestPosition.map { String(format: "%.1f", $0) } ?? "--"
-        let edgeText = captionProbeEdge.map { String(format: "%.1f", $0) } ?? "--"
-        let gapText = captionProbeEdge.map { String(format: "%.1f", $0 - vlcSeconds) } ?? "--"
-        captionProbeLabel.text = "字幕の確認: 包み \(captionProbePacketCount) 件 / 最新の包み \(latestText) 秒"
-            + " / 再生の時計 \(String(format: "%.1f", vlcSeconds)) 秒 / 先端との差 \(gapText) 秒"
     }
 
     /// 再生部品 (VLCKit) の時計 (秒)。取れないときは 0。
@@ -1662,17 +1629,6 @@ final class LivePlayerViewController: UIViewController {
 #else
         return 0
 #endif
-    }
-
-    /// 90kHz の時刻印同士の差 (秒)。時刻印は 33 ビットで一回りするため、
-    /// 差が半周を超えたら一回り分を戻して解釈する (字幕の本体と同じ計算)。
-    private static func ptsDifferenceSeconds(_ a: Int64, _ b: Int64) -> Double {
-        let modulus: Int64 = 1 << 33
-        var diff = (a - b) & (modulus - 1)
-        if diff >= modulus / 2 {
-            diff -= modulus
-        }
-        return Double(diff) / 90000.0
     }
 
     /// 字幕表示の切り替え (録画と同じ。設定は端末に保存する)。
