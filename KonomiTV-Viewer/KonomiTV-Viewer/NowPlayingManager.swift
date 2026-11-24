@@ -17,6 +17,9 @@ final class NowPlayingManager {
         var skipForward: (() -> Void)?
         var skipBackward: (() -> Void)?
         var seekTo: ((Double) -> Void)?
+        /// 車のナビやイヤホンの「次へ／前へ」。録画ではチャプター移動につなぐ。
+        var nextChapter: (() -> Void)?
+        var previousChapter: (() -> Void)?
     }
 
     private var owner: ObjectIdentifier?
@@ -53,6 +56,14 @@ final class NowPlayingManager {
             }
             let position = event.positionTime
             self?.dispatch { $0.seekTo?(position) }
+            return .success
+        }
+        center.nextTrackCommand.addTarget { [weak self] _ in
+            self?.dispatch { $0.nextChapter?() }
+            return .success
+        }
+        center.previousTrackCommand.addTarget { [weak self] _ in
+            self?.dispatch { $0.previousChapter?() }
             return .success
         }
         updateCommandAvailability()
@@ -100,8 +111,8 @@ final class NowPlayingManager {
         center.skipForwardCommand.isEnabled = handlers?.skipForward != nil
         center.skipBackwardCommand.isEnabled = handlers?.skipBackward != nil
         center.changePlaybackPositionCommand.isEnabled = handlers?.seekTo != nil
-        center.nextTrackCommand.isEnabled = false
-        center.previousTrackCommand.isEnabled = false
+        center.nextTrackCommand.isEnabled = handlers?.nextChapter != nil
+        center.previousTrackCommand.isEnabled = handlers?.previousChapter != nil
     }
 
     // MARK: - 表示の更新

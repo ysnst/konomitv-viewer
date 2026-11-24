@@ -3115,6 +3115,14 @@ final class PlayerViewController: UIViewController {
             },
             seekTo: { [weak self] position in
                 self?.seek(to: position)
+            },
+            // 車のナビやイヤホンの「次へ／前へ」は、画面のチャプター移動ボタンと同じ処理へつなぐ。
+            // チャプターが無い録画ではボタンも押せないので、その場合は受け付けない。
+            nextChapter: program.chapterBoundaries.isEmpty ? nil : { [weak self] in
+                self?.nextChapter()
+            },
+            previousChapter: program.chapterBoundaries.isEmpty ? nil : { [weak self] in
+                self?.prevChapter()
             }
         ))
         updateNowPlaying()

@@ -1678,7 +1678,9 @@ final class LivePlayerViewController: UIViewController {
                 },
                 skipForward: nil,
                 skipBackward: nil,
-                seekTo: nil
+                seekTo: nil,
+                nextChapter: nil,
+                previousChapter: nil
             ))
             nowPlayingBegun = true
         }
