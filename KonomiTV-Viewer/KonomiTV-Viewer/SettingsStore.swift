@@ -81,6 +81,7 @@ enum ServerAuthMethod: String {
     case basic = "basic"
     case digest = "digest"
     case customHeader = "custom_header"
+    case browserLogin = "browser_login"
 
     /// プルダウンに出す名前。
     var displayName: String {
@@ -90,6 +91,7 @@ enum ServerAuthMethod: String {
         case .basic: return "Basic認証"
         case .digest: return "Digest認証"
         case .customHeader: return "カスタムヘッダ"
+        case .browserLogin: return "ブラウザでログイン"
         }
     }
 }
@@ -235,6 +237,7 @@ final class SettingsStore {
         static let accessToken = "konomi_access_token"
         static let basicPassword = "basic_auth_password"
         static let digestPassword = "digest_auth_password"
+        static let browserLoginCookies = "browser_login_cookies"
         static let customHeaderValue1 = "custom_header_value_1"
         static let customHeaderValue2 = "custom_header_value_2"
     }
@@ -1079,6 +1082,81 @@ final class SettingsStore {
         set { KeychainStore.setString(newValue, forKey: KeychainKey.digestPassword) }
     }
 
+    // MARK: - ブラウザでログイン (Cookie の引き継ぎ)
+
+    /// Cookie を端末に控えるための形 (名前・値・宛先・期限)。
+    private struct StoredCookie: Codable {
+        var name: String
+        var value: String
+        var domain: String
+        var path: String
+        var expires: TimeInterval?
+        var isSecure: Bool
+    }
+
+    /// Cookie の宛先 (ドメイン) が、接続先のホストに合うかどうか。
+    /// 先頭の「.」付きの宛先は、その下位のホストにも合うものとして扱う。
+    static func cookieDomain(_ domain: String, matchesHost host: String) -> Bool {
+        let stripped = domain.hasPrefix(".") ? String(domain.dropFirst()) : domain
+        return host == stripped || host.hasSuffix("." + stripped)
+    }
+
+    /// ブラウザでログインで取り込んだ Cookie の控え。
+    /// 合言葉と同じ扱いで、キーチェーンに保存する。
+    var browserLoginCookies: [HTTPCookie] {
+        get {
+            guard let data = KeychainStore.data(forKey: KeychainKey.browserLoginCookies),
+                  let stored = try? JSONDecoder().decode([StoredCookie].self, from: data) else {
+                return []
+            }
+            return stored.compactMap { item in
+                var properties: [HTTPCookiePropertyKey: Any] = [
+                    .name: item.name,
+                    .value: item.value,
+                    .domain: item.domain,
+                    .path: item.path,
+                ]
+                if let expires = item.expires {
+                    properties[.expires] = Date(timeIntervalSince1970: expires)
+                }
+                if item.isSecure {
+                    properties[.secure] = "TRUE"
+                }
+                return HTTPCookie(properties: properties)
+            }
+        }
+        set {
+            let stored = newValue.map { cookie in
+                StoredCookie(name: cookie.name, value: cookie.value,
+                             domain: cookie.domain, path: cookie.path,
+                             expires: cookie.expiresDate?.timeIntervalSince1970,
+                             isSecure: cookie.isSecure)
+            }
+            let data = try? JSONEncoder().encode(stored)
+            KeychainStore.setData(data, forKey: KeychainKey.browserLoginCookies)
+        }
+    }
+
+    var hasBrowserLoginCookies: Bool { !browserLoginCookies.isEmpty }
+
+    /// 取り込んだ Cookie を消す (ログアウトと、方式の変更のときに使う)。
+    func clearBrowserLoginCookies() {
+        KeychainStore.setData(nil, forKey: KeychainKey.browserLoginCookies)
+    }
+
+    /// 接続先へ送る Cookie ヘッダーの中身。宛先が接続先に合い、
+    /// 期限の切れていない Cookie だけを並べる。送るものが無ければ nil。
+    var browserLoginCookieHeader: String? {
+        guard let host = baseURL?.host else { return nil }
+        let now = Date()
+        let pairs = browserLoginCookies.compactMap { cookie -> String? in
+            guard Self.cookieDomain(cookie.domain, matchesHost: host) else { return nil }
+            if let expires = cookie.expiresDate, expires <= now { return nil }
+            return "\(cookie.name)=\(cookie.value)"
+        }
+        return pairs.isEmpty ? nil : pairs.joined(separator: "; ")
+    }
+
     /// カスタムヘッダの名前 (1組目・2組目)。自作のリバースプロキシ等で
     /// 独自の合言葉ヘッダを見ている環境向けで、名前は自由に決められる。
     var customHeaderName1: String {
@@ -1133,6 +1211,10 @@ final class SettingsStore {
                 headers[trimmedName] = value
             }
             return headers
+        case .browserLogin:
+            // ログイン画面で取り込んだ Cookie を付ける。
+            guard let cookie = browserLoginCookieHeader else { return [:] }
+            return ["Cookie": cookie]
         }
     }
 }

@@ -1,6 +1,7 @@
 import UIKit
+import WebKit
 
-/// 接続先 URL と認証方式 (なし / Cloudflare Access / Basic認証 / Digest認証 / カスタムヘッダ)、KonomiTV ログインを設定する画面。
+/// 接続先 URL と認証方式 (なし / Cloudflare Access / Basic認証 / Digest認証 / カスタムヘッダ / ブラウザでログイン)、KonomiTV ログインを設定する画面。
 /// 画質まわりは別画面 (「画質」) に分け、入口は設定の分類一覧
 /// (SettingsCategoryViewController) 側に置く (この画面と重複させない)。
 /// 初回起動時 (URL 未設定) の入力画面と、分類一覧の「このアプリの設定」の先で使う。
@@ -51,6 +52,11 @@ final class SettingsViewController: UIViewController {
     private var customHeaderValue1GroupView: UIStackView?
     private var customHeaderName2GroupView: UIStackView?
     private var customHeaderValue2GroupView: UIStackView?
+    /// ブラウザでログインの区分 (説明・状態・ボタン)。
+    private let browserLoginStatusLabel = UILabel()
+    private let browserLoginButton = RippleButton()
+    private let browserLogoutButton = RippleButton()
+    private var browserLoginGroupView: UIStackView?
     private let statusLabel = UILabel()
     private let usernameField = UITextField()
     private let passwordField = UITextField()
@@ -383,6 +389,18 @@ final class SettingsViewController: UIViewController {
         configure(customHeaderValue2Field, placeholder: "値", keyboard: .asciiCapable)
         customHeaderValue2Field.isSecureTextEntry = true
 
+        // ブラウザでログイン: サーバーのログイン画面をアプリ内で開き、
+        // 取り込んだ Cookie を通信に付ける方式。
+        browserLoginStatusLabel.font = .scaledSystemFont(ofSize: 13.5)
+        browserLoginStatusLabel.textColor = AppPalette.metaText
+        browserLoginStatusLabel.numberOfLines = 0
+        browserLoginButton.setTitle("ログインする", for: .normal)
+        browserLoginButton.addTarget(self, action: #selector(openBrowserLogin), for: .touchUpInside)
+        styleActionButton(browserLoginButton)
+        browserLogoutButton.setTitle("ログアウト", for: .normal)
+        browserLogoutButton.addTarget(self, action: #selector(browserLogout), for: .touchUpInside)
+        styleActionButton(browserLogoutButton)
+
         // リターンキーの表示は、表示中の欄に合わせて refreshReturnKeyTypes() で付ける。
 
         // KonomiTV ログイン (保護の切り替えに必要)。パスワードはキーチェーンに保存される。
@@ -523,6 +541,17 @@ final class SettingsViewController: UIViewController {
         customHeaderName2GroupView = customHeaderName2Group
         customHeaderValue2GroupView = customHeaderValue2Group
 
+        let browserLoginField = UIStackView(arrangedSubviews: [
+            makeDescriptionLabel("サーバーのログイン画面をアプリ内で開きます。Cloudflare Access の対話ログインや、ログイン画面で守られた環境 (Authelia など) 向けです。ログインできたら、画面の「完了」を押してください。取り込んだ Cookie は端末に保存され、アプリの通信に付けて使います。ログイン画面がそのまま使えるかは環境によります (パスキーなどが使えない場合があります)。"),
+            browserLoginStatusLabel,
+            browserLoginButton,
+            browserLogoutButton,
+        ])
+        browserLoginField.axis = .vertical
+        browserLoginField.spacing = 14
+        let browserLoginGroup = itemGroup(title: "ブラウザでログイン", field: browserLoginField)
+        browserLoginGroupView = browserLoginGroup
+
         let connectionDivider = makeDivider()
         let stack = UIStackView(arrangedSubviews: [
             note,
@@ -538,6 +567,7 @@ final class SettingsViewController: UIViewController {
             customHeaderValue1Group,
             customHeaderName2Group,
             customHeaderValue2Group,
+            browserLoginGroup,
             uiScaleGroup,
             connectionDivider,
             usernameGroup,
@@ -601,7 +631,7 @@ final class SettingsViewController: UIViewController {
     /// 認証方式のプルダウンの表示と選択肢を、現在の選択に合わせて付け直す。
     private func updateAuthMethodControls() {
         authMethodButton.setTitle(selectedAuthMethod.displayName, for: .normal)
-        let methods: [ServerAuthMethod] = [.none, .cloudflareAccess, .basic, .digest, .customHeader]
+        let methods: [ServerAuthMethod] = [.none, .cloudflareAccess, .basic, .digest, .customHeader, .browserLogin]
         authMethodButton.menu = UIMenu(children: methods.map { method in
             UIAction(title: method.displayName,
                      state: method == selectedAuthMethod ? .on : .off) { [weak self] _ in
@@ -625,6 +655,7 @@ final class SettingsViewController: UIViewController {
         customHeaderValue1GroupView?.isHidden = selectedAuthMethod != .customHeader
         customHeaderName2GroupView?.isHidden = selectedAuthMethod != .customHeader
         customHeaderValue2GroupView?.isHidden = selectedAuthMethod != .customHeader
+        browserLoginGroupView?.isHidden = selectedAuthMethod != .browserLogin
         // 隠れた欄はリターンキーの移動先からも外れるため、表示を付け直す。
         refreshReturnKeyTypes()
     }
@@ -633,6 +664,73 @@ final class SettingsViewController: UIViewController {
     private func storeDigestFields(to store: SettingsStore) {
         store.digestUsername = digestUserField.text ?? ""
         store.digestPassword = digestPasswordField.text ?? ""
+    }
+
+    /// 接続先と認証方式の入力欄を、端末の設定へ保存する
+    /// (保存・KonomiTV ログインの前・ブラウザでログインの前で共用)。
+    /// ブラウザでログインから別の方式へ変えたときは、取り込んだ
+    /// Cookie を消す (方式を変えたら消す決まりのため)。
+    private func storeConnectionFields() {
+        let store = SettingsStore.shared
+        let previousMethod = store.authMethod
+        store.rawURLString = urlField.text ?? ""
+        store.authMethod = selectedAuthMethod
+        store.cfClientID = cfIDField.text ?? ""
+        store.cfClientSecret = cfSecretField.text ?? ""
+        store.basicUsername = basicUserField.text ?? ""
+        store.basicPassword = basicPasswordField.text ?? ""
+        storeDigestFields(to: store)
+        storeCustomHeaderFields(to: store)
+        if previousMethod == .browserLogin, selectedAuthMethod != .browserLogin {
+            clearBrowserLoginCookies()
+        }
+    }
+
+    // MARK: - ブラウザでログイン
+
+    /// 取り込んだ Cookie の状態表示を付け直す。
+    private func refreshBrowserLoginStatus() {
+        let has = SettingsStore.shared.hasBrowserLoginCookies
+        browserLoginStatusLabel.text = has
+            ? "ログイン済みです。取り込んだ Cookie を通信に付けています。"
+            : "まだログインしていません。"
+        browserLogoutButton.isHidden = !has
+    }
+
+    /// サーバーのログイン画面を開く。開く前に接続先と方式を保存する
+    /// (ログイン画面は保存済みの URL を開くため)。
+    @objc private func openBrowserLogin() {
+        storeConnectionFields()
+        guard let base = SettingsStore.shared.baseURL else {
+            statusLabel.text = "先に KonomiTV の URL を入力してください。"
+            return
+        }
+        view.endEditing(true)
+        let loginViewController = BrowserLoginViewController(url: base) { [weak self] cookies in
+            SettingsStore.shared.browserLoginCookies = cookies
+            self?.refreshBrowserLoginStatus()
+        }
+        present(UINavigationController(rootViewController: loginViewController), animated: true)
+    }
+
+    @objc private func browserLogout() {
+        clearBrowserLoginCookies()
+        refreshBrowserLoginStatus()
+    }
+
+    /// 取り込んだ Cookie を消す。画面 (WebView) 側の保存領域からも
+    /// 接続先の宛先の Cookie を消す (消さないと、次にログイン画面を
+    /// 開いたときにログイン済みのままになってしまうため)。
+    private func clearBrowserLoginCookies() {
+        SettingsStore.shared.clearBrowserLoginCookies()
+        guard let host = SettingsStore.shared.baseURL?.host else { return }
+        let cookieStore = WKWebsiteDataStore.default().httpCookieStore
+        cookieStore.getAllCookies { cookies in
+            for cookie in cookies
+            where SettingsStore.cookieDomain(cookie.domain, matchesHost: host) {
+                cookieStore.delete(cookie)
+            }
+        }
     }
 
     /// カスタムヘッダの入力欄を保存する (保存とログイン前の保存で共用)。
@@ -683,6 +781,7 @@ final class SettingsViewController: UIViewController {
         customHeaderValue1Field.text = store.customHeaderValue1
         customHeaderName2Field.text = store.customHeaderName2
         customHeaderValue2Field.text = store.customHeaderValue2
+        refreshBrowserLoginStatus()
         refreshAuthFieldVisibility()
         usernameField.text = store.username
         passwordField.text = store.password
@@ -725,15 +824,8 @@ final class SettingsViewController: UIViewController {
             return
         }
         // ログインの前に接続先 URL と認証方式を保存しておく (未保存のまま押された場合の取りこぼし防止)。
+        storeConnectionFields()
         let store = SettingsStore.shared
-        store.rawURLString = urlField.text ?? ""
-        store.authMethod = selectedAuthMethod
-        store.cfClientID = cfIDField.text ?? ""
-        store.cfClientSecret = cfSecretField.text ?? ""
-        store.basicUsername = basicUserField.text ?? ""
-        store.basicPassword = basicPasswordField.text ?? ""
-        storeDigestFields(to: store)
-        storeCustomHeaderFields(to: store)
         guard store.isConfigured else {
             loginStatusLabel.text = "先に KonomiTV の URL を入力してください。"
             return
@@ -846,15 +938,8 @@ final class SettingsViewController: UIViewController {
     }
 
     @objc private func save() {
+        storeConnectionFields()
         let store = SettingsStore.shared
-        store.rawURLString = urlField.text ?? ""
-        store.authMethod = selectedAuthMethod
-        store.cfClientID = cfIDField.text ?? ""
-        store.cfClientSecret = cfSecretField.text ?? ""
-        store.basicUsername = basicUserField.text ?? ""
-        store.basicPassword = basicPasswordField.text ?? ""
-        storeDigestFields(to: store)
-        storeCustomHeaderFields(to: store)
         view.endEditing(true)
 
         guard store.isConfigured else {
@@ -880,5 +965,64 @@ extension SettingsViewController: UITextFieldDelegate {
             textField.resignFirstResponder()
         }
         return false
+    }
+}
+
+/// ブラウザでログインの画面。サーバーのログイン画面をそのまま開き、
+/// 「完了」で、その画面の Cookie を読み取って呼び出し側へ渡す。
+/// 保存領域はデータ放送の画面と同じ、保持されるもの
+/// (WKWebsiteDataStore.default()) を使う。
+final class BrowserLoginViewController: UIViewController {
+    private let targetURL: URL
+    private let onFinish: ([HTTPCookie]) -> Void
+    private let webView: WKWebView
+
+    init(url: URL, onFinish: @escaping ([HTTPCookie]) -> Void) {
+        targetURL = url
+        self.onFinish = onFinish
+        // 既定の作りが、保持される保存領域 (WKWebsiteDataStore.default()) になる。
+        webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        super.init(nibName: nil, bundle: nil)
+        title = "ログイン"
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = AppPalette.background
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            title: "キャンセル", style: .plain, target: self, action: #selector(cancel))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            title: "完了", style: .done, target: self, action: #selector(finish))
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(webView)
+        NSLayoutConstraint.activate([
+            webView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+        webView.load(URLRequest(url: targetURL))
+    }
+
+    @objc private func cancel() {
+        dismiss(animated: true)
+    }
+
+    /// ログイン画面の Cookie のうち、接続先の宛先に合うものを渡して閉じる。
+    @objc private func finish() {
+        let host = targetURL.host ?? ""
+        webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
+            guard let self else { return }
+            let matched = cookies.filter {
+                SettingsStore.cookieDomain($0.domain, matchesHost: host)
+            }
+            onFinish(matched)
+            dismiss(animated: true)
+        }
     }
 }
