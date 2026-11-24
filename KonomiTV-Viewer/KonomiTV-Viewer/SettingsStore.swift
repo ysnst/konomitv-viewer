@@ -841,12 +841,23 @@ final class SettingsStore {
     /// 有効・無効もこの状態と一体で、解放が戻ると機能も全部止まる。
     /// マイページの App version の行を7回タップすると解放される。
     /// 専用画面の全体トグル「拡張オプションを使用」をオフにすると
-    /// 解放が戻り、
-    /// 再び使うには解放をやり直す (個別トグルの状態は保持される)。
+    /// 解放が戻り、個別トグルも全部オフになる。再び使うには解放を
+    /// やり直し、個別トグルは全部オフの状態から始まる。
     /// 端末ごとに持つ状態で、同期対象ではない。
     var customizedServerFeaturesUnlocked: Bool {
         get { defaults.bool(forKey: Key.customizedFeaturesUnlocked) }
         set { defaults.set(newValue, forKey: Key.customizedFeaturesUnlocked) }
+    }
+
+    /// 個別トグルを全部オフにする。全体トグルをオフにしたときに
+    /// 呼び、解放し直したときは全部オフの状態から始まるようにする。
+    func resetCustomizedFeatureToggles() {
+        customizedProtectionEnabled = false
+        customizedTrashEnabled = false
+        customizedEpisodesEnabled = false
+        customizedBookmarksScenesEnabled = false
+        customizedRecordingResultsEnabled = false
+        customizedTunerInUseEnabled = false
     }
 
     // MARK: - データ放送 (端末ごとの設定)

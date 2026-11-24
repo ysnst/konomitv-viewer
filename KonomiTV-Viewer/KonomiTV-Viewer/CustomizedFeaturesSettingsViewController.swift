@@ -19,8 +19,8 @@ import UIKit
 /// を置く (Android の開発者向けオプションの一番上のトグルと
 /// 同じ形)。オフにすると解放が戻り、「このアプリの設定」の中の
 /// 入口の行自体が消えて、機能が全部止まる。個別トグルの状態は
-/// 保持されるため、マイページの App version の行を7回タップして
-/// 解放し直せば、そのままの状態で復帰する。
+/// 保持されず全部オフになるため、マイページの App version の行を
+/// 7回タップして解放し直したときは、全部オフの状態から始まる。
 final class CustomizedFeaturesSettingsViewController: SettingsDetailViewController {
     private let masterSwitch = WebToggle()
     private let protectionSwitch = WebToggle()
@@ -118,13 +118,15 @@ final class CustomizedFeaturesSettingsViewController: SettingsDetailViewControll
     /// 全体のトグル。オフにすると解放を戻し、機能が全部止まって
     /// 入口の行も消えるため、そのまま前の画面へ戻る (戻った先の
     /// 設定画面では、入口の行が消えた状態で表示される)。個別
-    /// トグルの状態は触らない (解放し直せばそのまま復帰する)。
+    /// トグルの状態は保持せず、全部オフに落とす (解放し直した
+    /// ときは全部オフの状態から始まる)。
     /// この画面は解放済みのときしか開けないため、オンへの切り替え
     /// は実際には起きないが、値の対応として解放を立てる。
     @objc private func masterChanged() {
         if masterSwitch.isOn {
             SettingsStore.shared.customizedServerFeaturesUnlocked = true
         } else {
+            SettingsStore.shared.resetCustomizedFeatureToggles()
             SettingsStore.shared.customizedServerFeaturesUnlocked = false
             navigationController?.popViewController(animated: true)
         }
