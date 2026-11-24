@@ -99,9 +99,11 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
     /// 端での自動スクロールを進めるための、表示の刻み。
     private var dragScrollLink: CADisplayLink?
     private var dragScrollLastTime: CFTimeInterval = 0
-    /// 自動スクロールが効く端の幅と、最も速いときの速さ (1秒あたり)。
+    /// 自動スクロールが効く端の幅と、端に指があるときの速さの
+    /// 上限 (1秒あたり)。指が端を超えて外側にあるときは、上限の
+    /// 1.5倍までもう一段速くなる (dragScrollSpeed(forDepth:))。
     private static let dragEdgeLength: CGFloat = 72
-    private static let dragMaxScrollSpeed: CGFloat = 280
+    private static let dragMaxScrollSpeed: CGFloat = 420
     /// なぞり選択の最中かどうか。
     private var isDragSelecting: Bool { dragAnchorRow != nil }
     /// まとめて操作の実行中かどうか (二重実行の防止)。
@@ -621,9 +623,24 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
         dragScrollLink = link
     }
 
+    /// 端の領域に指が入っている深さから、自動スクロールの速さ
+    /// (1秒あたり) を決める。深さは、端の領域の内側の境目から
+    /// 指までの距離。領域の中では近さの二乗で効かせるので、入口では
+    /// ごくゆっくり、端そのもので上限の速さになる。指が端を超えて
+    /// 一覧の外側にあるときは、超えた分でもう一段速くなり、超えた分が
+    /// 端の幅の半分 (36pt) 以上で上限の1.5倍に頭打ちする。
+    private static func dragScrollSpeed(forDepth depth: CGFloat) -> CGFloat {
+        let ratio = max(0, depth) / dragEdgeLength
+        if ratio <= 1 {
+            return dragMaxScrollSpeed * ratio * ratio
+        }
+        return dragMaxScrollSpeed * (1 + min(ratio - 1, 0.5))
+    }
+
     /// 表示の刻みごとに、指が画面の端にあれば一覧を少し流す。
-    /// 端に近いほど速くなり、端から離れれば止まる。最も速いときでも
-    /// 1秒に数行分ほどに抑えてあるので、狙った行で止められる。
+    /// 端に近いほど速くなり、端から離れれば止まる。速さの決め方は
+    /// dragScrollSpeed(forDepth:) のとおりで、端そのものでは1秒に
+    /// 420pt、指が端の外側まで出ればその1.5倍まで速くなる。
     @objc private func stepDragAutoScroll(_ link: CADisplayLink) {
         guard dragAnchorRow != nil, let finger = dragFingerPoint else { return }
         defer { dragScrollLastTime = link.timestamp }
@@ -636,13 +653,11 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
             - (isSelectionMode ? Self.bulkBarHeight : 0)
         var delta: CGFloat = 0
         if finger.y < visibleTop + Self.dragEdgeLength {
-            let ratio = min(1, max(0,
-                (visibleTop + Self.dragEdgeLength - finger.y) / Self.dragEdgeLength))
-            delta = -Self.dragMaxScrollSpeed * ratio * ratio * CGFloat(dt)
+            let depth = visibleTop + Self.dragEdgeLength - finger.y
+            delta = -Self.dragScrollSpeed(forDepth: depth) * CGFloat(dt)
         } else if finger.y > visibleBottom - Self.dragEdgeLength {
-            let ratio = min(1, max(0,
-                (finger.y - (visibleBottom - Self.dragEdgeLength)) / Self.dragEdgeLength))
-            delta = Self.dragMaxScrollSpeed * ratio * ratio * CGFloat(dt)
+            let depth = finger.y - (visibleBottom - Self.dragEdgeLength)
+            delta = Self.dragScrollSpeed(forDepth: depth) * CGFloat(dt)
         }
         guard delta != 0 else { return }
         let minOffset = -tableView.contentInset.top
