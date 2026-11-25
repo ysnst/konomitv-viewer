@@ -52,6 +52,10 @@ final class FullscreenPlayerViewController: UIViewController {
     var onReturnCaptionView: (() -> Void)?
     /// 全画面へ貸し出し中に、字幕の重ね物を固定する決まり (制約)。
     private var captionBorrowConstraints: [NSLayoutConstraint] = []
+    /// 両再生経路で通常画面から借りる実況表示。コメントの時計や設定は作り直さない。
+    var borrowedCommentView: UIView?
+    var onReturnCommentView: (() -> Void)?
+    private var commentBorrowConstraints: [NSLayoutConstraint] = []
     /// VLCKit 経路のときの受け渡し口。AVPlayer 経路では nil。
     private let hooks: PlaybackHooks?
     private let program: RecordedProgram
@@ -173,6 +177,19 @@ final class FullscreenPlayerViewController: UIViewController {
             NSLayoutConstraint.activate(captionBorrowConstraints)
         }
 
+        // コメントは字幕の上・操作類の下へ置く。VLCKit の字幕は videoView 内にある。
+        if let commentView = borrowedCommentView {
+            commentView.translatesAutoresizingMaskIntoConstraints = false
+            view.insertSubview(commentView, aboveSubview: borrowedCaptionView ?? videoView)
+            commentBorrowConstraints = [
+                commentView.topAnchor.constraint(equalTo: view.topAnchor),
+                commentView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                commentView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                commentView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            ]
+            NSLayoutConstraint.activate(commentBorrowConstraints)
+        }
+
         if hooks != nil {
             // VLCKit 経路: 映像の枠は viewWillAppear でこちらへ貸し出してもらう。
             // 進み具合の見張りは 0.5 秒ごとのタイマーで行う。
@@ -239,6 +256,13 @@ final class FullscreenPlayerViewController: UIViewController {
             captionBorrowConstraints = []
             captionView.removeFromSuperview()
             onReturnCaptionView?()
+        }
+        // 映像・字幕の返却後に通常画面の重なり順へ戻す。描画自体は止めない。
+        if let commentView = borrowedCommentView {
+            NSLayoutConstraint.deactivate(commentBorrowConstraints)
+            commentBorrowConstraints = []
+            commentView.removeFromSuperview()
+            onReturnCommentView?()
         }
         if let player, let timeObserver {
             player.removeTimeObserver(timeObserver)

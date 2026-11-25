@@ -315,6 +315,8 @@ final class PlayerViewController: UIViewController {
     private var surfaceViewHomeConstraints: [NSLayoutConstraint] = []
     /// 全画面へ貸し出し中に、映像の枠を全画面側へ固定する決まり (制約)。
     private var surfaceViewBorrowConstraints: [NSLayoutConstraint] = []
+    /// コメントは映像の枠の外にあるため、両再生経路で別に貸し出して元へ戻す。
+    private var commentHomeConstraints: [NSLayoutConstraint] = []
     /// 映像タップの受け口。貸し出し中は止める (全画面側のタップと二重に
     /// 効かないようにするため)。
     private weak var surfaceTapRecognizer: UITapGestureRecognizer?
@@ -1387,6 +1389,15 @@ final class PlayerViewController: UIViewController {
         ]
         NSLayoutConstraint.activate(captionHomeConstraints)
 
+        // 全画面への移動時に通常画面との制約だけを外せるよう、個別に保持する。
+        commentHomeConstraints = [
+            commentOverlay.topAnchor.constraint(equalTo: videoContainer.topAnchor),
+            commentOverlay.bottomAnchor.constraint(equalTo: videoContainer.bottomAnchor),
+            commentOverlay.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
+            commentOverlay.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
+        ]
+        NSLayoutConstraint.activate(commentHomeConstraints)
+
         // 操作帯の高さは控えに持ち、盛り上がりの帯を差し込むときに広げる。
         controlsHeightConstraint = controlsContainer.heightAnchor.constraint(equalToConstant: 88)
         NSLayoutConstraint.activate([
@@ -1394,10 +1405,6 @@ final class PlayerViewController: UIViewController {
             videoContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             videoContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             heightConstraint,
-            commentOverlay.topAnchor.constraint(equalTo: videoContainer.topAnchor),
-            commentOverlay.bottomAnchor.constraint(equalTo: videoContainer.bottomAnchor),
-            commentOverlay.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
-            commentOverlay.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
             bottomGradient.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
             bottomGradient.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
             bottomGradient.bottomAnchor.constraint(equalTo: videoContainer.bottomAnchor),
@@ -3778,6 +3785,7 @@ final class PlayerViewController: UIViewController {
                 program: program, quality: quality,
                 isCellularProfile: profile == .cellular,
                 hooks: makeFullscreenHooks())
+            lendCommentOverlay(to: fullscreen)
             fullscreen.onQualitySelected = { [weak self] newQuality in
                 self?.userSwitchQuality(newQuality)
             }
@@ -3810,6 +3818,7 @@ final class PlayerViewController: UIViewController {
             NSLayoutConstraint.activate(self.captionHomeConstraints)
             self.surfaceView.bringSubviewToFront(self.captionOverlayView)
         }
+        lendCommentOverlay(to: fullscreen)
         fullscreen.onQualitySelected = { [weak self] newQuality in
             self?.userSwitchQuality(newQuality)
         }
@@ -3818,6 +3827,19 @@ final class PlayerViewController: UIViewController {
         }
         passExcitementToFullscreen(fullscreen)
         present(fullscreen, animated: true)
+    }
+
+    /// 同じコメントビューを貸し出し、時刻の供給元・表示設定・ミュート済みの材料を保つ。
+    /// 全画面側は配置だけを担当し、描画の更新は通常画面側がそのまま続ける。
+    private func lendCommentOverlay(to fullscreen: FullscreenPlayerViewController) {
+        NSLayoutConstraint.deactivate(commentHomeConstraints)
+        fullscreen.borrowedCommentView = commentOverlay
+        fullscreen.onReturnCommentView = { [weak self] in
+            guard let self else { return }
+            // 映像と字幕が戻ったあと、その上・操作帯の下へ戻す。
+            self.videoContainer.insertSubview(self.commentOverlay, aboveSubview: self.surfaceView)
+            NSLayoutConstraint.activate(self.commentHomeConstraints)
+        }
     }
 
     /// 全画面へ、盛り上がりの波形の材料 (用意できている分) を渡す。
