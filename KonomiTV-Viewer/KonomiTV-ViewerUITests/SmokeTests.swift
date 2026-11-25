@@ -7,6 +7,11 @@ import XCTest
 ///
 /// 接続先は起動時の引数で仮サーバーへ向ける (設定の保存キー viewer_url と
 /// 同じ仕組み。通常の起動には影響しない)。
+///
+/// 注意: 再生画面の操作帯は、再生中に数秒で自動的に隠れる。隠れている間、
+/// その中身 (再生位置の表示や全画面ボタン) は画面操作テストの要素として
+/// 見つからなくなるため、見つからないときは映像をタップして操作帯を
+/// 出し直しながら確かめる作りにしている。
 final class SmokeTests: XCTestCase {
 
     /// 仮サーバーの接続先 (ワークフローが同じポートで起動する)。
@@ -46,22 +51,14 @@ final class SmokeTests: XCTestCase {
             "通常画面に字幕の重ね物がありません")
 
         // 再生が始まる (再生位置の表示が 0:00 から進む)。
-        let timeLabel = app.descendants(matching: .any)["player.currentTime"]
         XCTAssertTrue(
-            timeLabel.waitForExistence(timeout: 15),
-            "再生位置の表示が見つかりません")
-        let advanced = expectation(
-            for: NSPredicate(format: "label != '0:00'"),
-            evaluatedWith: timeLabel, handler: nil)
-        wait(for: [advanced], timeout: 30)
+            waitForPlaybackToAdvance(timeout: 40),
+            "再生位置が 0:00 から進みませんでした")
         attachScreenshot("02-再生中")
 
         // 全画面へ移る。移ったあとも重ね物がある。
         let enterButton = app.buttons["全画面にする"]
-        XCTAssertTrue(
-            enterButton.waitForExistence(timeout: 10),
-            "全画面ボタンが見つかりません")
-        tapElement(enterButton)
+        tapControlsButton(enterButton, timeout: 20)
         let exitButton = app.buttons["全画面を終了する"]
         XCTAssertTrue(
             exitButton.waitForExistence(timeout: 15),
@@ -75,9 +72,9 @@ final class SmokeTests: XCTestCase {
         attachScreenshot("03-全画面")
 
         // 全画面を終える。通常画面に重ね物が戻っている。
-        tapElement(exitButton)
+        tapControlsButton(exitButton, timeout: 20)
         XCTAssertTrue(
-            enterButton.waitForExistence(timeout: 15),
+            waitForExistenceWithControls(enterButton, timeout: 15),
             "通常画面へ戻れませんでした")
         XCTAssertTrue(
             commentOverlay.exists,
@@ -88,17 +85,52 @@ final class SmokeTests: XCTestCase {
         attachScreenshot("04-通常画面へ復帰")
     }
 
-    /// 操作帯が隠れていてボタンが押せないときは、映像をタップして
-    /// 操作帯を出してから押す。
-    private func tapElement(_ element: XCUIElement) {
-        if !element.isHittable {
-            tapVideoArea()
-            let hittable = expectation(
-                for: NSPredicate(format: "hittable == true"),
-                evaluatedWith: element, handler: nil)
-            wait(for: [hittable], timeout: 8)
+    /// 再生位置の表示が 0:00 から進むまで待つ。表示は操作帯の中にあり、
+    /// 操作帯が隠れている間は要素として見つからないため、そのときは
+    /// 映像をタップして操作帯を出し直す。
+    private func waitForPlaybackToAdvance(timeout: TimeInterval) -> Bool {
+        let timeLabel = app.descendants(matching: .any)["player.currentTime"]
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if timeLabel.exists {
+                if timeLabel.label != "0:00" { return true }
+            } else {
+                tapVideoArea()
+            }
+            Thread.sleep(forTimeInterval: 0.7)
         }
-        element.tap()
+        return false
+    }
+
+    /// 要素が出るまで待つ。出ない間は、操作帯が隠れているせいとみて
+    /// 映像をタップして出し直す。
+    private func waitForExistenceWithControls(
+        _ element: XCUIElement, timeout: TimeInterval
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if element.exists { return true }
+            tapVideoArea()
+            Thread.sleep(forTimeInterval: 0.7)
+        }
+        return element.exists
+    }
+
+    /// 操作帯のボタンを押す。隠れていて押せないときは、映像をタップ
+    /// して操作帯を出してから押し直す。
+    private func tapControlsButton(_ element: XCUIElement, timeout: TimeInterval) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if element.exists && element.isHittable {
+                element.tap()
+                return
+            }
+            if !element.exists {
+                tapVideoArea()
+            }
+            Thread.sleep(forTimeInterval: 0.7)
+        }
+        XCTFail("ボタンが押せる状態になりませんでした")
     }
 
     /// 映像の上の方をタップする (操作帯の出し入れの切り替え)。

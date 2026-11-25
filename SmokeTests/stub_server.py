@@ -128,6 +128,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
+        parts = [p for p in path.split("/") if p != ""]
 
         if path == "/api/videos":
             self._send_json(200, {
@@ -141,8 +142,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/channels":
             self._send_json(200, EMPTY_CHANNELS)
             return
-
-        parts = [p for p in path.split("/") if p != ""]
+        # /api/channels/{局}/logo (録画一覧のカードが局ロゴを取りに来る)。
+        if len(parts) == 4 and parts[0] == "api" and parts[1] == "channels" and parts[3] == "logo":
+            self._send_file(os.path.join(MEDIA_DIR, "thumbnail.png"), "image/png")
+            return
 
         # /api/videos/{番号} と、その下の入口。
         if len(parts) >= 3 and parts[0] == "api" and parts[1] == "videos":
