@@ -67,6 +67,14 @@ jobs:
             scripts/PlaybackStartTests.swift -o artifacts/tests/playback-start-tests
           artifacts/tests/playback-start-tests
 
+      - name: Test session health and pending playback seeks
+        run: |
+          mkdir -p artifacts/tests
+          swiftc -parse-as-library \
+            KonomiTV-Viewer/KonomiTV-Viewer/PlaybackLifecycleState.swift \
+            scripts/PlaybackLifecycleTests.swift -o artifacts/tests/playback-lifecycle-tests
+          artifacts/tests/playback-lifecycle-tests
+
       - name: Test capture JPEG metadata compatibility
         run: |
           mkdir -p artifacts/tests artifacts/ipa

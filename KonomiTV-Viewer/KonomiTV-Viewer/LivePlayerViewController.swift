@@ -313,15 +313,25 @@ final class LivePlayerViewController: UIViewController {
         bar?.titleTextAttributes = nil
         hideTimer?.invalidate()
         hideTimer = nil
+        // 再生を止めるのは、離れることが確定してから viewDidDisappear で
+        // 行う (下のコメント参照)。ここでは軽い片付けだけ行う。
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
         if pipController?.isActive == true || pipController?.isPending == true { return }
         // フルスクリーン表示で覆われただけのときは再生を止めない。
-        // それ以外で画面を離れるときは今までどおり止める。
+        // それ以外で画面を離れるときは止める。
 #if canImport(VLCKit)
         if presentedViewController is LiveFullscreenViewController {
             return
         }
 #endif
         if (presentedViewController is ViewerNavigationController || presentedViewController is UIActivityViewController), !isBeingDismissed { return }
+        // 離れることが確定してから止める。以前は viewWillDisappear
+        // (切り替わりの先頭) で止めていて、VLC を止める呼び出しが先頭で
+        // 走るため切り替わりごと固まり、スワイプを途中でやめた場合でも
+        // 止まってしまっていた (録画再生と同じ直し)。
         hideRemotePanelImmediately()
         stopDataBroadcast()
         // 戻ってきたときに再開できるよう、止めることと、再生中だった
@@ -1722,6 +1732,9 @@ final class LivePlayerViewController: UIViewController {
         beginNowPlaying()
         startLiveCaptions()
         if startPaused {
+            // 明示的な開始待ちpauseは接続失敗ではない。再生を指示するまで見張りを止める。
+            startWatchdog?.invalidate()
+            startWatchdog = nil
             pauseStream()
         }
     }
@@ -1741,14 +1754,25 @@ final class LivePlayerViewController: UIViewController {
         captionTimer?.invalidate()
         captionTimer = nil
 #if canImport(VLCKit)
-        let pip = pipController
+        let oldPiP = pipController
         pipController = nil
-        pip?.dispose()
+        oldPiP?.retireRenderer()
         let previous = vlcPlayer
         vlcPlayer = nil
         previous?.delegate = nil
-        previous?.stop()
         vlcStateObserver = nil
+        if let previous {
+            // 停止中のlibVLCはdrawableをmainに問い合わせる。mainを待たせず旧描き先も保持する。
+            DispatchQueue.global(qos: .userInitiated).async {
+                previous.stop()
+                DispatchQueue.main.async {
+                    oldPiP?.dispose()
+                    withExtendedLifetime(previous) {}
+                }
+            }
+        } else {
+            oldPiP?.dispose()
+        }
 #endif
         if nowPlayingBegun {
             NowPlayingManager.shared.end(owner: self)
@@ -2869,13 +2893,15 @@ final class LivePlayerViewController: UIViewController {
         fullscreen.captionAvailable = { [weak self] in self?.audioOnly == false }
         fullscreen.onToggleCaptions = { [weak self] in self?.toggleCaptions() }
         fullscreen.onShowSettings = { [weak self] presenter in self?.showPlayerSettings(from: presenter) }
-        fullscreen.onWillAppear = { [weak self] fullscreenVideoView in
+        fullscreen.onDidAppear = { [weak self] fullscreenVideoView in
             self?.borrowVideoView(into: fullscreenVideoView)
         }
         fullscreen.onWillDisappear = { [weak self] in
-            guard let self else { return }
             // 全画面側に出していたリモコンのパネルは隠して戻す。
-            self.hideRemotePanelImmediately()
+            self?.hideRemotePanelImmediately()
+        }
+        fullscreen.onDidDisappear = { [weak self] in
+            guard let self else { return }
             self.returnVideoView()
             self.refreshPlayPauseIcon()
         }
@@ -3067,10 +3093,13 @@ extension LivePlayerViewController {
 final class LiveFullscreenViewController: UIViewController {
     private let channelName: String
 
-    /// 表示されたら呼ばれる (引数は映像の枠の貸し出し先)。
-    var onWillAppear: ((UIView) -> Void)?
-    /// 閉じられる前に呼ばれる (貸し出した枠を通常画面へ戻すため)。
+    /// 開く動きが終わったら呼ばれる (引数は映像の枠の貸し出し先)。
+    /// 付け替えは切り替わりの先頭では行わない (固まるため)。
+    var onDidAppear: ((UIView) -> Void)?
+    /// 閉じられる前に呼ばれる (全画面側に出ていたパネルを隠すため)。
     var onWillDisappear: (() -> Void)?
+    /// 閉じる動きが終わったら呼ばれる (貸し出した枠を通常画面へ戻すため)。
+    var onDidDisappear: (() -> Void)?
     /// 再生・一時停止の切り替えを呼び出し元へ委ねる。
     var onTogglePlayPause: (() -> Void)?
     /// 現在再生中かどうかを呼び出し元へ聞く。
@@ -3136,13 +3165,12 @@ final class LiveFullscreenViewController: UIViewController {
         scheduleHideControls()
     }
 
-    override func viewWillAppear(_ animated: Bool) {
-        super.viewWillAppear(animated)
-        onWillAppear?(videoView)
-    }
-
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        // 映像の枠の付け替えは、開く動きが終わってから行う
+        // (切り替わりの先頭で行うと、その間ずっと画面が固まるため。
+        // 録画再生の全画面と同じ直し)。
+        onDidAppear?(videoView)
         if #available(iOS 16.0, *) {
             setNeedsUpdateOfSupportedInterfaceOrientations()
             view.window?.windowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: .landscape))
@@ -3155,6 +3183,14 @@ final class LiveFullscreenViewController: UIViewController {
         hideTimer?.invalidate()
         hideTimer = nil
         onWillDisappear?()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        // 設定や共有シートで一時的に隠れただけなら返さない。
+        if (presentedViewController is ViewerNavigationController || presentedViewController is UIActivityViewController), !isBeingDismissed { return }
+        // 貸し出した映像の枠は、閉じる動きが終わってから戻す。
+        onDidDisappear?()
     }
 
     private func buildLayout() {

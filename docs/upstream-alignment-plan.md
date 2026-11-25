@@ -17,3 +17,15 @@
 PlaybackStartStateのFoundationテストをCIへ追加した。独立レビューで見つかった開始待ちボタンの無視/再要求を修正した。実際の起動速度、認証サーバー、BML、HEVC/H.264再生とPiPは、Releaseビルドと状態モデルのテストだけでは実機成功と扱わない。
 
 実機確認項目は[本家構造移植のチェックリスト](testing/upstream-alignment.md)を参照する。
+
+第1段階の[Actions実行22](https://github.com/ysnst/konomitv-viewer/actions/runs/45722445310)は成功。IPA 0.22 / build 22、ビルド元 `e6e887bd253ab58627ea92e0cc7c50a2df87ac29`、SHA-256 `4e54aab7e77e8d248abffd07d3fbe43bba4107ca11e78ce65fa6185b3aae4a4f`。取得したIPAの内外来歴・版番号・SHAを照合し、警告は0.20と同じ87件、新規0件。Swift既存/開始状態テスト、Python9件、actionlint、JPEG/EXIFとPillow照合が成功。実機は未確認。
+
+## 第2段階の接合判断
+
+84011e9の再接続・停止・開始前シークを採用する。停止は旧delegate/現参照をmainで切り離してから旧VLCだけ背景で停止する。旧drawableは通知を失効させた上で停止完了まで保持する。mainで停止完了を待たない。PiP active/pending中は所有者と出力を維持し、復帰後の表示可能な状態までセッション再構築を保留する。
+
+keepaliveは初回3秒後、以後5秒、同時一通信。開始世代・セッション・品質・profile・認証範囲を照合し、3連続失敗で一度だけ回復を試す。準備前シークは最新一件を保持し、置換/停止時も外部completionを一度返す。実シークはGの直列化/字幕世代と同じ完了経路を通す。AVの失敗したシークでは再生を再開しない。録画VLCのキャッシュは本家と同じ30秒→10秒とし、回線変動耐性の実機確認を残す。
+
+停止状態の録画開始は、固定libVLC `f7caf7922` の公開 `start-paused` を使う。入力を停止状態で開き、`.paused` の準備通知でも保留シークを適用する。映像や音声を流してから停止する方式ではない。根拠は[input.c](https://github.com/videolan/vlc/blob/f7caf7922/src/input/input.c#L608)、[オプション定義](https://github.com/videolan/vlc/blob/f7caf7922/src/libvlc-module.c#L1968)、[player.c](https://github.com/videolan/vlc/blob/f7caf7922/src/player/player.c#L1193)、[VLCKit addOption](https://github.com/videolan/vlckit/blob/4.0.0-a26/Sources/Media/VLCMedia.m#L288)。固定版との対応は既存フェーズEの依存調査記録による。実機での通知順序は未確認。
+
+独立レビューで、AV完了フラグの伝達、全画面復帰時の保留回復、旧drawableの遅延通知失効を修正した。状態モデルの追加テストはCIに登録し、ローカルPython9件/actionlint/差分チェックは成功。Swift/ReleaseはCIで確認する。

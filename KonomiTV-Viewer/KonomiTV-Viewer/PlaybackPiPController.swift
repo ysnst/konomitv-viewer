@@ -25,6 +25,7 @@ final class PlaybackPiPController: NSObject, VLCDrawable, VLCPictureInPictureDra
     private var possibleObserver: NSKeyValueObservation?
     private var startTimer: Timer?
     private var disposed = false
+    private var rendererRetired = false
     private(set) var isActive = false
     private(set) var isPending = false
 
@@ -34,7 +35,7 @@ final class PlaybackPiPController: NSObject, VLCDrawable, VLCPictureInPictureDra
     var onSuperseded: (() -> Void)?
 
     var isReady: Bool {
-        guard !disposed, AVPictureInPictureController.isPictureInPictureSupported() else { return false }
+        guard !disposed, !rendererRetired, AVPictureInPictureController.isPictureInPictureSupported() else { return false }
         if let avController { return avController.isPictureInPicturePossible }
         return vlcWindow != nil
     }
@@ -119,6 +120,19 @@ final class PlaybackPiPController: NSObject, VLCDrawable, VLCPictureInPictureDra
         }
     }
 
+    /// 旧VLCのstopは裏で完了するまでdrawableを必要とするが、新しい描画やUI通知は受け付けない。
+    /// nativeのwindow停止とowner解放は、stop完了後のdisposeまで遅らせる。
+    func retireRenderer() {
+        rendererRetired = true
+        startTimer?.invalidate()
+        startTimer = nil
+        vlcWindow?.stateChangeEventHandler = nil
+        onStateChanged = nil
+        onRestoreInterface = nil
+        onError = nil
+        onSuperseded = nil
+    }
+
     func dispose() {
         guard !disposed else { return }
         disposed = true
@@ -146,7 +160,7 @@ final class PlaybackPiPController: NSObject, VLCDrawable, VLCPictureInPictureDra
     }
 
     private func receivedState(_ started: Bool, restoreVLCInterface: Bool) {
-        guard !disposed else { return }
+        guard !disposed, !rendererRetired else { return }
         // タイムアウトや明示終了の後に届く遅延した開始通知で、PiP を復活させない。
         if started, (Self.current !== self || (!isPending && !isActive)) {
             avController?.stopPictureInPicture()
@@ -177,7 +191,7 @@ final class PlaybackPiPController: NSObject, VLCDrawable, VLCPictureInPictureDra
 
     nonisolated func addSubview(_ view: UIView) {
         DispatchQueue.main.async { [weak self] in
-            guard let self, !self.disposed, let host = self.videoView else { return }
+            guard let self, !self.disposed, !self.rendererRetired, let host = self.videoView else { return }
             view.frame = host.bounds
             view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             host.addSubview(view)
@@ -195,7 +209,7 @@ final class PlaybackPiPController: NSObject, VLCDrawable, VLCPictureInPictureDra
         { [weak self] window in
             guard let window else { return }
             DispatchQueue.main.async {
-                guard let self, !self.disposed else { return }
+                guard let self, !self.disposed, !self.rendererRetired else { return }
                 self.vlcWindow?.stateChangeEventHandler = nil
                 self.vlcWindow = window
                 window.stateChangeEventHandler = { [weak self, weak window] started in
@@ -209,8 +223,18 @@ final class PlaybackPiPController: NSObject, VLCDrawable, VLCPictureInPictureDra
         }
     }
 
-    nonisolated func play() { DispatchQueue.main.async { [weak self] in self?.playAction() } }
-    nonisolated func pause() { DispatchQueue.main.async { [weak self] in self?.pauseAction() } }
+    nonisolated func play() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.disposed, !self.rendererRetired else { return }
+            self.playAction()
+        }
+    }
+    nonisolated func pause() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.disposed, !self.rendererRetired else { return }
+            self.pauseAction()
+        }
+    }
     nonisolated func isMediaPlaying() -> Bool { readOnMain { playingProvider() } }
     nonisolated func isMediaSeekable() -> Bool {
         readOnMain { !live && durationProvider().isFinite && durationProvider() > 0 }
@@ -228,7 +252,7 @@ final class PlaybackPiPController: NSObject, VLCDrawable, VLCPictureInPictureDra
 
     nonisolated func seek(by offset: Int64, completion: @escaping () -> Void) {
         DispatchQueue.main.async { [weak self] in
-            guard let self, !self.disposed, !self.live else { completion(); return }
+            guard let self, !self.disposed, !self.rendererRetired, !self.live else { completion(); return }
             let duration = self.durationProvider()
             let time = self.timeProvider()
             guard duration.isFinite, duration > 0, time.isFinite else { completion(); return }
