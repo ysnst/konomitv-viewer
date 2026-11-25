@@ -5,6 +5,11 @@ import ImageIO
 @main
 struct CaptureMetadataTests {
     static func main() throws {
+        // スーパーだけでは字幕ありの二枚目やcaptionフラグを作らない。
+        for mode in CaptureCaptionMode.allCases { precondition(mode.captionVariants(hasCaption: false) == [false]) }
+        precondition(CaptureCaptionMode.videoOnly.captionVariants(hasCaption: true) == [false])
+        precondition(CaptureCaptionMode.compositingCaption.captionVariants(hasCaption: true) == [true])
+        precondition(CaptureCaptionMode.both.captionVariants(hasCaption: true) == [false, true])
         let date = Date(timeIntervalSince1970: 1_700_000_000)
         var metadata = CaptureMetadata(capturedAt: date, playbackPosition: 123.25,
             networkID: 32736, serviceID: 1024, eventID: nil, title: "日本語の番組・テスト😀",

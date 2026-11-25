@@ -13,6 +13,15 @@ enum CaptureSaveMode: String, CaseIterable, Sendable {
 }
 enum CaptureCaptionMode: String, CaseIterable, Sendable {
     case videoOnly = "VideoOnly", compositingCaption = "CompositingCaption", both = "Both"
+    /// 本家と同じ字幕なし/ありの出力。文字スーパーの有無はこの分岐へ入れない。
+    func captionVariants(hasCaption: Bool) -> [Bool] {
+        guard hasCaption else { return [false] }
+        switch self {
+        case .videoOnly: return [false]
+        case .compositingCaption: return [true]
+        case .both: return [false, true]
+        }
+    }
     var title: String {
         switch self {
         case .videoOnly: return "字幕を合成しない"

@@ -29,7 +29,7 @@ final class VideoCaptureController {
         onStateChanged?()
     }
 
-    func capture(vlcPlayer: VLCMediaPlayer?, playerItem: AVPlayerItem?, caption: UIImage?,
+    func capture(vlcPlayer: VLCMediaPlayer?, playerItem: AVPlayerItem?, caption: UIImage?, superimpose: UIImage?,
                  comments: UIView?, metadata: CaptureMetadata, capturedAt: Date, presenter: UIViewController, isCurrent: @escaping () -> Bool) {
         guard !isCapturing, isCurrent(), presenter.viewIfLoaded?.window != nil,
               presenter.presentedViewController == nil else { return }
@@ -132,7 +132,7 @@ final class VideoCaptureController {
                 let software = "KonomiTV Viewer version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown")"
                 let captures = try await Task.detached(priority: .userInitiated) {
                     try autoreleasepool { () -> [EncodedCapture] in
-                        let images = Self.compose(frame: frame, caption: caption, comments: commentImage, captionMode: captionMode)
+                        let images = Self.compose(frame: frame, caption: caption, superimpose: superimpose, comments: commentImage, captionMode: captionMode)
                         let formatter = DateFormatter()
                         formatter.locale = Locale(identifier: "en_US_POSIX")
                         formatter.dateFormat = "yyyyMMdd-HHmmss"
@@ -213,7 +213,7 @@ final class VideoCaptureController {
         }
     }
 
-    private nonisolated static func compose(frame: UIImage, caption: UIImage?, comments: UIImage?, captionMode: CaptureCaptionMode) -> [(UIImage, Bool)] {
+    private nonisolated static func compose(frame: UIImage, caption: UIImage?, superimpose: UIImage?, comments: UIImage?, captionMode: CaptureCaptionMode) -> [(UIImage, Bool)] {
         guard let pixels = frame.cgImage, pixels.width > 0, pixels.height > 0 else { return [] }
         let size = CGSize(width: pixels.width, height: pixels.height)
         let destination = CGRect(origin: .zero, size: size)
@@ -236,18 +236,18 @@ final class VideoCaptureController {
         func image(includeCaption: Bool) -> UIImage {
             renderer.image { _ in
                 UIImage(cgImage: pixels).draw(in: destination)
+                // PWAと同じく文字スーパーはどの字幕モードでも合成し、その後に字幕を重ねる。
+                if let superimpose, superimpose.size.width > 0, superimpose.size.height > 0 {
+                    superimpose.draw(in: AVMakeRect(aspectRatio: superimpose.size, insideRect: destination))
+                }
                 if includeCaption, let visibleCaption {
                     visibleCaption.draw(in: AVMakeRect(aspectRatio: visibleCaption.size, insideRect: destination))
                 }
                 if let commentPixels { UIImage(cgImage: commentPixels).draw(in: destination) }
             }
         }
-        // 本家と同じ字幕モード。字幕が表示されていない場合は重複した二枚を作らない。
-        guard visibleCaption != nil else { return [(image(includeCaption: false), false)] }
-        switch captionMode {
-        case .videoOnly: return [(image(includeCaption: false), false)]
-        case .compositingCaption: return [(image(includeCaption: true), true)]
-        case .both: return [(image(includeCaption: false), false), (image(includeCaption: true), true)]
+        return captionMode.captionVariants(hasCaption: visibleCaption != nil).map {
+            (image(includeCaption: $0), $0)
         }
     }
 }

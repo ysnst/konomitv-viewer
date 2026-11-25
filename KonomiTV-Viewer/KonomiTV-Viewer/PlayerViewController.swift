@@ -4025,7 +4025,8 @@ final class PlayerViewController: UIViewController {
             title: program.title, description: program.description, startTime: program.start_time,
             endTime: program.end_time, duration: program.duration)
         captureController.capture(vlcPlayer: engine, playerItem: item,
-            caption: SettingsStore.shared.showCaptions ? captionEngine.currentImage : nil,
+            caption: SettingsStore.shared.showCaptions ? captionEngine.currentCaptionImage : nil,
+            superimpose: SettingsStore.shared.showCaptions ? captionEngine.currentSuperimposeImage : nil,
             comments: comments ? commentOverlay : nil, metadata: metadata, capturedAt: capturedAt, presenter: presenter,
             isCurrent: { [weak self] in
                 guard let self else { return false }

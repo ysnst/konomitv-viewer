@@ -2633,7 +2633,8 @@ final class LivePlayerViewController: UIViewController {
             startTime: program?.start_time ?? fallbackTime, endTime: program?.end_time ?? fallbackTime,
             duration: program?.duration ?? 0)
         captureController.capture(vlcPlayer: engine, playerItem: nil,
-            caption: SettingsStore.shared.showCaptions ? captionEngine.currentImage : nil,
+            caption: SettingsStore.shared.showCaptions ? captionEngine.currentCaptionImage : nil,
+            superimpose: SettingsStore.shared.showCaptions ? captionEngine.currentSuperimposeImage : nil,
             comments: comments ? commentOverlay : nil, metadata: metadata, capturedAt: capturedAt, presenter: presenter,
             isCurrent: { [weak self] in
                 guard let self else { return false }

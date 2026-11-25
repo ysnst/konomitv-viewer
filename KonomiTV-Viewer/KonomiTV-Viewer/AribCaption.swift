@@ -152,6 +152,9 @@ final class CaptionDisplayEngine {
 
     /// いま出すべき字幕の絵 (字幕の画面の寸法のまま)。無いときは nil。
     private(set) var currentImage: UIImage?
+    /// 撮影では字幕保存モードを文字スーパーへ適用しない。通常表示用の合成画像は変更しない。
+    var currentCaptionImage: UIImage? { captionState.image }
+    var currentSuperimposeImage: UIImage? { superimposeState.image }
 
     deinit {
         if let captionRenderer { aribcc_renderer_free(captionRenderer) }
