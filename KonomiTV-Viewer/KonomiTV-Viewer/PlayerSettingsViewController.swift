@@ -49,6 +49,17 @@ class ViewerNavigationController: UINavigationController {
 final class PlayerSettingsNavigationController: ViewerNavigationController {
     var onClose: (() -> Void)?
     private var notified = false
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        let appearance = UINavigationBarAppearance()
+        appearance.configureWithOpaqueBackground()
+        appearance.backgroundColor = AppPalette.panel
+        appearance.titleTextAttributes = [.foregroundColor: AppPalette.text]
+        navigationBar.standardAppearance = appearance
+        navigationBar.scrollEdgeAppearance = appearance
+        navigationBar.compactAppearance = appearance
+        navigationBar.tintColor = AppPalette.accent
+    }
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         if (isBeingDismissed || presentingViewController == nil), !notified {

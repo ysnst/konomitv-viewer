@@ -296,7 +296,7 @@ final class LivePlayerViewController: UIViewController {
             return
         }
 #endif
-        if presentedViewController is ViewerNavigationController { return }
+        if presentedViewController is ViewerNavigationController, !isBeingDismissed { return }
         hideRemotePanelImmediately()
         stopDataBroadcast()
         // 戻ってきたときに再開できるよう、止めることと、再生中だった
@@ -2856,7 +2856,7 @@ final class LiveFullscreenViewController: UIViewController {
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        if presentedViewController is ViewerNavigationController { return }
+        if presentedViewController is ViewerNavigationController, !isBeingDismissed { return }
         hideTimer?.invalidate()
         hideTimer = nil
         onWillDisappear?()

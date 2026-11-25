@@ -245,7 +245,7 @@ final class FullscreenPlayerViewController: UIViewController {
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         // 設定の適応表示が全画面になっても、借りた映像・字幕・実況を返さない。
-        if presentedViewController is ViewerNavigationController { return }
+        if presentedViewController is ViewerNavigationController, !isBeingDismissed { return }
         hideTimer?.invalidate()
         hideTimer = nil
         fastSeekBackController.invalidate()
