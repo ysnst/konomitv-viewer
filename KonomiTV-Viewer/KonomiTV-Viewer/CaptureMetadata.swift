@@ -46,7 +46,8 @@ struct CaptureMetadata: Encodable, Sendable {
     // 字幕エンジンは画像のみ公開するため、検索用本文は推測せずnullを記録する。
     let caption_text: String? = nil
     var is_caption_composited = false
-    var is_comment_composited = false
+    // 本家のメタデータ形式は維持するが、実況を撮影へ合成する経路は持たない。
+    let is_comment_composited = false
 
     init(capturedAt: Date, playbackPosition: Double, networkID: Int?, serviceID: Int?, eventID: Int?,
          title: String, description: String?, startTime: String, endTime: String, duration: Double) {

@@ -442,7 +442,6 @@ final class PlayerViewController: UIViewController {
     private let settingsButton = RippleButton()
     private let pipButton = RippleButton()
     private let captureButton = RippleButton()
-    private let commentCaptureButton = RippleButton()
     private let captureController = VideoCaptureController()
     private var pipController: PlaybackPiPController?
     private var vlcStateObserver: VLCStateObserver?
@@ -925,16 +924,14 @@ final class PlayerViewController: UIViewController {
         pipButton.isHidden = true
         pipButton.addTarget(self, action: #selector(togglePiP), for: .touchUpInside)
         styleVideoOverlayButton(captureButton, symbol: "camera", title: "キャプチャ", adaptive: true)
-        styleVideoOverlayButton(commentCaptureButton, symbol: "camera.badge.ellipsis", title: "コメント付きキャプチャ", adaptive: true)
-        captureButton.addAction(UIAction { [weak self] _ in guard let self else { return }; self.captureVideo(comments: false, presenter: self) }, for: .touchUpInside)
-        commentCaptureButton.addAction(UIAction { [weak self] _ in guard let self else { return }; self.captureVideo(comments: true, presenter: self) }, for: .touchUpInside)
+        captureButton.addAction(UIAction { [weak self] _ in guard let self else { return }; self.captureVideo(presenter: self) }, for: .touchUpInside)
         let separator = UILabel()
         separator.text = "/"
         separator.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         separator.textColor = .white
         let timeGroup = UIStackView(arrangedSubviews: [currentTimeLabel, separator, durationLabel])
         timeGroup.spacing = 2
-        let transportRow = PlayerActionRow(time: timeGroup, buttons: [captureButton, commentCaptureButton, commentButton, captionButton, settingsButton, pipButton, fullscreenButton])
+        let transportRow = PlayerActionRow(time: timeGroup, buttons: [captureButton, commentButton, captionButton, settingsButton, pipButton, fullscreenButton])
 
         // 操作帯: グラデーションの上に、操作の並びとシークバーを載せる。
         // シークバーは Web 版スマホ縦と同じく、映像の下辺いっぱいに置く。
@@ -4031,14 +4028,12 @@ final class PlayerViewController: UIViewController {
 
     private func updateCaptureControls() {
         captureButton.isEnabled = canCaptureVideo
-        commentCaptureButton.isEnabled = canCaptureVideo && SettingsStore.shared.showComments
         captureButton.alpha = captureButton.isEnabled ? 1 : 0.35
-        commentCaptureButton.alpha = commentCaptureButton.isEnabled ? 1 : 0.35
         activeFullscreenPlayer?.refreshCaptureControls()
     }
 
-    private func captureVideo(comments: Bool, presenter: UIViewController) {
-        guard canCaptureVideo, !comments || SettingsStore.shared.showComments else { return }
+    private func captureVideo(presenter: UIViewController) {
+        guard canCaptureVideo else { return }
         let engine = vlcPlayer
         let item = player?.currentItem
         let event = playbackEndEventID
@@ -4055,7 +4050,7 @@ final class PlayerViewController: UIViewController {
         captureController.capture(vlcPlayer: engine, playerItem: item,
             caption: SettingsStore.shared.showCaptions ? captionEngine.currentCaptionImage : nil,
             superimpose: SettingsStore.shared.showCaptions ? captionEngine.currentSuperimposeImage : nil,
-            comments: comments ? commentOverlay : nil, metadata: metadata, capturedAt: capturedAt, presenter: presenter,
+            metadata: metadata, capturedAt: capturedAt, presenter: presenter,
             isCurrent: { [weak self] in
                 guard let self else { return false }
                 return self.pipController?.isActive != true && self.pipController?.isPending != true
@@ -4179,8 +4174,7 @@ final class PlayerViewController: UIViewController {
         fullscreen.pipAvailable = { [weak self] in self?.pipController?.isReady == true && self?.audioOnly == false }
         fullscreen.onTogglePiP = { [weak self] in self?.togglePiP() }
         fullscreen.captureAvailable = { [weak self] in self?.canCaptureVideo == true }
-        fullscreen.commentCaptureAvailable = { [weak self] in self?.canCaptureVideo == true && SettingsStore.shared.showComments }
-        fullscreen.onCapture = { [weak self] comments, presenter in self?.captureVideo(comments: comments, presenter: presenter) }
+        fullscreen.onCapture = { [weak self] presenter in self?.captureVideo(presenter: presenter) }
         fullscreen.pipActive = { [weak self] in self?.pipController?.isActive == true }
         fullscreen.pipPending = { [weak self] in self?.pipController?.isPending == true }
     }

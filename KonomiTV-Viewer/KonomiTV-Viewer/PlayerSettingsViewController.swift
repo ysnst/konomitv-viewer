@@ -6,13 +6,7 @@ func styleVideoOverlayButton(_ button: UIButton, symbol: String, title: String, 
     button.setTitle(nil, for: .normal)
     let configuration = UIImage.SymbolConfiguration(pointSize: 20)
     button.setPreferredSymbolConfiguration(configuration, forImageIn: .normal)
-    var icon = UIImage(systemName: symbol, withConfiguration: configuration)
-    if symbol == "camera.badge.ellipsis" {
-        icon = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24)).image { _ in
-            UIImage(systemName: "camera", withConfiguration: configuration)?.withTintColor(.white).draw(in: CGRect(x: 0, y: 0, width: 21, height: 19))
-            UIImage(systemName: "text.bubble.fill")?.withTintColor(.white).draw(in: CGRect(x: 13, y: 13, width: 11, height: 11))
-        }.withRenderingMode(.alwaysTemplate)
-    }
+    let icon = UIImage(systemName: symbol, withConfiguration: configuration)
     button.setImage(icon, for: .normal)
     button.tintColor = .white
     button.backgroundColor = .clear
@@ -268,7 +262,7 @@ extension UIViewController {
     }
 }
 
-/// PWAの40px幅を基準に、時間と7操作を同じ高さへ収める。
+/// PWAの40px幅を基準に、時間と操作ボタンを同じ高さへ収める。
 /// 狭幅では横だけ調整し、文字とボタンを重ねたり行数を増やしたりしない。
 final class PlayerActionRow: UIStackView {
     private let actions: UIStackView

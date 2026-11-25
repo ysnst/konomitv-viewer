@@ -7,8 +7,8 @@ import UIKit
 private enum VideoCaptureFailure: Error { case frameUnavailable, photosDenied }
 private struct EncodedCapture: Sendable { let fileName: String; let jpeg: Data }
 
-/// 映像フレームと字幕・実況だけを合成する。画面全体や操作 UI はキャプチャしない。
-/// VLC snapshot に PTS はないため、字幕・実況は取得要求時点の近似である。
+/// 映像フレームと字幕・文字スーパーだけを合成する。実況や操作 UI はキャプチャしない。
+/// VLC snapshot に PTS はないため、字幕は取得要求時点の近似である。
 @MainActor
 final class VideoCaptureController {
     private var captureTask: Task<Void, Never>?
@@ -30,7 +30,7 @@ final class VideoCaptureController {
     }
 
     func capture(vlcPlayer: VLCMediaPlayer?, playerItem: AVPlayerItem?, caption: UIImage?, superimpose: UIImage?,
-                 comments: UIView?, metadata: CaptureMetadata, capturedAt: Date, presenter: UIViewController, isCurrent: @escaping () -> Bool) {
+                 metadata: CaptureMetadata, capturedAt: Date, presenter: UIViewController, isCurrent: @escaping () -> Bool) {
         guard !isCapturing, isCurrent(), presenter.viewIfLoaded?.window != nil,
               presenter.presentedViewController == nil else { return }
         guard vlcPlayer != nil || playerItem != nil else {
@@ -42,16 +42,6 @@ final class VideoCaptureController {
         let settings = SyncedSettingsStore.shared.current
         let captionMode = settings.captureCaptionMode
         let destinationContext = WatchedHistoryStore.Context.current
-        // 文字の現在位置だけを控える。元解像度への合成や画像変換は下の非同期処理へ渡す。
-        let commentImage = comments.flatMap { view -> UIImage? in
-            guard !view.isHidden, view.bounds.width > 0, view.bounds.height > 0 else { return nil }
-            let format = UIGraphicsImageRendererFormat()
-            format.scale = 1
-            format.opaque = false
-            return UIGraphicsImageRenderer(bounds: view.bounds, format: format).image { context in
-                view.layer.render(in: context.cgContext)
-            }
-        }
         isCapturing = true
         onStateChanged?()
         captureTask = Task { [weak self, weak presenter] in
@@ -132,7 +122,7 @@ final class VideoCaptureController {
                 let software = "KonomiTV Viewer version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown")"
                 let captures = try await Task.detached(priority: .userInitiated) {
                     try autoreleasepool { () -> [EncodedCapture] in
-                        let images = Self.compose(frame: frame, caption: caption, superimpose: superimpose, comments: commentImage, captionMode: captionMode)
+                        let images = Self.compose(frame: frame, caption: caption, superimpose: superimpose, captionMode: captionMode)
                         let formatter = DateFormatter()
                         formatter.locale = Locale(identifier: "en_US_POSIX")
                         formatter.dateFormat = "yyyyMMdd-HHmmss"
@@ -141,7 +131,6 @@ final class VideoCaptureController {
                             guard let jpeg = image.jpegData(compressionQuality: 0.99) else { throw VideoCaptureFailure.frameUnavailable }
                             var information = metadata
                             information.is_caption_composited = hasCaption
-                            information.is_comment_composited = commentImage != nil
                             return EncodedCapture(fileName: baseName + (hasCaption ? "_caption" : "") + ".jpg",
                                 jpeg: try CaptureJPEG.encode(jpeg, metadata: information, capturedAt: capturedAt, software: software))
                         }
@@ -213,7 +202,7 @@ final class VideoCaptureController {
         }
     }
 
-    private nonisolated static func compose(frame: UIImage, caption: UIImage?, superimpose: UIImage?, comments: UIImage?, captionMode: CaptureCaptionMode) -> [(UIImage, Bool)] {
+    private nonisolated static func compose(frame: UIImage, caption: UIImage?, superimpose: UIImage?, captionMode: CaptureCaptionMode) -> [(UIImage, Bool)] {
         guard let pixels = frame.cgImage, pixels.width > 0, pixels.height > 0 else { return [] }
         let size = CGSize(width: pixels.width, height: pixels.height)
         let destination = CGRect(origin: .zero, size: size)
@@ -223,15 +212,6 @@ final class VideoCaptureController {
         let renderer = UIGraphicsImageRenderer(size: size, format: format)
         let visibleCaption = caption.flatMap { image in
             image.size.width.isFinite && image.size.height.isFinite && image.size.width > 0 && image.size.height > 0 ? image : nil
-        }
-        // コメント面には余白も含まれる。映像の aspect-fit 領域だけを元フレームへ写す。
-        let commentPixels: CGImage? = comments.flatMap { image in
-            guard let cg = image.cgImage, image.size.width > 0, image.size.height > 0 else { return nil }
-            let bounds = CGRect(origin: .zero, size: image.size)
-            let videoRect = AVMakeRect(aspectRatio: size, insideRect: bounds)
-            let crop = CGRect(x: videoRect.minX * image.scale, y: videoRect.minY * image.scale,
-                              width: videoRect.width * image.scale, height: videoRect.height * image.scale)
-            return cg.cropping(to: crop)
         }
         func image(includeCaption: Bool) -> UIImage {
             renderer.image { _ in
@@ -243,7 +223,6 @@ final class VideoCaptureController {
                 if includeCaption, let visibleCaption {
                     visibleCaption.draw(in: AVMakeRect(aspectRatio: visibleCaption.size, insideRect: destination))
                 }
-                if let commentPixels { UIImage(cgImage: commentPixels).draw(in: destination) }
             }
         }
         return captionMode.captionVariants(hasCaption: visibleCaption != nil).map {

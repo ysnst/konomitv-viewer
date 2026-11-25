@@ -127,10 +127,8 @@ final class FullscreenPlayerViewController: UIViewController {
     var pipActive: (() -> Bool)?
     var pipPending: (() -> Bool)?
     private let captureButton = RippleButton()
-    private let commentCaptureButton = RippleButton()
     var captureAvailable: (() -> Bool)?
-    var commentCaptureAvailable: (() -> Bool)?
-    var onCapture: ((Bool, UIViewController) -> Void)?
+    var onCapture: ((UIViewController) -> Void)?
     var onTogglePiP: (() -> Void)?
     private let fullscreenButton = RippleButton()
     private let commentButton = RippleButton()
@@ -468,10 +466,8 @@ final class FullscreenPlayerViewController: UIViewController {
         styleVideoOverlayButton(pipButton, symbol: "pip.enter", title: "ピクチャ・イン・ピクチャ", adaptive: true)
         pipButton.addAction(UIAction { [weak self] _ in self?.onTogglePiP?() }, for: .touchUpInside)
         styleVideoOverlayButton(captureButton, symbol: "camera", title: "キャプチャ", adaptive: true)
-        styleVideoOverlayButton(commentCaptureButton, symbol: "camera.badge.ellipsis", title: "コメント付きキャプチャ", adaptive: true)
-        captureButton.addAction(UIAction { [weak self] _ in guard let self else { return }; self.onCapture?(false, self) }, for: .touchUpInside)
-        commentCaptureButton.addAction(UIAction { [weak self] _ in guard let self else { return }; self.onCapture?(true, self) }, for: .touchUpInside)
-        let optionsRow = PlayerActionRow(time: timeRow, buttons: [captureButton, commentCaptureButton, commentButton, captionButton, settingsButton, pipButton, fullscreenButton])
+        captureButton.addAction(UIAction { [weak self] _ in guard let self else { return }; self.onCapture?(self) }, for: .touchUpInside)
+        let optionsRow = PlayerActionRow(time: timeRow, buttons: [captureButton, commentButton, captionButton, settingsButton, pipButton, fullscreenButton])
 
         let panelStack = UIStackView(arrangedSubviews: [optionsRow])
         panelStack.axis = .vertical
@@ -649,9 +645,7 @@ final class FullscreenPlayerViewController: UIViewController {
 
     func refreshCaptureControls() {
         captureButton.isEnabled = captureAvailable?() ?? false
-        commentCaptureButton.isEnabled = commentCaptureAvailable?() ?? false
         captureButton.alpha = captureButton.isEnabled ? 1 : 0.35
-        commentCaptureButton.alpha = commentCaptureButton.isEnabled ? 1 : 0.35
     }
 
     private func updateCaptionControl() {

@@ -16,7 +16,6 @@ struct CaptureMetadataTests {
             description: "番組説明\n二行目", startTime: "2023-11-15T00:00:00+09:00",
             endTime: "2023-11-15T00:30:00+09:00", duration: 1800)
         metadata.is_caption_composited = true
-        metadata.is_comment_composited = true
         let source = try makeJPEG()
         let jpeg = try CaptureJPEG.encode(source, metadata: metadata, capturedAt: date, software: "KonomiTV Viewer version test")
         precondition(Array(jpeg.prefix(4)) == [0xff, 0xd8, 0xff, 0xe1])
@@ -35,7 +34,7 @@ struct CaptureMetadataTests {
         precondition(json["event_id"] as? Int == -1)
         precondition(json["caption_text"] is NSNull)
         precondition(json["is_caption_composited"] as? Bool == true)
-        precondition(json["is_comment_composited"] as? Bool == true)
+        precondition(json["is_comment_composited"] as? Bool == false)
         precondition(String(data: root[0x0131]!, encoding: .ascii) == "KonomiTV Viewer version test\0")
         let exif = directory(tiff, offset: Int(u32(root[0x8769]!, 0)))
         precondition(exif[0x9000] == Data("0230".utf8))
