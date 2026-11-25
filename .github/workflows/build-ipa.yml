@@ -35,6 +35,14 @@ jobs:
       - name: Test artifact verification
         run: python3 scripts/test_verify_ipa.py
 
+      - name: Test playback history model and request races
+        run: |
+          mkdir -p artifacts/tests
+          swiftc -parse-as-library \
+            KonomiTV-Viewer/KonomiTV-Viewer/WatchedHistoryStore.swift \
+            scripts/HistoryStoreTests.swift -o artifacts/tests/history-tests
+          artifacts/tests/history-tests
+
       # PR ではマージコミットをビルドするため、実際の checkout の SHA を記録する。
       - name: Compute version and source commit
         run: |

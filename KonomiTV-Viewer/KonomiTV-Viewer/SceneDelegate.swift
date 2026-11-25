@@ -3,6 +3,14 @@ import UIKit
 final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
 
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        WatchedHistoryStore.shared.setActive(true)
+    }
+
+    func sceneWillResignActive(_ scene: UIScene) {
+        WatchedHistoryStore.shared.setActive(false)
+    }
+
     func scene(
         _ scene: UIScene,
         willConnectTo session: UISceneSession,

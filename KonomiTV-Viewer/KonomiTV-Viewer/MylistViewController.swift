@@ -282,6 +282,7 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        WatchedHistoryStore.shared.observe(self)
         // 見出し帯を自前で出すため、ナビゲーションバーは隠す
         // (視聴履歴の画面と同じ扱い)。
         navigationController?.setNavigationBarHidden(true, animated: animated)
@@ -293,10 +294,12 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        WatchedHistoryStore.shared.stopObserving(self)
         navigationController?.setNavigationBarHidden(false, animated: animated)
     }
 
     @objc private func refresh() {
+        Task { await WatchedHistoryStore.shared.refresh(force: true) }
         reloadMylist(page: 1)
     }
 

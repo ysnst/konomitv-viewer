@@ -1028,22 +1028,8 @@ final class WatchedHistorySync {
     /// 案内や失敗の表示に分ける)。
     static func historyVideoIDs() async -> [Int]? {
         guard isEnabled else { return nil }
-        // 読み取りの開始時点の認証と同期の状態を控え、応答が返って
-        // きたときに照合する。取得の間に同期を切り替えたり、
-        // アカウントが変わったりしていたら、その応答は今の状態の
-        // ものではないため使わない (古い履歴が一覧に反映されないため)。
-        let authGenerationAtStart = SettingsStore.shared.authGeneration
-        let syncGenerationAtStart = SettingsStore.shared.syncGeneration
-        guard let settings = try? await APIClient.shared.fetchClientSettings() else { return nil }
-        guard isEnabled,
-              SettingsStore.shared.authGeneration == authGenerationAtStart,
-              SettingsStore.shared.syncGeneration == syncGenerationAtStart else { return nil }
-        let history = historyArray(in: settings)
-        let sorted = history.sorted {
-            (($0["updated_at"] as? NSNumber)?.doubleValue ?? 0)
-                > (($1["updated_at"] as? NSNumber)?.doubleValue ?? 0)
-        }
-        return sorted.compactMap { ($0["video_id"] as? NSNumber)?.intValue }
+        let store = await WatchedHistoryStore.shared
+        return await store.refreshedSnapshot()?.videoIDs
     }
 
     /// 視聴履歴から1件を外す。成功したら true。
@@ -1104,6 +1090,7 @@ final class WatchedHistorySync {
                 settings["last_synced_at"] = Date().timeIntervalSince1970
                 try await APIClient.shared.updateClientSettings(
                     settings, expectedAuthGeneration: generation)
+                await WatchedHistoryStore.shared.invalidate(keepingSnapshot: true)
                 return true
             } catch let APIError.badStatus(code) where code == 422 {
                 continue  // 取り直して1回だけやり直す。
@@ -1222,6 +1209,7 @@ final class WatchedHistorySync {
                 settings["last_synced_at"] = now
                 try await APIClient.shared.updateClientSettings(
                     settings, expectedAuthGeneration: generation)
+                await WatchedHistoryStore.shared.invalidate(keepingSnapshot: true)
                 return
             } catch let APIError.badStatus(code) where code == 422 {
                 continue  // 取り直して1回だけやり直す。

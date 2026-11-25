@@ -191,6 +191,7 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        WatchedHistoryStore.shared.observe(self)
         // 見出し帯を自前で出すため、ナビゲーションバーは隠す
         // (設定まわりの画面と同じ扱い)。
         navigationController?.setNavigationBarHidden(true, animated: animated)
@@ -202,6 +203,7 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        WatchedHistoryStore.shared.stopObserving(self)
         navigationController?.setNavigationBarHidden(false, animated: animated)
     }
 

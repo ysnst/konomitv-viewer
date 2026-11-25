@@ -850,6 +850,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        WatchedHistoryStore.shared.observe(self)
         // 先頭画面ではシステムのナビゲーションバー (ページ名の見出し) を隠し、
         // Web 版のスマホ縦と同じく自前のヘッダーだけを出す。
         // 押し込んだ先の再生画面では戻るボタンが要るため、隠すのはこの画面の間だけ。
@@ -871,6 +872,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        WatchedHistoryStore.shared.stopObserving(self)
         // 再生画面など、押し込んだ先ではナビゲーションバーを元に戻す。
         navigationController?.setNavigationBarHidden(false, animated: animated)
         // 検索欄を開いたまま離れたら、キーボードだけは閉じる
@@ -921,6 +923,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         }
         // 一度失敗した局のロゴも、読み直しのたびに試し直す。
         failedLogoIDs.removeAll()
+        Task { await WatchedHistoryStore.shared.refresh(force: true) }
         // 最初の読み込みだけは、保存しておいたページを復元する。
         // それ以外 (引っ張って更新など) は、フィルタと並び順の状態を保ったまま
         // 1ページ目に戻る (Web 版と同じ)。
@@ -2408,6 +2411,8 @@ final class VideoCell: UITableViewCell {
     private let protectBadge = BadgeLabel()
     private let unwatchedBadge = BadgeLabel()
     private let progressView = WatchedProgressView()
+    private var progressDuration: Double = 0
+    private var historyObserver: NSObjectProtocol?
     private var unwatchedBottomConstraint: NSLayoutConstraint?
     /// ゴミ箱の画面だけで出す追加の行 (「あと○日で完全に削除されます」)。
     /// 通常の一覧では隠したままで、見た目には影響しない。
@@ -2506,6 +2511,11 @@ final class VideoCell: UITableViewCell {
         configureDurationBadge()
         configureProtectBadge()
         configureUnwatchedBadge()
+        historyObserver = NotificationCenter.default.addObserver(
+            forName: .watchedHistoryDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.updateWatchedProgress() }
+        }
         progressView.isHidden = true
         progressView.translatesAutoresizingMaskIntoConstraints = false
 
@@ -2762,6 +2772,7 @@ final class VideoCell: UITableViewCell {
 
     override func prepareForReuse() {
         super.prepareForReuse()
+        progressDuration = 0
         thumbnailProgramID = nil
         thumbnailView.image = nil
         logoView.image = nil
@@ -2890,7 +2901,17 @@ final class VideoCell: UITableViewCell {
         unwatchedBadge.isHidden = !program.isUnwatched
         // 未視聴ピルは、保護中ピルがあるときはその上に積む (Web 版: bottom 8px → 30px)。
         unwatchedBottomConstraint?.constant = showsProtected ? -30 : -8
-        if let ratio = program.watched_ratio, ratio > 0 {
+        progressDuration = program.recorded_video.duration
+        updateWatchedProgress()
+    }
+
+    deinit {
+        if let historyObserver { NotificationCenter.default.removeObserver(historyObserver) }
+    }
+
+    private func updateWatchedProgress() {
+        if let id = thumbnailProgramID,
+           let ratio = WatchedHistoryStore.shared.currentSnapshot.ratio(videoID: id, duration: progressDuration) {
             progressView.ratio = ratio
             progressView.isHidden = false
         } else {

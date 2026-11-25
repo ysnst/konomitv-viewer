@@ -681,6 +681,7 @@ final class SettingsStore {
             defaults.set(newValue, forKey: Key.syncSettings)
             if newValue != oldValue {
                 syncGeneration += 1
+                notifyHistoryContextChanged()
                 if !newValue {
                     // 同期を切った時点で、端末に残っている未送信の
                     // 控えもその場で消す (アプリがこのまま終了しても、
@@ -1145,6 +1146,14 @@ final class SettingsStore {
     /// 各設定の書き込み口から、値が実際に変わったときだけ呼ぶ。
     private func noteAuthConfigChanged() {
         authConfigGeneration += 1
+        notifyHistoryContextChanged()
+    }
+
+    /// 表示用履歴は資格情報を含めず、変更後の世代をメインスレッドで取り直す。
+    private func notifyHistoryContextChanged() {
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .historyContextDidChange, object: nil)
+        }
     }
 
     func saveLogin(username: String, password: String, token: String) {
@@ -1152,6 +1161,7 @@ final class SettingsStore {
         self.password = password
         self.accessToken = token
         authGeneration += 1
+        notifyHistoryContextChanged()
     }
 
     /// ログアウトで消す、同期まわりの端末内の控えのキー一式。
@@ -1192,6 +1202,7 @@ final class SettingsStore {
         defaults.removeObject(forKey: Key.lastSyncedAt)
         SyncedSettingsStore.shared.reloadFromLocalAfterLogout()
         TimeTableSettingsStore.shared.reloadFromLocalAfterLogout()
+        notifyHistoryContextChanged()
     }
 
     /// Cloudflare Access のサービストークンが両方そろっていれば、付けるべきヘッダーを返す。
