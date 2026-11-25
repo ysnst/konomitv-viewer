@@ -44,6 +44,11 @@ final class LivePlayerViewController: UIViewController {
     private let profileButton = RippleButton()
     private let audioOnlyButton = RippleButton()
     private let fullscreenButton = RippleButton()
+    private let settingsButton = RippleButton()
+    private let overlayTopGradient = GradientView(direction: .top)
+    private lazy var overlayHeader = PlayerOverlayHeader(title: channel.name) { [weak self] in
+        self?.navigationController?.popViewController(animated: true)
+    }
     private let messageLabel = NoticeLabel()
     private var videoHeightConstraint: NSLayoutConstraint?
     /// 映像の枠を通常画面に固定する決まり (制約) の控え。全画面へ貸し出す
@@ -270,14 +275,7 @@ final class LivePlayerViewController: UIViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        // 題名の出し方だけ Web 版ヘッダー (14px 太字・テーマの文字色) に合わせる。
-        // 戻る操作と題名の置き場所は、今までのナビゲーションバーのまま (録画再生と同じ判断)。
-        let bar = navigationController?.navigationBar
-        bar?.tintColor = AppPalette.text
-        bar?.titleTextAttributes = [
-            .font: UIFont.scaledSystemFont(ofSize: 14, weight: .bold),
-            .foregroundColor: AppPalette.text,
-        ]
+        navigationController?.setNavigationBarHidden(true, animated: animated)
         // 設定でデータ放送機能のオン/オフが変わっていたら、入り口の
         // 出し分けと実行中の重ね合わせに反映する。
         refreshDataBroadcastAvailability()
@@ -298,6 +296,7 @@ final class LivePlayerViewController: UIViewController {
             return
         }
 #endif
+        if presentedViewController is ViewerNavigationController { return }
         hideRemotePanelImmediately()
         stopDataBroadcast()
         // 戻ってきたときに再開できるよう、止めることと、再生中だった
@@ -342,6 +341,10 @@ final class LivePlayerViewController: UIViewController {
         videoView.backgroundColor = .black
         videoView.translatesAutoresizingMaskIntoConstraints = false
         videoArea.addSubview(videoView)
+        overlayTopGradient.translatesAutoresizingMaskIntoConstraints = false
+        overlayHeader.translatesAutoresizingMaskIntoConstraints = false
+        // 描画面より上、操作帯より後ろに置く。映像の借用にはヘッダーを含めない。
+
         // 映像をタップしたら操作帯を出し入れする (Web 版と同じ作り)。
         let tap = UITapGestureRecognizer(target: self, action: #selector(toggleControls))
         videoView.addGestureRecognizer(tap)
@@ -369,7 +372,12 @@ final class LivePlayerViewController: UIViewController {
         updateCaptionButton()
         commentButton.addTarget(self, action: #selector(toggleComments), for: .touchUpInside)
         updateCommentButton()
-        let controlsRow = UIStackView(arrangedSubviews: [liveTimeLabel, UIView(), captionButton, commentButton])
+        styleVideoOverlayButton(captionButton, symbol: "captions.bubble", title: "字幕の表示を切り替え")
+        updateCaptionButton()
+        styleVideoOverlayButton(settingsButton, symbol: "gearshape.fill", title: "プレイヤー設定")
+        styleVideoOverlayButton(fullscreenButton, symbol: "arrow.up.left.and.arrow.down.right", title: "全画面")
+        settingsButton.addTarget(self, action: #selector(openPlayerSettings), for: .touchUpInside)
+        let controlsRow = UIStackView(arrangedSubviews: [liveTimeLabel, UIView(), captionButton, settingsButton, fullscreenButton])
         controlsRow.axis = .horizontal
         controlsRow.spacing = 10
         controlsRow.alignment = .center
@@ -504,17 +512,23 @@ final class LivePlayerViewController: UIViewController {
         updateProfileButtonTitle()
         audioOnlyButton.setTitle("音声のみ: OFF", for: .normal)
         audioOnlyButton.addTarget(self, action: #selector(toggleAudioOnly), for: .touchUpInside)
-        fullscreenButton.setTitle("全画面", for: .normal)
+        // 全画面は映像内の専用アイコンを使う。
         fullscreenButton.addTarget(self, action: #selector(showFullscreen), for: .touchUpInside)
-        for button in [qualityButton, profileButton, audioOnlyButton, fullscreenButton] {
+        for button in [qualityButton, profileButton, audioOnlyButton] {
             stylePlayerChip(button)
         }
-        let chipsRow = UIStackView(arrangedSubviews: [qualityButton, audioOnlyButton, fullscreenButton])
-        chipsRow.axis = .horizontal
-        chipsRow.spacing = 8
-        let chipsRow2 = UIStackView(arrangedSubviews: [profileButton, UIView()])
-        chipsRow2.axis = .horizontal
-        chipsRow2.spacing = 8
+        videoArea.addSubview(overlayTopGradient)
+        videoArea.addSubview(overlayHeader)
+        NSLayoutConstraint.activate([
+            overlayTopGradient.topAnchor.constraint(equalTo: videoArea.topAnchor),
+            overlayTopGradient.leadingAnchor.constraint(equalTo: videoArea.leadingAnchor),
+            overlayTopGradient.trailingAnchor.constraint(equalTo: videoArea.trailingAnchor),
+            overlayTopGradient.heightAnchor.constraint(equalToConstant: 52),
+            overlayHeader.topAnchor.constraint(equalTo: videoArea.topAnchor),
+            overlayHeader.leadingAnchor.constraint(equalTo: videoArea.safeAreaLayoutGuide.leadingAnchor, constant: 4),
+            overlayHeader.trailingAnchor.constraint(equalTo: videoArea.safeAreaLayoutGuide.trailingAnchor, constant: -8),
+            overlayHeader.heightAnchor.constraint(equalToConstant: 44),
+        ])
 
         // データ放送の重ね合わせ。入り口は情報欄の右下に浮かせた丸ボタン
         // (Web 版の浮きボタンと同じ: 48x48 の円、地は panel、余白 16)。
@@ -545,7 +559,7 @@ final class LivePlayerViewController: UIViewController {
         let infoStack = UIStackView(arrangedSubviews: [
             messageLabel, broadcasterRow, infoTitleLabel, infoTimeLabel, descriptionLabel,
             statusLabel, nextHeaderLabel, nextTitleLabel, nextTimeLabel,
-            chipsRow, chipsRow2,
+
         ])
         infoStack.axis = .vertical
         infoStack.spacing = 12
@@ -1521,10 +1535,13 @@ final class LivePlayerViewController: UIViewController {
         guard visible != controlsVisible else { return }
         controlsVisible = visible
         UIView.animate(withDuration: 0.25) {
+            self.overlayHeader.alpha = visible ? 1 : 0
+            self.overlayTopGradient.alpha = visible ? 1 : 0
             self.bottomGradient.alpha = visible ? 1 : 0
             self.controlsContainer.alpha = visible ? 1 : 0
             self.playPauseButton.alpha = visible ? 1 : 0
         }
+        overlayHeader.isUserInteractionEnabled = visible
         controlsContainer.isUserInteractionEnabled = visible
         playPauseButton.isUserInteractionEnabled = visible
         if !visible {
@@ -1538,7 +1555,7 @@ final class LivePlayerViewController: UIViewController {
         hideTimer?.invalidate()
         hideTimer = nil
 #if canImport(MobileVLCKit)
-        guard vlcPlayer?.isPlaying ?? false else { return }
+        guard vlcPlayer?.isPlaying ?? false, presentedViewController == nil else { return }
         hideTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in
             self?.setControlsVisible(false)
         }
@@ -1717,7 +1734,8 @@ final class LivePlayerViewController: UIViewController {
             UIImage(systemName: on ? "captions.bubble.fill" : "captions.bubble", withConfiguration: config),
             for: .normal)
         captionButton.tintColor = .white
-        captionButton.alpha = on ? 1 : 0.4
+        captionButton.isEnabled = !audioOnly
+        captionButton.alpha = audioOnly ? 0.25 : (on ? 1 : 0.4)
         captionButton.accessibilityLabel = on ? "字幕表示オン" : "字幕表示オフ"
     }
 
@@ -1932,6 +1950,7 @@ final class LivePlayerViewController: UIViewController {
         audioOnlyButton.setTitle(audioOnly ? "音声のみ: ON" : "音声のみ: OFF", for: .normal)
         videoView.isHidden = audioOnly
         applyCaptionDisplayState()
+        updateCaptionButton()
         applyCommentDisplayState()
         startStream()
         if wasPlaying {
@@ -2519,10 +2538,58 @@ final class LivePlayerViewController: UIViewController {
 
     /// フルスクリーン表示へ移る。映像の枠ごと全画面側へ貸し出すだけで、
     /// 受信そのものは止めない。
+    @objc private func openPlayerSettings() { showPlayerSettings(from: self) }
+
+    private func showPlayerSettings(from presenter: UIViewController) {
+        hideTimer?.invalidate()
+        let menu = PlayerSettingsViewController { [weak self] in
+            guard let self else { return [] }
+            let store = SettingsStore.shared
+            let saver = store.dataSaverMode(media: .tv, profile: self.profile)
+            return [
+                .init(title: "画質", value: self.quality, choices: SettingsStore.qualities.map { q in
+                    .init(title: SettingsStore.qualityDisplayName(q, dataSaverMode: saver), selected: q == self.quality,
+                          select: { [weak self] in self?.userSwitchQuality(q) })
+                }),
+                .init(title: "モバイル回線向け画質", toggle: self.profile == .cellular, change: { [weak self] on in
+                    _ = self?.switchProfile(to: on ? .cellular : .wifi)
+                }),
+                .init(title: "コメントを表示", toggle: store.showComments, change: { [weak self] _ in self?.toggleComments() }),
+                .init(title: "コメントを無制限に表示", toggle: store.showCommentsUnlimited, change: { [weak self] on in
+                    store.showCommentsUnlimited = on
+                    self?.commentOverlay.unlimited = on
+                }),
+                .init(title: "コメントの透明度", value: String(format: "%.1f", store.commentOpacity), choices: (0...10).map { step in
+                    let value = Double(step) / 10
+                    return .init(title: String(format: "%.1f", value), selected: abs(store.commentOpacity - value) < 0.01, select: { [weak self] in
+                        store.commentOpacity = value
+                        self?.commentOverlay.displayOpacity = value
+                    })
+                }),
+                .init(title: "音声のみ再生", toggle: self.audioOnly, change: { [weak self] _ in self?.toggleAudioOnly() }),
+            ]
+        }
+        let navigation = PlayerSettingsNavigationController(rootViewController: menu)
+        navigation.onClose = { [weak self, weak presenter] in
+            self?.scheduleHideControls()
+#if canImport(MobileVLCKit)
+            (presenter as? LiveFullscreenViewController)?.resumeControlAutoHide()
+#endif
+        }
+        navigation.modalPresentationStyle = .pageSheet
+        navigation.sheetPresentationController?.detents = [.medium(), .large()]
+        navigation.sheetPresentationController?.prefersGrabberVisible = true
+        presenter.present(navigation, animated: true)
+    }
+
     @objc private func showFullscreen() {
 #if canImport(MobileVLCKit)
         guard vlcPlayer != nil else { return }
         let fullscreen = LiveFullscreenViewController(channelName: channel.name)
+        fullscreen.captionsEnabled = { SettingsStore.shared.showCaptions }
+        fullscreen.captionAvailable = { [weak self] in self?.audioOnly == false }
+        fullscreen.onToggleCaptions = { [weak self] in self?.toggleCaptions() }
+        fullscreen.onShowSettings = { [weak self] presenter in self?.showPlayerSettings(from: presenter) }
         fullscreen.onWillAppear = { [weak self] fullscreenVideoView in
             self?.borrowVideoView(into: fullscreenVideoView)
         }
@@ -2742,6 +2809,12 @@ final class LiveFullscreenViewController: UIViewController {
     /// リモコンの浮きボタン (通常画面と同じ顔ぶれ: 48x48 の円)。
     /// 操作類と一緒に現れて、一緒に消える。
     private let remoteButton = RippleButton()
+    private let optionsRow = UIStackView()
+    private let captionButton = RippleButton()
+    var captionsEnabled: (() -> Bool)?
+    var captionAvailable: (() -> Bool)?
+    var onToggleCaptions: (() -> Void)?
+    var onShowSettings: ((UIViewController) -> Void)?
     private var controlsVisible = true
     private var hideTimer: Timer?
 
@@ -2754,6 +2827,7 @@ final class LiveFullscreenViewController: UIViewController {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
     override var shouldAutorotate: Bool { true }
     override var prefersStatusBarHidden: Bool { !controlsVisible }
@@ -2782,6 +2856,7 @@ final class LiveFullscreenViewController: UIViewController {
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        if presentedViewController is ViewerNavigationController { return }
         hideTimer?.invalidate()
         hideTimer = nil
         onWillDisappear?()
@@ -2856,6 +2931,27 @@ final class LiveFullscreenViewController: UIViewController {
         remoteButton.translatesAutoresizingMaskIntoConstraints = false
         remoteButton.isHidden = !remoteButtonVisible
         view.addSubview(remoteButton)
+        let settings = RippleButton()
+        let fullscreen = RippleButton()
+        styleVideoOverlayButton(captionButton, symbol: "captions.bubble", title: "字幕の表示を切り替え")
+        styleVideoOverlayButton(settings, symbol: "gearshape.fill", title: "プレイヤー設定")
+        styleVideoOverlayButton(fullscreen, symbol: "arrow.down.right.and.arrow.up.left", title: "全画面を解除")
+        captionButton.addAction(UIAction { [weak self] _ in
+            self?.onToggleCaptions?()
+            self?.updateCaptionControl()
+            self?.scheduleHideControls()
+        }, for: .touchUpInside)
+        updateCaptionControl()
+        settings.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.hideTimer?.invalidate()
+            self.onShowSettings?(self)
+        }, for: .touchUpInside)
+        fullscreen.addTarget(self, action: #selector(exitFullscreen), for: .touchUpInside)
+        optionsRow.axis = .horizontal
+        for button in [captionButton, settings, fullscreen] { optionsRow.addArrangedSubview(button) }
+        optionsRow.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(optionsRow)
 
         NSLayoutConstraint.activate([
             videoView.topAnchor.constraint(equalTo: view.topAnchor),
@@ -2876,7 +2972,9 @@ final class LiveFullscreenViewController: UIViewController {
             playPauseButton.widthAnchor.constraint(equalToConstant: 60),
             playPauseButton.heightAnchor.constraint(equalToConstant: 60),
             remoteButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
-            remoteButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+            remoteButton.bottomAnchor.constraint(equalTo: optionsRow.topAnchor, constant: -8),
+            optionsRow.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+            optionsRow.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
             remoteButton.widthAnchor.constraint(equalToConstant: 48),
             remoteButton.heightAnchor.constraint(equalToConstant: 48),
         ])
@@ -2896,11 +2994,13 @@ final class LiveFullscreenViewController: UIViewController {
     private func setControlsVisible(_ visible: Bool) {
         controlsVisible = visible
         UIView.animate(withDuration: 0.25) {
+            self.optionsRow.alpha = visible ? 1 : 0
             self.topBar.alpha = visible ? 1 : 0
             self.topGradient.alpha = visible ? 1 : 0
             self.playPauseButton.alpha = visible ? 1 : 0
             self.remoteButton.alpha = visible ? 1 : 0
         }
+        optionsRow.isUserInteractionEnabled = visible
         topBar.isUserInteractionEnabled = visible
         playPauseButton.isUserInteractionEnabled = visible
         remoteButton.isUserInteractionEnabled = visible
@@ -2911,10 +3011,23 @@ final class LiveFullscreenViewController: UIViewController {
         }
     }
 
+    private func updateCaptionControl() {
+        let on = captionsEnabled?() ?? false
+        captionButton.isEnabled = captionAvailable?() ?? false
+        captionButton.setImage(UIImage(systemName: on ? "captions.bubble.fill" : "captions.bubble"), for: .normal)
+        captionButton.alpha = captionButton.isEnabled ? (on ? 1 : 0.45) : 0.25
+        captionButton.accessibilityValue = on ? "オン" : "オフ"
+    }
+
+    func resumeControlAutoHide() {
+        updateCaptionControl()
+        scheduleHideControls()
+    }
+
     private func scheduleHideControls() {
         hideTimer?.invalidate()
         hideTimer = nil
-        guard isPlayingProvider?() ?? false else { return }
+        guard isPlayingProvider?() ?? false, presentedViewController == nil else { return }
         hideTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in
             self?.setControlsVisible(false)
         }

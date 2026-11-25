@@ -117,6 +117,13 @@ final class FullscreenPlayerViewController: UIViewController {
     private let durationLabel = UILabel()
     private let qualityButton = RippleButton()
     private let profileButton = RippleButton()
+    private let captionButton = RippleButton()
+    private let settingsButton = RippleButton()
+    private let fullscreenButton = RippleButton()
+    var captionsEnabled: (() -> Bool)?
+    var captionAvailable: (() -> Bool)?
+    var onToggleCaptions: (() -> Void)?
+    var onShowSettings: ((UIViewController) -> Void)?
 
     init(player: AVPlayer, program: RecordedProgram, quality: String, isCellularProfile: Bool,
          sharedPlayerLayer: AVPlayerLayer? = nil,
@@ -150,6 +157,7 @@ final class FullscreenPlayerViewController: UIViewController {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     // 全画面は横向きで見るものとして、横向きだけに寄せる。
+    override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
     override var shouldAutorotate: Bool { true }
     override var prefersStatusBarHidden: Bool { !controlsVisible }
@@ -236,6 +244,8 @@ final class FullscreenPlayerViewController: UIViewController {
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        // 設定の適応表示が全画面になっても、借りた映像・字幕・実況を返さない。
+        if presentedViewController is ViewerNavigationController { return }
         hideTimer?.invalidate()
         hideTimer = nil
         fastSeekBackController.invalidate()
@@ -415,8 +425,22 @@ final class FullscreenPlayerViewController: UIViewController {
         centerControls.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(centerControls)
 
-        let optionsRow = UIStackView(arrangedSubviews: [qualityButton, profileButton, UIView()])
-        optionsRow.spacing = 16
+        styleVideoOverlayButton(captionButton, symbol: "captions.bubble", title: "字幕の表示を切り替え")
+        styleVideoOverlayButton(settingsButton, symbol: "gearshape.fill", title: "プレイヤー設定")
+        styleVideoOverlayButton(fullscreenButton, symbol: "arrow.down.right.and.arrow.up.left", title: "全画面を解除")
+        captionButton.addAction(UIAction { [weak self] _ in
+            self?.onToggleCaptions?()
+            self?.updateCaptionControl()
+            self?.scheduleHideControls()
+        }, for: .touchUpInside)
+        settingsButton.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.hideTimer?.invalidate()
+            self.onShowSettings?(self)
+        }, for: .touchUpInside)
+        fullscreenButton.addTarget(self, action: #selector(exitFullscreen), for: .touchUpInside)
+        let optionsRow = UIStackView(arrangedSubviews: [UIView(), captionButton, settingsButton, fullscreenButton])
+        optionsRow.spacing = 0
         optionsRow.axis = .horizontal
 
         let panelStack = UIStackView(arrangedSubviews: [excitementStrip, seekRow, optionsRow])
@@ -528,10 +552,12 @@ final class FullscreenPlayerViewController: UIViewController {
     }
 
     /// 再生中だけ、しばらく触らなければ操作類を消すタイマーを仕掛け直す。
+    func resumeControlAutoHide() { scheduleHideControls() }
+
     private func scheduleHideControls() {
         hideTimer?.invalidate()
         hideTimer = nil
-        guard isPlayingNow else { return }
+        guard isPlayingNow, !isScrubbing, presentedViewController == nil else { return }
         hideTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in
             self?.setControlsVisible(false)
         }
@@ -580,7 +606,16 @@ final class FullscreenPlayerViewController: UIViewController {
         return program.duration
     }
 
+    private func updateCaptionControl() {
+        let on = captionsEnabled?() ?? false
+        captionButton.setImage(UIImage(systemName: on ? "captions.bubble.fill" : "captions.bubble"), for: .normal)
+        captionButton.isEnabled = captionAvailable?() ?? false
+        captionButton.alpha = captionButton.isEnabled ? (on ? 1 : 0.45) : 0.25
+        captionButton.accessibilityValue = on ? "オン" : "オフ"
+    }
+
     private func updateProgress() {
+        updateCaptionControl()
         let current = currentSeconds
         if current.isFinite {
             currentTimeLabel.text = TimeFormat.hms(current)

@@ -270,6 +270,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     private var searchText = ""
     private var searchDebounceTimer: Timer?
     private var focusSearchOnAppearance = false
+    private var loadedContext: WatchedHistoryStore.Context?
     private var loadedSearchQuery: String?
     private let persistsViewState: Bool
     /// 改造サーバー向けフィルタの控え。検索語が変わったら破棄し、ページ送りだけに使う。
@@ -887,7 +888,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         navigationController?.setNavigationBarHidden(true, animated: animated)
         // 接続先が変わっていたら読み直す。初回は必ず読む。
         let current = SettingsStore.shared.baseURL?.absoluteString
-        if programs.isEmpty || current != loadedBaseURLString || searchText != loadedSearchQuery {
+        if programs.isEmpty || current != loadedBaseURLString || searchText != loadedSearchQuery || loadedContext != WatchedHistoryStore.Context.current {
             refresh()
         }
         // ゴミ箱まわりの出し分けのため、管理者かどうかも開くたびに取り直す。
@@ -984,6 +985,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         scrollRestoreTimer = nil
         pendingScrollRestore = nil
         isScrollRestoring = false
+        guard loadedContext == WatchedHistoryStore.Context.current else { refresh(); return }
         let moveToTop = SettingsStore.shared.scrollToTopOnPageChange
         if isFilterActive {
             // フィルタ中は取得済みの結果から切り出すだけなので、通信はしない。
@@ -1044,6 +1046,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                         return
                     }
                     self.currentPage = min(page, lastPage)
+                    self.loadedContext = contextAtStart
                     self.loadedBaseURLString = baseURLAtStart
                     self.loadedSearchQuery = queryAtStart
                     self.total = response.total
@@ -1109,6 +1112,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                     self.applySearchChange()
                     return
                 }
+                self.loadedContext = contextAtStart
                 self.loadedBaseURLString = baseURLAtStart
                 self.loadedSearchQuery = queryAtStart
                 // 同じ検索語のフィルタ結果だけを、ページ送り用に保持する。
@@ -1416,7 +1420,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
 
     // MARK: - 表示状態の保存と復元
 
-    /// 表示状態 (ページ・並び順・両フィルタ) を端末ローカルに保存する。
+    /// 恒久的な並び順だけを端末へ保存し、一時的な状態は画面インスタンスが保持する。
     /// Web 版も端末ローカル保存で、開くたびに復元する。
     private func saveViewState() {
         saveViewState(page: currentPage)

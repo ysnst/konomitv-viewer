@@ -20,7 +20,14 @@ final class JikkyoCommentOverlayView: UIView {
 
     /// コメントの不透明度 (0〜1)。設定の「ニコニコ実況」の値。
     /// 既定は Web 版の既定値 (0.5)。
-    var displayOpacity: Double = 0.5
+    var displayOpacity: Double = 0.5 {
+        didSet {
+            // 新しく流れるコメントだけでなく、いま見えている文字にも即座に反映する。
+            let value = CGFloat(displayOpacity.isFinite ? min(1, max(0, displayOpacity)) : 0.5)
+            for item in flowItems { item.label.alpha = value }
+            for item in fixedItems { item.label.alpha = value }
+        }
+    }
     /// コメントの流れる速さの倍率。設定の「ニコニコ実況」の値。
     var speedRate: Double = 1
     /// コメントの字の基準の大きさ (px)。設定の「ニコニコ実況」の値。

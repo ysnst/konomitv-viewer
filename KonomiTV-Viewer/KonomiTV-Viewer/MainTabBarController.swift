@@ -22,6 +22,8 @@ import UIKit
 /// 切り替えはアニメーションなしの即時切り替えにする
 /// (滑らせる動きは付けない)。
 final class MainTabBarController: UIViewController {
+    override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
+
     /// バーの中身の高さ。Vuetify の v-bottom-navigation の標準高さ 56px を
     /// そのまま使う。バーの実高さは、これに下端のセーフエリア
     /// (ホームインジケータ分) を加えたものになる。

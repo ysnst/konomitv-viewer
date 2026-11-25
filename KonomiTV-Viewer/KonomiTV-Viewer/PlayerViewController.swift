@@ -437,6 +437,11 @@ final class PlayerViewController: UIViewController {
     private let rateButton = RippleButton()
     private let audioOnlyButton = RippleButton()
     private let fullscreenButton = RippleButton()
+    private let settingsButton = RippleButton()
+    private let overlayTopGradient = GradientView(direction: .top)
+    private lazy var overlayHeader = PlayerOverlayHeader(title: program.title) { [weak self] in
+        self?.navigationController?.popViewController(animated: true)
+    }
     private let protectButton = RippleButton()
     /// マイリストへの追加・削除ボタン (両版)。状態で文面と印を変える。
     private let mylistButton = RippleButton()
@@ -719,15 +724,8 @@ final class PlayerViewController: UIViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        // 題名の出し方だけ Web 版ヘッダー (14px 太字・テーマの文字色) に合わせる。
-        // 戻る操作と題名の置き場所は、今までのナビゲーションバーのまま
-        // (一覧側が「押し込み先ではバーを戻す」作りのため、重ね物の戻るボタンは置かない)。
-        let bar = navigationController?.navigationBar
-        bar?.tintColor = AppPalette.text
-        bar?.titleTextAttributes = [
-            .font: UIFont.scaledSystemFont(ofSize: 14, weight: .bold),
-            .foregroundColor: AppPalette.text,
-        ]
+        // 戻る・題名・時計は映像へ重ね、独立した大型ナビゲーション帯を使わない。
+        navigationController?.setNavigationBarHidden(true, animated: animated)
         // フルスクリーンから戻ってきたとき用に、消えるタイマーを仕掛け直す。
         if hasActiveEngine {
             scheduleHideControls()
@@ -779,7 +777,8 @@ final class PlayerViewController: UIViewController {
         headerClockTimer = nil
         // フルスクリーン表示で覆われただけのときは再生を止めない。
         // それ以外で画面を離れるときは今までどおり止める。
-        if presentedViewController is FullscreenPlayerViewController {
+        if presentedViewController is FullscreenPlayerViewController
+            || presentedViewController is ViewerNavigationController {
             return
         }
         didLeaveScreen = true
@@ -822,7 +821,7 @@ final class PlayerViewController: UIViewController {
         configure(nextChapterButton, symbol: "forward.end.fill", pointSize: 26, action: #selector(nextChapter))
         for button in [playPauseButton, skipBackButton, skipForwardButton, prevChapterButton, nextChapterButton] {
             button.tintColor = .white
-            let hitSize: CGFloat = button === playPauseButton ? 64 : 52
+            let hitSize: CGFloat = button === playPauseButton ? 56 : 44
             button.widthAnchor.constraint(equalToConstant: hitSize).isActive = true
             button.heightAnchor.constraint(equalToConstant: hitSize).isActive = true
         }
@@ -884,20 +883,27 @@ final class PlayerViewController: UIViewController {
         centerTransport.addArrangedSubview(skipForwardButton)
         centerTransport.addArrangedSubview(nextChapterButton)
         centerTransport.axis = .horizontal
-        centerTransport.spacing = 28
+        centerTransport.spacing = 8
         centerTransport.alignment = .center
         centerTransport.translatesAutoresizingMaskIntoConstraints = false
 
         // 下の帯の並び: [現在時刻] ... [全体の長さ・字幕切り替え・コメント切り替え]。
-        let rightGroup = UIStackView(arrangedSubviews: [durationLabel, captionButton, commentButton])
+        styleVideoOverlayButton(captionButton, symbol: "captions.bubble", title: "字幕の表示を切り替え")
+        updateCaptionButton()
+        styleVideoOverlayButton(settingsButton, symbol: "gearshape.fill", title: "プレイヤー設定")
+        styleVideoOverlayButton(fullscreenButton, symbol: "arrow.up.left.and.arrow.down.right", title: "全画面")
+        settingsButton.addTarget(self, action: #selector(openPlayerSettings), for: .touchUpInside)
+        let rightGroup = UIStackView(arrangedSubviews: [captionButton, settingsButton, fullscreenButton])
         rightGroup.axis = .horizontal
-        rightGroup.spacing = 8
+        rightGroup.spacing = 0
         rightGroup.alignment = .center
 
-        let transportRow = UIStackView(arrangedSubviews: [currentTimeLabel, rightGroup])
+        let timeGroup = UIStackView(arrangedSubviews: [currentTimeLabel, durationLabel])
+        timeGroup.spacing = 2
+        let transportRow = UIStackView(arrangedSubviews: [timeGroup, UIView(), rightGroup])
         transportRow.axis = .horizontal
         transportRow.alignment = .center
-        transportRow.distribution = .equalSpacing
+        transportRow.spacing = 0
 
         // 操作帯: グラデーションの上に、操作の並びとシークバーを載せる。
         // シークバーは Web 版スマホ縦と同じく、映像の下辺いっぱいに置く。
@@ -914,6 +920,20 @@ final class PlayerViewController: UIViewController {
         // 真ん中の並びは操作帯より上に置く (映像が低いときでも帯に
         // 触れて押せなくならないように)。
         videoContainer.addSubview(centerTransport)
+        overlayTopGradient.translatesAutoresizingMaskIntoConstraints = false
+        overlayHeader.translatesAutoresizingMaskIntoConstraints = false
+        videoContainer.addSubview(overlayTopGradient)
+        videoContainer.addSubview(overlayHeader)
+        NSLayoutConstraint.activate([
+            overlayTopGradient.topAnchor.constraint(equalTo: videoContainer.topAnchor),
+            overlayTopGradient.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
+            overlayTopGradient.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
+            overlayTopGradient.heightAnchor.constraint(equalToConstant: 52),
+            overlayHeader.topAnchor.constraint(equalTo: videoContainer.topAnchor),
+            overlayHeader.leadingAnchor.constraint(equalTo: videoContainer.safeAreaLayoutGuide.leadingAnchor, constant: 4),
+            overlayHeader.trailingAnchor.constraint(equalTo: videoContainer.safeAreaLayoutGuide.trailingAnchor, constant: -8),
+            overlayHeader.heightAnchor.constraint(equalToConstant: 44),
+        ])
 
         // シーク中のプレビュー: 操作帯のすぐ上に、指の位置の時刻の映像と
         // 時刻を出す (Web 版プレイヤーのシークバーのプレビューと同じ出方)。
@@ -1271,7 +1291,7 @@ final class PlayerViewController: UIViewController {
         rateButton.menu = makePlaybackRateMenu()
         audioOnlyButton.setTitle("音声のみ: OFF", for: .normal)
         audioOnlyButton.addTarget(self, action: #selector(toggleAudioOnly), for: .touchUpInside)
-        fullscreenButton.setTitle("全画面", for: .normal)
+        // 全画面は映像内の専用アイコンとして配置する。
         fullscreenButton.addTarget(self, action: #selector(showFullscreen), for: .touchUpInside)
         protectButton.setTitle(currentProtected ? "保護を外す" : "保護する", for: .normal)
         protectButton.addTarget(self, action: #selector(toggleProtection), for: .touchUpInside)
@@ -1312,7 +1332,7 @@ final class PlayerViewController: UIViewController {
         nextReserveButton.addTarget(self, action: #selector(reserveNextBroadcast), for: .touchUpInside)
         seriesReserveButton.setTitle("シリーズ予約", for: .normal)
         seriesReserveButton.addTarget(self, action: #selector(createSeriesReservation), for: .touchUpInside)
-        for button in [qualityButton, profileButton, rateButton, audioOnlyButton, fullscreenButton, protectButton, mylistButton, watchedButton, sleepTimerButton,
+        for button in [qualityButton, profileButton, rateButton, audioOnlyButton, protectButton, mylistButton, watchedButton, sleepTimerButton,
                        prevEpisodeButton, nextEpisodeButton, sceneListButton, addBookmarkButton, digestButton, commentSearchButton,
                        nextReserveButton, seriesReserveButton] {
             stylePlayerChip(button)
@@ -1329,19 +1349,19 @@ final class PlayerViewController: UIViewController {
         // シリーズ予約は予約機能と同じ条件 (後ろ側が EDCB のとき) に
         // 寄せ、常時出す (EDCB でないときは、実行時に予約機能と同じ
         // 知らせ文が出る)。並び順は見直し前と変えない。
-        var infoButtons: [UIButton] = [qualityButton, audioOnlyButton, fullscreenButton, rateButton]
+        var infoButtons: [UIButton] = []
         if AppEdition.episodeNavigationEnabled {
             infoButtons += [prevEpisodeButton, nextEpisodeButton]
         }
         if AppEdition.bookmarksAndScenesEnabled {
             infoButtons += [sceneListButton, addBookmarkButton]
         }
-        infoButtons += [digestButton, commentSearchButton,
+        infoButtons += [commentSearchButton,
                         nextReserveButton, seriesReserveButton]
         if AppEdition.protectionEnabled {
             infoButtons += [protectButton]
         }
-        infoButtons += [mylistButton, watchedButton, profileButton, sleepTimerButton]
+        infoButtons += [mylistButton, watchedButton]
         for button in infoButtons {
             buttonsFlowView.addSubview(button)
         }
@@ -1463,7 +1483,8 @@ final class PlayerViewController: UIViewController {
         stack.axis = .horizontal
         stack.spacing = 4
         stack.alignment = .center
-        navigationItem.rightBarButtonItem = UIBarButtonItem(customView: stack)
+        headerClockLabel.textColor = .white
+        overlayHeader.clock.addArrangedSubview(stack)
         updateHeaderClock()
     }
 
@@ -1541,6 +1562,7 @@ final class PlayerViewController: UIViewController {
     /// 書き戻しの対象にならない。
     private func userSwitchQuality(_ newQuality: String) {
         guard newQuality != quality else { return }
+        if deferEngineChange(base: newQuality, profile: profile, action: { [weak self] in self?.userSwitchQuality(newQuality) }) { return }
         SettingsStore.shared.setStreamingQuality(newQuality, media: .video, profile: profile)
         pendingQualityWriteBack = newQuality
         // 全画面表示中に仕組みが切り替わる場合は、全画面を閉じてから作り直す。
@@ -1570,6 +1592,8 @@ final class PlayerViewController: UIViewController {
     @discardableResult
     private func switchProfile(to newProfile: PlaybackProfile) -> String {
         guard newProfile != profile else { return quality }
+        let target = audioOnly ? SettingsStore.audioOnlyQuality : SettingsStore.shared.streamingQuality(media: .video, profile: newProfile)
+        if deferEngineChange(base: target, profile: newProfile, action: { [weak self] in _ = self?.switchProfile(to: newProfile) }) { return quality }
         // 画質の切り替えと同じく、止めていた場合は作り直した後も止めたままにする。
         let wasPlaying = isCurrentlyPlaying()
         // 全画面表示中に仕組みが切り替わる場合は、全画面を閉じてから作り直す
@@ -1798,7 +1822,8 @@ final class PlayerViewController: UIViewController {
             UIImage(systemName: on ? "captions.bubble.fill" : "captions.bubble", withConfiguration: config),
             for: .normal)
         captionButton.tintColor = .white
-        captionButton.alpha = on ? 1 : 0.4
+        captionButton.isEnabled = !audioOnly
+        captionButton.alpha = audioOnly ? 0.25 : (on ? 1 : 0.4)
         captionButton.accessibilityLabel = on ? "字幕表示オン" : "字幕表示オフ"
     }
 
@@ -1808,6 +1833,7 @@ final class PlayerViewController: UIViewController {
         captionOverlayView.isHidden = !(SettingsStore.shared.showCaptions && !audioOnly)
         if !captionOverlayView.isHidden {
             refreshCaptions()
+            captionOverlayView.setImage(captionEngine.currentImage)
         }
     }
 
@@ -2145,6 +2171,15 @@ final class PlayerViewController: UIViewController {
     /// 追随できない (映像の描き先も操作の向き先も、仕組みにひも付いている
     /// ため)。その場合は全画面を閉じ、通常画面で作り直す。
     /// 呼び出し側は、作り直しの前にこれを呼ぶ。
+    /// 全画面と設定シートを閉じ終え、借用ビューを返してから別エンジンへ切り替える。
+    private func deferEngineChange(base: String, profile: PlaybackProfile, action: @escaping () -> Void) -> Bool {
+        guard engineWillChange(toBaseQuality: base, profile: profile),
+              let fullscreen = activeFullscreenPlayer, fullscreen.presentingViewController != nil else { return false }
+        activeFullscreenPlayer = nil
+        dismiss(animated: true) { action() }
+        return true
+    }
+
     private func dismissFullscreenIfEngineWillChange(toBaseQuality base: String, profile newProfile: PlaybackProfile) {
         guard presentedViewController is FullscreenPlayerViewController else { return }
         if engineWillChange(toBaseQuality: base, profile: newProfile) {
@@ -2771,10 +2806,13 @@ final class PlayerViewController: UIViewController {
         guard visible != controlsVisible else { return }
         controlsVisible = visible
         UIView.animate(withDuration: 0.25) {
+            self.overlayHeader.alpha = visible ? 1 : 0
+            self.overlayTopGradient.alpha = visible ? 1 : 0
             self.bottomGradient.alpha = visible ? 1 : 0
             self.controlsContainer.alpha = visible ? 1 : 0
             self.centerTransport.alpha = visible ? 1 : 0
         }
+        overlayHeader.isUserInteractionEnabled = visible
         controlsContainer.isUserInteractionEnabled = visible
         centerTransport.isUserInteractionEnabled = visible
         if !visible {
@@ -2787,7 +2825,7 @@ final class PlayerViewController: UIViewController {
     private func scheduleHideControls() {
         hideTimer?.invalidate()
         hideTimer = nil
-        guard isCurrentlyPlaying(), !isScrubbing else { return }
+        guard isCurrentlyPlaying(), !isScrubbing, presentedViewController == nil else { return }
         hideTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in
             self?.setControlsVisible(false)
         }
@@ -3785,7 +3823,8 @@ final class PlayerViewController: UIViewController {
                 program: program, quality: quality,
                 isCellularProfile: profile == .cellular,
                 hooks: makeFullscreenHooks())
-            lendCommentOverlay(to: fullscreen)
+            configureFullscreenControls(fullscreen)
+        lendCommentOverlay(to: fullscreen)
             fullscreen.onQualitySelected = { [weak self] newQuality in
                 self?.userSwitchQuality(newQuality)
             }
@@ -3818,6 +3857,7 @@ final class PlayerViewController: UIViewController {
             NSLayoutConstraint.activate(self.captionHomeConstraints)
             self.surfaceView.bringSubviewToFront(self.captionOverlayView)
         }
+        configureFullscreenControls(fullscreen)
         lendCommentOverlay(to: fullscreen)
         fullscreen.onQualitySelected = { [weak self] newQuality in
             self?.userSwitchQuality(newQuality)
@@ -3827,6 +3867,64 @@ final class PlayerViewController: UIViewController {
         }
         passExcitementToFullscreen(fullscreen)
         present(fullscreen, animated: true)
+    }
+
+    @objc private func openPlayerSettings() { showPlayerSettings(from: self) }
+
+    private func configureFullscreenControls(_ fullscreen: FullscreenPlayerViewController) {
+        fullscreen.captionsEnabled = { SettingsStore.shared.showCaptions }
+        fullscreen.captionAvailable = { [weak self] in self?.audioOnly == false }
+        fullscreen.onToggleCaptions = { [weak self] in self?.toggleCaptions() }
+        fullscreen.onShowSettings = { [weak self] presenter in self?.showPlayerSettings(from: presenter) }
+    }
+
+    private func showPlayerSettings(from presenter: UIViewController) {
+        hideTimer?.invalidate()
+        let menu = PlayerSettingsViewController { [weak self] in
+            guard let self else { return [] }
+            let store = SettingsStore.shared
+            let saver = store.dataSaverMode(media: .video, profile: self.profile)
+            var rows: [PlayerSettingsViewController.Row] = [
+                .init(title: "画質", value: self.quality, choices: SettingsStore.qualities.map { quality in
+                    .init(title: SettingsStore.qualityDisplayName(quality, dataSaverMode: saver), selected: quality == self.quality,
+                          select: { [weak self] in self?.userSwitchQuality(quality) })
+                }),
+                .init(title: "モバイル回線向け画質", toggle: self.profile == .cellular,
+                      change: { [weak self] on in _ = self?.switchProfile(to: on ? .cellular : .wifi) }),
+                .init(title: "再生速度", value: SettingsStore.playbackRateText(store.playbackRate), choices: SettingsStore.playbackRateChoices.map { rate in
+                    .init(title: SettingsStore.playbackRateText(rate), selected: rate == store.playbackRate,
+                          select: { [weak self] in self?.setPlaybackRate(rate) })
+                }),
+                .init(title: "コメントを表示", toggle: store.showComments, change: { [weak self] _ in self?.toggleComments() }),
+                .init(title: "コメントを無制限に表示", toggle: store.showCommentsUnlimited, change: { [weak self] on in
+                    store.showCommentsUnlimited = on
+                    self?.commentOverlay.unlimited = on
+                }),
+                .init(title: "コメントの透明度", value: String(format: "%.1f", store.commentOpacity), choices: (0...10).map { step in
+                    let value = Double(step) / 10
+                    return .init(title: String(format: "%.1f", value), selected: abs(store.commentOpacity - value) < 0.01, select: { [weak self] in
+                        store.commentOpacity = value
+                        self?.commentOverlay.displayOpacity = value
+                    })
+                }),
+                .init(title: "音声のみ再生", toggle: self.audioOnly, change: { [weak self] _ in self?.toggleAudioOnly() }),
+                .init(title: "おやすみタイマー", value: self.sleepTimerButton.title(for: .normal) ?? "オフ", action: { [weak self] in self?.cycleSleepTimer() }),
+            ]
+            if !self.digestButton.isHidden {
+                rows.append(.init(title: "ダイジェスト再生", toggle: self.digestPlaybackEnabled, change: { [weak self] _ in self?.toggleDigestPlayback() }))
+            }
+            return rows
+        }
+        let navigation = PlayerSettingsNavigationController(rootViewController: menu)
+        navigation.onClose = { [weak self, weak presenter] in
+            self?.updateCaptionButton()
+            (presenter as? FullscreenPlayerViewController)?.resumeControlAutoHide()
+            self?.scheduleHideControls()
+        }
+        navigation.modalPresentationStyle = .pageSheet
+        navigation.sheetPresentationController?.detents = [.medium(), .large()]
+        navigation.sheetPresentationController?.prefersGrabberVisible = true
+        presenter.present(navigation, animated: true)
     }
 
     /// 同じコメントビューを貸し出し、時刻の供給元・表示設定・ミュート済みの材料を保つ。
@@ -3942,6 +4040,8 @@ final class PlayerViewController: UIViewController {
     /// VLCKit 経路では、画質切り替えで作り直すときに映像なし (:no-video) で
     /// つなぎ直すので、描画自体が出ない (生放送の音声のみと同じ)。
     @objc private func toggleAudioOnly() {
+        let target = audioOnly ? (qualityBeforeAudioOnly ?? SettingsStore.shared.streamingQuality(media: .video, profile: profile)) : SettingsStore.audioOnlyQuality
+        if deferEngineChange(base: target, profile: profile, action: { [weak self] in self?.toggleAudioOnly() }) { return }
         audioOnly.toggle()
         audioOnlyButton.setTitle(audioOnly ? "音声のみ: ON" : "音声のみ: OFF", for: .normal)
         buttonsFlowView.setNeedsLayout()
@@ -3958,6 +4058,7 @@ final class PlayerViewController: UIViewController {
         applyCommentDisplayState()
         // 字幕も同じく、音声のみの間は出さず、戻したら再開する。
         applyCaptionDisplayState()
+        updateCaptionButton()
     }
 }
 

@@ -35,7 +35,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         let settings = SettingsViewController(mode: .setup) { [weak self] in
             self?.window?.rootViewController = self?.makeTabBarController()
         }
-        return UINavigationController(rootViewController: settings)
+        return ViewerNavigationController(rootViewController: settings)
     }
 
     private func makeTabBarController() -> UIViewController {
@@ -76,10 +76,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // 設定画面はその「設定」の入口の先に移った。
         // Web 版の下部ナビには番組表は無く録画予約があるため、それに合わせた
         // (本人の指示、2026-11-23)。番組表は生放送一覧から重ねて開く。
-        let videos = UINavigationController(rootViewController: VideoHomeViewController())
-        let live = UINavigationController(rootViewController: LiveListViewController())
-        let reservations = UINavigationController(rootViewController: ReservationListViewController())
-        let mypage = UINavigationController(rootViewController: MyPageViewController())
+        let videos = ViewerNavigationController(rootViewController: VideoHomeViewController())
+        let live = ViewerNavigationController(rootViewController: LiveListViewController())
+        let reservations = ViewerNavigationController(rootViewController: ReservationListViewController())
+        let mypage = ViewerNavigationController(rootViewController: MyPageViewController())
 
         // タブの並びは テレビをみる → ビデオをみる → 録画予約 → マイページ。
         // タブ番号はこの並びで テレビをみる = 0、ビデオをみる = 1、

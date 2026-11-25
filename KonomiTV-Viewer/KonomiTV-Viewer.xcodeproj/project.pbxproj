@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A10000000000000000000006 /* PlayerSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000005 /* PlayerSettingsViewController.swift */; };
 		A10000000000000000000004 /* VideoHomeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* VideoHomeViewController.swift */; };
 		A10000000000000000000002 /* WatchedHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* WatchedHistoryStore.swift */; };
 		200000000000000000000030 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000010 /* AppDelegate.swift */; };
@@ -77,6 +78,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		A10000000000000000000005 /* PlayerSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerSettingsViewController.swift; sourceTree = "<group>"; };
 		A10000000000000000000003 /* VideoHomeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoHomeViewController.swift; sourceTree = "<group>"; };
 		A10000000000000000000001 /* WatchedHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchedHistoryStore.swift; sourceTree = "<group>"; };
 		200000000000000000000010 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
@@ -199,6 +201,7 @@
 				200000000000000000000015 /* VideoListViewController.swift */,
 				A10000000000000000000001 /* WatchedHistoryStore.swift */,
 				A10000000000000000000003 /* VideoHomeViewController.swift */,
+				A10000000000000000000005 /* PlayerSettingsViewController.swift */,
 				200000000000000000000016 /* PlayerViewController.swift */,
 				200000000000000000000017 /* LiveListViewController.swift */,
 				200000000000000000000018 /* LivePlayerViewController.swift */,
@@ -343,6 +346,7 @@
 				200000000000000000000035 /* VideoListViewController.swift in Sources */,
 				A10000000000000000000002 /* WatchedHistoryStore.swift in Sources */,
 				A10000000000000000000004 /* VideoHomeViewController.swift in Sources */,
+				A10000000000000000000006 /* PlayerSettingsViewController.swift in Sources */,
 				200000000000000000000036 /* PlayerViewController.swift in Sources */,
 				200000000000000000000037 /* LiveListViewController.swift in Sources */,
 				200000000000000000000038 /* LivePlayerViewController.swift in Sources */,
