@@ -832,7 +832,7 @@ final class PlayerViewController: UIViewController {
 
         // 真ん中の並びの絵の大きさは本家の比率に寄せる (再生/一時停止が
         // 一番大きく、少し戻る/少し進む、場面移動の順に小さく)。
-        // 当たり判定は絵より広く取る (再生/一時停止 64x64、それ以外 52x52)。
+        // 当たり判定は絵より広く取る (再生/一時停止56x56、それ以外44x44)。
         configure(playPauseButton, symbol: "play.fill", pointSize: 40, action: #selector(togglePlayPause))
         // スキップ秒数は設定値に合わせ、ボタンの数字もその秒数のものにする
         // (選択肢の秒数はすべて SF Symbols に用意がある)。
@@ -954,7 +954,14 @@ final class PlayerViewController: UIViewController {
         overlayHeader.translatesAutoresizingMaskIntoConstraints = false
         videoContainer.addSubview(overlayTopGradient)
         videoContainer.addSubview(overlayHeader)
+        // 中央操作は見出しと下部操作帯の間へ置き、6ボタンや波形と当たり判定を重ねない。
+        let transportGuide = UILayoutGuide()
+        videoContainer.addLayoutGuide(transportGuide)
         NSLayoutConstraint.activate([
+            transportGuide.topAnchor.constraint(equalTo: overlayHeader.bottomAnchor),
+            transportGuide.bottomAnchor.constraint(equalTo: controlsContainer.topAnchor),
+            transportGuide.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
+            transportGuide.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
             overlayTopGradient.topAnchor.constraint(equalTo: videoContainer.topAnchor),
             overlayTopGradient.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
             overlayTopGradient.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
@@ -1414,10 +1421,9 @@ final class PlayerViewController: UIViewController {
         infoStack.setCustomSpacing(24, after: buttonsFlowView)
         scrollView.addSubview(infoStack)
 
-        // 映像の高さは「幅なりの 16:9」と「情報欄の最低限 (120pt) を残して収まる高さ」の
-        // 小さい方にする (横向きで 16:9 のまま広げると上下が画面からはみ出して
-        // 切れて見えるため)。実際の値は viewDidLayoutSubviews で決める。
-        let heightConstraint = videoContainer.heightAnchor.constraint(equalToConstant: 200)
+        // 原則16:9と情報欄の余地で高さを決め、狭幅では操作に必要な216ptを優先する。
+        // 映像自体はaspect-fitで収め、実際の高さはviewDidLayoutSubviewsで更新する。
+        let heightConstraint = videoContainer.heightAnchor.constraint(equalToConstant: 216)
         videoHeightConstraint = heightConstraint
 
         // 映像の枠の固定は、貸し出し・返却で付け外しできるよう別に持つ。
@@ -1464,7 +1470,7 @@ final class PlayerViewController: UIViewController {
             controlsContainer.bottomAnchor.constraint(equalTo: videoContainer.bottomAnchor),
             controlsHeightConstraint!,
             centerTransport.centerXAnchor.constraint(equalTo: videoContainer.centerXAnchor),
-            centerTransport.centerYAnchor.constraint(equalTo: videoContainer.centerYAnchor),
+            centerTransport.centerYAnchor.constraint(equalTo: transportGuide.centerYAnchor),
             controlsStackView.leadingAnchor.constraint(equalTo: controlsContainer.leadingAnchor, constant: 16),
             controlsStackView.trailingAnchor.constraint(equalTo: controlsContainer.trailingAnchor, constant: -16),
             controlsStackView.bottomAnchor.constraint(equalTo: controlsContainer.bottomAnchor, constant: -4),
@@ -2644,8 +2650,7 @@ final class PlayerViewController: UIViewController {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        // 映像の高さ: 幅なりの 16:9 が情報欄の最低限 (120pt) を残して収まるならそのまま、
-        // 収まらない (主に横向き) なら収まる高さまで縮める。
+        // 原則は16:9と情報欄の余地で決める。狭幅では下記の操作領域を優先する。
         // 映像自体は resizeAspect で全体が収まるため、切れることはない。
         if let heightConstraint = videoHeightConstraint {
             let ideal = view.bounds.width * 9.0 / 16.0
@@ -2653,7 +2658,9 @@ final class PlayerViewController: UIViewController {
                 - view.safeAreaInsets.top
                 - view.safeAreaInsets.bottom
                 - 120
-            let target = max(120, min(ideal, available))
+            // 見出し44 + 中央操作56 + 波形を含む操作帯116を確保する。
+            // 狭い幅では映像をaspect-fitし、情報欄は残りの高さでスクロールする。
+            let target = max(216, min(ideal, available))
             if abs(heightConstraint.constant - target) > 0.5 {
                 heightConstraint.constant = target
             }
