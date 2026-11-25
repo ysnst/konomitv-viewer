@@ -267,6 +267,17 @@ final class PlayerViewController: UIViewController {
     /// 始まったときに反映する。開始位置の復元 (受け皿・補正) より
     /// 優先する。
     private var pendingPreStartSeek: Double?
+    /// 移動 (シーク) が確定したあと、再生部品の位置が飛び先へ移るまでの
+    /// 間、表示だけを飛び先に合わせるための控え。とくに H.265 (VLC)
+    /// では飛び先の用意に時間がかかることがあり、その間ずっと古い
+    /// 位置・停止した見た目のままだと、固まったように見えてしまう
+    /// (実機の画面録画で、離したあと約8秒間、元の位置のまま止まって
+    /// 見えた)。再生部品の位置が飛び先へ近づくか、一定時間たったら解く。
+    private var seekDisplayTarget: Double?
+    private var seekDisplayDeadline: Date?
+    /// 表示を飛び先に合わせておく上限の時間 (秒)。飛び先の用意が
+    /// これより長くかかる場合は、実位置の表示に戻す。
+    private static let seekDisplayTimeout: TimeInterval = 20
     private var sessionID = UUID().uuidString
     /// 再生を始めるときに決めた回線の区分。この再生の間は固定する
     /// (途中で回線が変わっても画質は変えない)。ただし、再生画面での
@@ -2146,6 +2157,8 @@ final class PlayerViewController: UIViewController {
         // 新しい開始では、再生はまだ始まっていないものとして扱う
         // (開始前の移動の控えと、その反映の判定に使う)。
         playbackDidStart = false
+        seekDisplayTarget = nil
+        seekDisplayDeadline = nil
         // セッションの作り直しによる開始では、作り直しを試した印を
         // 引き継ぐ (作り直しが繰り返し起きないようにするため)。
         // それ以外の開始 (利用者の操作や画質の切り替えなど) では
@@ -2649,6 +2662,8 @@ final class PlayerViewController: UIViewController {
         stopSleepTimerTicker()
         stopKeepAlive()
         pendingPreStartSeek = nil
+        seekDisplayTarget = nil
+        seekDisplayDeadline = nil
         historyRegistrationTimer?.invalidate()
         historyRegistrationTimer = nil
         // 離れるときは最後の再生位置を報告する (Web 版が破棄時に報告するのと同じ)。
@@ -2877,15 +2892,31 @@ final class PlayerViewController: UIViewController {
         return program.duration
     }
 
+    /// 表示を飛び先に合わせる控えが効いている間は、その位置を返す。
+    /// 再生部品の実位置が飛び先へ近づいたら (または待ちの期限が
+    /// 過ぎたら) 控えを解いて nil を返す (実位置を表示する)。
+    private func activeSeekDisplayTarget(realPosition: Double) -> Double? {
+        guard let target = seekDisplayTarget else { return nil }
+        if abs(realPosition - target) <= 2
+            || Date() > (seekDisplayDeadline ?? .distantPast) {
+            seekDisplayTarget = nil
+            seekDisplayDeadline = nil
+            return nil
+        }
+        return target
+    }
+
     private func updateProgress() {
         guard hasActiveEngine else { return }
         let current = currentPosition()
         if current.isFinite {
-            // 再生が始まる前に利用者が移動を指定していたら、表示は
-            // その移動先に合わせる (再生部品の位置はまだ 0 のまま
-            // なので、そのまま出すと、指定したのに 0 へ戻されたように
-            // 見えてしまう)。
-            let displayPosition = (!playbackDidStart ? pendingPreStartSeek : nil) ?? current
+            // 表示は、利用者が指定した移動先に合わせる。再生が始まる
+            // 前は開始前の移動先、始まってからは飛び先へ移るまでの間
+            // の合わせ分 (再生部品の位置はまだ古いままなので、そのまま
+            // 出すと、止まったまま固まったように見えてしまう)。
+            let displayPosition = (!playbackDidStart ? pendingPreStartSeek : nil)
+                ?? activeSeekDisplayTarget(realPosition: current)
+                ?? current
             currentTimeLabel.text = TimeFormat.hms(displayPosition)
             if !isScrubbing {
                 let duration = effectiveDuration
@@ -3007,7 +3038,12 @@ final class PlayerViewController: UIViewController {
     }
 
     private func updatePlayPauseIcon() {
+        // 移動の確定直後で、再生部品がまだ飛び先へ移っている最中は、
+        // 再生の意図がある間は「再生中」の見た目にする (止まったまま
+        // 固まったように見せないため)。
         let playing = isCurrentlyPlaying()
+            || (playbackIntentPlaying
+                && activeSeekDisplayTarget(realPosition: currentPosition()) != nil)
         let config = UIImage.SymbolConfiguration(pointSize: 40, weight: .regular)
         playPauseButton.setImage(
             UIImage(systemName: playing ? "pause.fill" : "play.fill", withConfiguration: config),
@@ -3846,6 +3882,13 @@ final class PlayerViewController: UIViewController {
         if isUserInitiated, !playbackDidStart {
             pendingPreStartSeek = clamped
         }
+        // 再生が始まってからの移動では、再生部品の位置が飛び先へ移る
+        // までの間、表示だけ先に飛び先へ合わせる (古い位置で止まった
+        // ままに見えないようにするため)。
+        if isUserInitiated, playbackDidStart {
+            seekDisplayTarget = clamped
+            seekDisplayDeadline = Date().addingTimeInterval(Self.seekDisplayTimeout)
+        }
         // CM自動スキップの判定は移動先から見張る
         // (シークで CM 区間の真ん中へ入った直後は発動させないため)。
         lastObservedPosition = clamped
@@ -3938,6 +3981,12 @@ final class PlayerViewController: UIViewController {
         seek(to: target)
         if wasPlayingBeforeScrub {
             playAtCurrentRate()
+#if canImport(MobileVLCKit)
+            // バーを動かすために一時的に止めていただけなので、飛び先で
+            // 止まったままになってしまった場合は、スキップと同じく
+            // 再開の対象にする。
+            vlcResumeAfterSeek = true
+#endif
             chaseUserPaused = false
         }
         scheduleHideControls()
@@ -4171,6 +4220,10 @@ final class PlayerViewController: UIViewController {
             },
             setMuted: { [weak self] muted in
                 self?.setEngineMuted(muted)
+            },
+            displayTime: { [weak self] in
+                guard let self else { return nil }
+                return self.activeSeekDisplayTarget(realPosition: self.currentPosition())
             }
         )
     }

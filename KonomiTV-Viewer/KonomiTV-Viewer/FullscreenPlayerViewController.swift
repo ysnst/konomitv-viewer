@@ -34,6 +34,10 @@ final class FullscreenPlayerViewController: UIViewController {
         var isMuted: () -> Bool
         /// 音を消す・戻す (長押しの高速シーク用)。
         var setMuted: (Bool) -> Void
+        /// 表示用の再生位置 (秒)。移動の確定直後など、再生部品の実位置が
+        /// まだ飛び先へ移っていない間だけ、表示に使う位置を返す。
+        /// 合わせが不要なときは nil (実位置を表示する)。
+        var displayTime: (() -> Double?)? = nil
     }
 
     /// AVPlayer 経路のときの共有プレイヤー。VLCKit 経路では nil。
@@ -624,7 +628,10 @@ final class FullscreenPlayerViewController: UIViewController {
     }
 
     private func updateProgress() {
-        let current = currentSeconds
+        // 移動の確定直後は、再生部品の実位置がまだ飛び先へ移っていない
+        // ことがある。その間は表示だけ飛び先に合わせる (呼び出し元が
+        // 表示用の位置を用意していれば、それを使う。通常画面と同じ直し)。
+        let current = hooks?.displayTime?() ?? currentSeconds
         if current.isFinite {
             currentTimeLabel.text = TimeFormat.hms(current)
             if !isScrubbing {
