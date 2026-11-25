@@ -630,13 +630,19 @@ final class APIClient {
     }
 
     /// 再生中、定期的に呼んでセッションを維持する (サーバー側の分割ファイル生成を止めないため)。
-    func keepAlive(videoID: Int, quality: String, profile: PlaybackProfile, sessionID: String) async {
+    /// サーバーが受け付けたかどうかを返す。以前は結果を捨てていたため、
+    /// セッションが切れても呼び出し側は気づけなかった。失敗が続いたら
+    /// 切れたものとして扱えるよう、通信の失敗も応答のエラーも
+    /// false として返す。
+    func keepAlive(videoID: Int, quality: String, profile: PlaybackProfile, sessionID: String) async -> Bool {
         let apiQuality = SettingsStore.shared.apiQuality(base: quality, media: .video, profile: profile)
         guard let request = try? request(
             forPath: "/api/streams/video/\(videoID)/\(apiQuality)/keep-alive?session_id=\(Self.escapedURLComponent(sessionID))",
             method: "PUT"
-        ) else { return }
-        _ = try? await session.data(for: request)
+        ) else { return false }
+        guard let (_, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse else { return false }
+        return (200..<300).contains(http.statusCode)
     }
 
     // MARK: - 番組表

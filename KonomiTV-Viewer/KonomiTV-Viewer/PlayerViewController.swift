@@ -214,6 +214,11 @@ final class PlayerViewController: UIViewController {
     /// ため、再生が始まった合図で効かせる。手動の移動・画質の
     /// 切り替え・後片付けのときは破棄する。
     private var vlcPendingStartCorrection: Double?
+    /// VLCKit 経路で、移動 (シーク) の直前に再生していたことを示す印。
+    /// 移動先で止まった状態になってしまった場合に、状態の知らせ側で
+    /// 拾って再生を再開するために使う。利用者が自分で止めたときは
+    /// 印を消すため、勝手に再開することはない。
+    private var vlcResumeAfterSeek = false
     /// VLCKit 経路で、開始の見張り用タイマー。一定時間たっても再生が
     /// 始まらなければ、真っ黒のまま無言にせず、その旨を表示する。
     private var vlcStartWatchdog: Timer?
@@ -223,16 +228,45 @@ final class PlayerViewController: UIViewController {
     /// 録画再生で VLCKit を使うときの受け取りの溜め (ミリ秒)。
     /// 生放送 (低遅延オン 1000 / オフ 4000ms) と違い、録画は放送との
     /// 遅れが問題にならず、先読みを厚くして止まりにくくする方が大事。
-    /// 標準の仕組み (AVPlayer) や YouTube は再生位置より数十秒先まで
-    /// 読み込んで溜めるので、それに合わせて 30 秒分にする。VLC では
-    /// この値が「溜めておく再生時間の長さ」にあたり、再生中も読み取り
-    /// 側がこの量を保つよう先読みを続けるため、実用上は同じ厚さになる。
-    /// HLS の分割ファイルは数秒単位で届くため、30 秒分は分割ファイル
-    /// 10 個前後の余裕になり、外回線の揺れでも止まりにくい。
-    /// これ以上大きくすると、開始直後と移動 (シーク) のたびに溜めを
-    /// 作り直す待ち時間が目立ち始めるので、30 秒で止めている。
-    private static let vlcRecordedNetworkCaching = 30000
+    /// 以前は 30 秒分にしていたが、VLC ではこの値が開始時の貯め待ちの
+    /// 長さも決めるため、出だしと移動 (シーク) のたびに待ちが目立って
+    /// いた。標準の仕組み (AVPlayer) 側は届いた分から再生を始める形に
+    /// したため、こちらも見直して 10 秒分にした。HLS の分割ファイルは
+    /// 数秒単位で届くため、10 秒分は分割ファイル 2 個弱の余裕になり、
+    /// 外回線の多少の揺れでは止まりにくい。代わりに、回線が大きく
+    /// 揺れたときは以前より止まりやすくなる (止まりが目立つようなら、
+    /// 15 秒分へ戻す余地がある)。
+    private static let vlcRecordedNetworkCaching = 10000
     private var keepAliveTimer: Timer?
+    /// セッション維持の合図の、最初の1回用のタイマー。開始直後はまだ
+    /// セッションができていない (合図が無効になる) ため、少し置いて
+    /// から送り、その後は繰り返し用に切り替える。
+    private var keepAliveFirstTimer: Timer?
+    /// 合図の最初の遅れと繰り返しの間隔、失敗が何回続いたらセッションが
+    /// 切れたとみなすか。間隔はサーバー側の持ち時間 (約10秒) の半分に
+    /// し、1回の失敗や遅れがあっても次が持ち時間のうちに届くように
+    /// している。
+    private static let keepAliveFirstDelay: TimeInterval = 3
+    private static let keepAliveInterval: TimeInterval = 5
+    private static let keepAliveFailureLimit = 3
+    /// 合図が続けて失敗した回数。成功したら 0 に戻す。
+    private var keepAliveConsecutiveFailures = 0
+    /// この開始で、切れたセッションの作り直しを既に試したかどうか。
+    /// 作り直しは1回まで (直らない状態で作り直し続けないため)。
+    private var keepAliveRecoveryAttempted = false
+    /// 作り直しても直らなかったことを、既に知らせたかどうか。
+    private var keepAliveDeadNotified = false
+    /// 利用者の意図として再生中かどうか (再生・停止の集約口で更新する)。
+    /// セッションを作り直すときに、止めていたものを勝手に再生し
+    /// 始めないために使う。
+    private var playbackIntentPlaying = true
+    /// この開始で、再生が実際に始まったかどうか。始まる前の移動
+    /// (シーク) は再生部品へ送っても届かないため、その判定に使う。
+    private var playbackDidStart = false
+    /// 再生が始まる前に利用者が指定した移動先。控えておき、再生が
+    /// 始まったときに反映する。開始位置の復元 (受け皿・補正) より
+    /// 優先する。
+    private var pendingPreStartSeek: Double?
     private var sessionID = UUID().uuidString
     /// 再生を始めるときに決めた回線の区分。この再生の間は固定する
     /// (途中で回線が変わっても画質は変えない)。ただし、再生画面での
@@ -796,11 +830,24 @@ final class PlayerViewController: UIViewController {
         hideTimer = nil
         headerClockTimer?.invalidate()
         headerClockTimer = nil
-        // フルスクリーン表示で覆われただけのときは再生を止めない。
-        // それ以外で画面を離れるときは今までどおり止める。
+        // 再生の後片付けは、離れることが確定してから viewDidDisappear で
+        // 行う (下のコメント参照)。ここでは切り替わりの先頭で固まらない
+        // よう、軽い片付けだけ行う。
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        // フルスクリーン表示で覆われただけのときは再生を止めない
+        // (全画面を閉じれば、こちらの画面がそのまま戻る)。
         if presentedViewController is FullscreenPlayerViewController {
             return
         }
+        // 離れることが確定してから後片付けする。以前は viewWillDisappear
+        // (切り替わりの先頭) で行っていて、VLC を止める呼び出し (終わる
+        // まで処理が返ってこない) が先頭で走るため、スワイプで戻る操作
+        // ごと固まっていた。また、スワイプを途中でやめて戻ってきた場合
+        // でも片付けが済んでしまい、再生が作り直しになっていた。
+        // 確定後なら、やめた場合はここへ来ず、再生は壊れない。
         didLeaveScreen = true
         stopPlayback()
     }
@@ -1663,6 +1710,7 @@ final class PlayerViewController: UIViewController {
     /// AVPlayer の play() は速度が 1倍に戻るため、再生の開始はここへ集約する
     /// (VLCKit 経路でも、再生を始めてから速度を合わせる順番は同じにする)。
     private func playAtCurrentRate() {
+        playbackIntentPlaying = true
         // 明示的に再生する操作が来たら、開始待ちへの「止める」印は消す
         // (開始の用意ができたときに、そのまま再生が始まるように)。
         pendingStartPause = false
@@ -1694,6 +1742,12 @@ final class PlayerViewController: UIViewController {
 
     /// 再生を止める (再生の仕組みによらない)。
     private func pauseEngine() {
+        playbackIntentPlaying = false
+#if canImport(MobileVLCKit)
+        // 利用者が止めたら、移動後の自動再開の印は消す
+        // (止めたのに勝手に再開しないため)。
+        vlcResumeAfterSeek = false
+#endif
         // 開始の用意 (中継の URL の解決) を待っている間に止める操作が
         // 来たら、印を残す。仕組みがまだ無いのでここで止める対象は
         // まだ無く、開始の締め側で再生を始めないようにするために使う。
@@ -2086,9 +2140,20 @@ final class PlayerViewController: UIViewController {
     /// 待つ (用意ができたら開始する)。中継が必須の構成で用意が
     /// できなかった場合は、直接再生に落ちず失敗として知らせ、
     /// 再生ボタンで始め直せるようにする。
-    private func startPlayback(at seconds: Double) {
+    private func startPlayback(at seconds: Double, isSessionRecovery: Bool = false) {
         startPlaybackCount += 1
         let startCount = startPlaybackCount
+        // 新しい開始では、再生はまだ始まっていないものとして扱う
+        // (開始前の移動の控えと、その反映の判定に使う)。
+        playbackDidStart = false
+        // セッションの作り直しによる開始では、作り直しを試した印を
+        // 引き継ぐ (作り直しが繰り返し起きないようにするため)。
+        // それ以外の開始 (利用者の操作や画質の切り替えなど) では
+        // 印を戻し、また作り直せるようにする。
+        if !isSessionRecovery {
+            keepAliveRecoveryAttempted = false
+            keepAliveDeadNotified = false
+        }
         guard let url = APIClient.shared.playlistURL(videoID: program.id, quality: quality, profile: profile, sessionID: sessionID) else {
             messageLabel.text = "接続先が設定されていません。"
             return
@@ -2307,6 +2372,20 @@ final class PlayerViewController: UIViewController {
                 guard let self else { return }
                 self.updatePlayPauseIcon()
                 self.updateNowPlaying()
+                // 再生が実際に始まった合図。始まる前に利用者が指定した
+                // 移動があれば、ここで反映する (開始位置の復元より優先)。
+                // セッションの作り直しで復旧した場合に、古い失敗表示が
+                // 残っていたら消す (VLCKit 経路の扱いに揃える)。
+                if newPlayer.timeControlStatus == .playing {
+                    self.playbackDidStart = true
+                    if let pendingSeek = self.pendingPreStartSeek {
+                        self.pendingPreStartSeek = nil
+                        self.seek(to: pendingSeek)
+                    }
+                    if self.messageLabel.text == "再生を開始できませんでした。" {
+                        self.messageLabel.text = nil
+                    }
+                }
                 // 画質の切り替え後に再生が再開したら、切り替え完了時点の
                 // 書き戻しを行う (開始時点で書き戻したのと同じ値を、
                 // 完了の合図としてもう一度保存する)。
@@ -2343,11 +2422,17 @@ final class PlayerViewController: UIViewController {
     /// 分割ファイルまで届かないことが分かっている)。
     private func startVLCPlayback(url: URL, relayedURL: URL?, at seconds: Double) {
         teardownAVPlayback()
-        vlcPlayer?.stop()
+        // 前の再生部品を止める処理は裏へ渡す (止める呼び出しが終わるまで
+        // 待つと、作り直しの間ずっと画面側が固まってしまうため)。
+        if let oldPlayer = vlcPlayer {
+            vlcPlayer = nil
+            stopVLCPlayerInBackground(oldPlayer)
+        }
         vlcTimeTimer?.invalidate()
         vlcStartWatchdog?.invalidate()
         vlcStartWatchdog = nil
         vlcDidStartPlaying = false
+        vlcResumeAfterSeek = false
         let vlc = VLCMediaPlayer()
         vlc.delegate = self
         // 描き先は常に surfaceView。全画面表示中は surfaceView ごと
@@ -2420,6 +2505,17 @@ final class PlayerViewController: UIViewController {
         }
     }
 
+    /// VLC の再生部品を止める。止める呼び出しは、終わるまで呼び出し側の
+    /// 処理が返ってこない形のため、画面の切り替わりや作り直しの最中など
+    /// 画面側の処理の中で呼ぶと、その間ずっと画面が固まってしまう。
+    /// 部品への参照を呼び出し側で先に手放したうえで、止める処理自体は
+    /// 裏へ渡し、画面側はすぐ返るようにする。
+    private func stopVLCPlayerInBackground(_ player: VLCMediaPlayer) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            player.stop()
+        }
+    }
+
     /// VLCKit 経路の後片付け。
     private func teardownVLCPlayback() {
         // 字幕の抜き取り口も解除する (中継は他の再生と共用ため、
@@ -2431,8 +2527,11 @@ final class PlayerViewController: UIViewController {
         vlcStartWatchdog = nil
         vlcPendingStartPosition = nil
         vlcPendingStartCorrection = nil
-        vlcPlayer?.stop()
-        vlcPlayer = nil
+        vlcResumeAfterSeek = false
+        if let oldPlayer = vlcPlayer {
+            vlcPlayer = nil
+            stopVLCPlayerInBackground(oldPlayer)
+        }
     }
 
     /// VLCKit 経路の移動。VLC の位置は全体に対する割合で指定する。
@@ -2548,8 +2647,8 @@ final class PlayerViewController: UIViewController {
         fastSeekForwardController.invalidate()
         chaseFollowActive = false
         stopSleepTimerTicker()
-        keepAliveTimer?.invalidate()
-        keepAliveTimer = nil
+        stopKeepAlive()
+        pendingPreStartSeek = nil
         historyRegistrationTimer?.invalidate()
         historyRegistrationTimer = nil
         // 離れるときは最後の再生位置を報告する (Web 版が破棄時に報告するのと同じ)。
@@ -2600,22 +2699,96 @@ final class PlayerViewController: UIViewController {
         NowPlayingManager.shared.end(owner: self)
     }
 
-    /// 再生中は10秒ごとに keep-alive を送り、サーバー側のセッションを維持する。
+    /// 再生中は定期的に keep-alive を送り、サーバー側のセッションを維持する。
+    /// 最初の1回は少し置いてから送る。開始直後は、再生部品がまだ再生
+    /// リストを取りに行っておらず、サーバー側にセッションができて
+    /// いないため、その時点で送っても無効になる。以前は開始直後＋
+    /// 10秒ごとで、実質の初回がサーバー側の持ち時間 (約10秒) とほぼ
+    /// 重なり、サーバー側の用意が遅れたときにセッションが先に切れて
+    /// 再生が固まっていた。間隔は持ち時間の半分 (5秒) にし、1回の
+    /// 失敗や遅れがあっても、次が持ち時間のうちに届くようにしている。
     private func startKeepAlive() {
-        keepAliveTimer?.invalidate()
-        sendKeepAlive()
-        keepAliveTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
-            self?.sendKeepAlive()
+        stopKeepAlive()
+        keepAliveConsecutiveFailures = 0
+        keepAliveFirstTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.keepAliveFirstDelay, repeats: false
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.sendKeepAlive()
+            self.keepAliveTimer = Timer.scheduledTimer(
+                withTimeInterval: Self.keepAliveInterval, repeats: true
+            ) { [weak self] _ in
+                self?.sendKeepAlive()
+            }
         }
+    }
+
+    /// セッション維持の合図を止める。
+    private func stopKeepAlive() {
+        keepAliveFirstTimer?.invalidate()
+        keepAliveFirstTimer = nil
+        keepAliveTimer?.invalidate()
+        keepAliveTimer = nil
     }
 
     private func sendKeepAlive() {
         let videoID = program.id
         let quality = quality
         let profile = profile
-        let sessionID = sessionID
-        Task {
-            await APIClient.shared.keepAlive(videoID: videoID, quality: quality, profile: profile, sessionID: sessionID)
+        let sentSessionID = sessionID
+        Task { [weak self] in
+            let accepted = await APIClient.shared.keepAlive(
+                videoID: videoID, quality: quality, profile: profile, sessionID: sentSessionID)
+            guard let self else { return }
+            self.handleKeepAliveResult(accepted, sessionID: sentSessionID)
+        }
+    }
+
+    /// 合図の結果を受ける。成功したら失敗の数えを戻す。失敗が続いたら、
+    /// セッションが切れたものとして扱う。以前は結果を捨てていたため、
+    /// 切れてもアプリは気づけず、再生中の見た目のまま固まっていた。
+    private func handleKeepAliveResult(_ accepted: Bool, sessionID sentSessionID: String) {
+        // 別のセッションに切り替わったあとや、画面を離れたあとに遅れて
+        // 届いた結果は、今の再生のものとして扱わない。
+        guard !didLeaveScreen, sentSessionID == sessionID else { return }
+        if accepted {
+            keepAliveConsecutiveFailures = 0
+            return
+        }
+        keepAliveConsecutiveFailures += 1
+        guard keepAliveConsecutiveFailures >= Self.keepAliveFailureLimit else { return }
+        if !keepAliveRecoveryAttempted {
+            keepAliveRecoveryAttempted = true
+            rebuildDeadSession()
+        } else if !keepAliveDeadNotified {
+            // 作り直しても合図が届かないままなら、それ以上は繰り返さず、
+            // 切れたことを知らせる (開始前の失敗表示は、開始の見張りと
+            // 文面を揃える)。
+            keepAliveDeadNotified = true
+            messageLabel.text = playbackDidStart
+                ? "再生中にサーバーとの接続が切れました。"
+                : "再生を開始できませんでした。"
+        }
+    }
+
+    /// 切れたセッションを作り直して、再生をやり直す。
+    /// 位置は、いまの再生位置 (開始前なら、利用者が指定した移動先が
+    /// あればそちら) を使う。止めていた場合は、作り直した後も止めた
+    /// ままにする。
+    private func rebuildDeadSession() {
+        let intentPlaying = playbackIntentPlaying
+        let position = pendingPreStartSeek ?? currentPosition()
+        pendingPreStartSeek = nil
+        // 古いセッション向けの合図は止める (新しい開始の締めで、新しい
+        // セッション向けに仕掛け直される)。
+        stopKeepAlive()
+        sessionID = UUID().uuidString
+        // 前の失敗表示は消し、開始側の読み込み表示に任せる。
+        messageLabel.text = nil
+        startPlayback(at: position.isFinite ? position : 0, isSessionRecovery: true)
+        if !intentPlaying {
+            pauseEngine()
+            updatePlayPauseIcon()
         }
     }
 
@@ -2708,10 +2881,15 @@ final class PlayerViewController: UIViewController {
         guard hasActiveEngine else { return }
         let current = currentPosition()
         if current.isFinite {
-            currentTimeLabel.text = TimeFormat.hms(current)
+            // 再生が始まる前に利用者が移動を指定していたら、表示は
+            // その移動先に合わせる (再生部品の位置はまだ 0 のまま
+            // なので、そのまま出すと、指定したのに 0 へ戻されたように
+            // 見えてしまう)。
+            let displayPosition = (!playbackDidStart ? pendingPreStartSeek : nil) ?? current
+            currentTimeLabel.text = TimeFormat.hms(displayPosition)
             if !isScrubbing {
                 let duration = effectiveDuration
-                seekSlider.value = duration > 0 ? Float(current / duration) : 0
+                seekSlider.value = duration > 0 ? Float(displayPosition / duration) : 0
             }
             applyCMAutoSkipIfNeeded(current: current)
             applyDigestSkipIfNeeded(current: current)
@@ -3662,6 +3840,12 @@ final class PlayerViewController: UIViewController {
             userSeekedSinceStart = true
         }
         let clamped = max(0, min(seconds, effectiveDuration))
+        // 再生が始まる前の移動は、再生部品へ送っても届かず捨てられて
+        // しまうため、移動先を控えておく。再生が始まったときに反映し、
+        // 開始位置の復元 (受け皿・補正) より優先する。
+        if isUserInitiated, !playbackDidStart {
+            pendingPreStartSeek = clamped
+        }
         // CM自動スキップの判定は移動先から見張る
         // (シークで CM 区間の真ん中へ入った直後は発動させないため)。
         lastObservedPosition = clamped
@@ -3673,8 +3857,13 @@ final class PlayerViewController: UIViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             self?.refreshCaptions()
         }
+        // 移動の前後で、再生・停止の状態を保つ。再生中に移動したら、
+        // 移動先でも再生を再開する (移動後に止まったままになることが
+        // あるため)。止まっているときに移動したら、止まったままにする。
+        let wasPlaying = isUserInitiated && isCurrentlyPlaying()
 #if canImport(MobileVLCKit)
         if vlcPlayer != nil {
+            vlcResumeAfterSeek = wasPlaying
             vlcSeek(to: clamped)
             return
         }
@@ -3683,7 +3872,16 @@ final class PlayerViewController: UIViewController {
             to: CMTime(seconds: clamped, preferredTimescale: 600),
             toleranceBefore: CMTime(seconds: 0.5, preferredTimescale: 600),
             toleranceAfter: CMTime(seconds: 0.5, preferredTimescale: 600)
-        )
+        ) { [weak self] _ in
+            // 移動が終わった時点で止まっていたら、移動前に再生して
+            // いた場合だけ再開する。その間に利用者が止めていたら、
+            // そちらを優先する。
+            DispatchQueue.main.async {
+                guard let self, wasPlaying, self.playbackIntentPlaying,
+                      !self.isCurrentlyPlaying() else { return }
+                self.playAtCurrentRate()
+            }
+        }
     }
 
     @objc private func skipBack() {
@@ -4104,19 +4302,25 @@ extension PlayerViewController: VLCMediaPlayerDelegate {
             }
             if vlcPlayer.state == .playing {
                 self.vlcDidStartPlaying = true
+                self.playbackDidStart = true
+                self.vlcResumeAfterSeek = false
                 self.vlcStartWatchdog?.invalidate()
                 self.vlcStartWatchdog = nil
                 // 見張りが先に失敗を表示していた場合は、始まったので消す。
                 if self.messageLabel.text == "再生を開始できませんでした。" {
                     self.messageLabel.text = nil
                 }
-                // 保留していた開始位置の補正 (サーバーで確定した続き
-                // 位置) があれば、仮の開始位置の受け皿より優先する。
-                // 準備が終わった時点の移動は、どちらか一方にまとめる
-                // (両方効かせると二度飛んで見えるうえ、先に効いた
-                // 受け皿の移動が「利用者が動かした」扱いになり、
-                // 補正が捨てられてしまうため)。
-                if let correction = self.vlcPendingStartCorrection {
+                // 準備が終わった時点の移動は、どれか一方にまとめる
+                // (全部効かせると何度も飛んで見えるため)。優先順位は、
+                // 再生が始まる前に利用者が指定した移動先、保留していた
+                // 開始位置の補正 (サーバーで確定した続き位置)、仮の
+                // 開始位置の受け皿の順。
+                if let pendingSeek = self.pendingPreStartSeek {
+                    self.pendingPreStartSeek = nil
+                    self.vlcPendingStartCorrection = nil
+                    self.vlcPendingStartPosition = nil
+                    self.seek(to: pendingSeek)
+                } else if let correction = self.vlcPendingStartCorrection {
                     self.vlcPendingStartCorrection = nil
                     self.vlcPendingStartPosition = nil
                     // 保留の間に利用者が自分で位置を動かしていたら、
@@ -4143,7 +4347,18 @@ extension PlayerViewController: VLCMediaPlayerDelegate {
                     SettingsStore.shared.setStreamingQuality(pending, media: .video, profile: self.profile)
                     self.pendingQualityWriteBack = nil
                 }
+            } else if vlcPlayer.state == .paused {
+                // 移動 (シーク) の直前に再生していたのに、移動先で
+                // 止まったままになってしまった場合は、再生を再開する。
+                // 利用者が自分で止めたときは印が消えているため、
+                // ここには入らない。
+                if self.vlcResumeAfterSeek, self.playbackIntentPlaying,
+                   !self.didLeaveScreen {
+                    self.vlcResumeAfterSeek = false
+                    self.playAtCurrentRate()
+                }
             } else if vlcPlayer.state == .ended {
+                self.vlcResumeAfterSeek = false
                 // 再生が最後まで進んだ合図。ただし、途中の壊れた区間などで
                 // 手前で止まっただけの場合は、終わったものとして扱わない
                 // (追いかけ再生の先端到達は、先端付近での停止として扱う)。
@@ -4152,6 +4367,7 @@ extension PlayerViewController: VLCMediaPlayerDelegate {
                     self.handlePlaybackEnded()
                 }
             } else if vlcPlayer.state == .error {
+                self.vlcResumeAfterSeek = false
                 // 失敗の表示は、開始前と開始後で分ける。開始前は開始の
                 // 失敗として、開始後は途中で止まったこととして知らせる
                 // (真っ黒のまま無言にしない)。

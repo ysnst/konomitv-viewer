@@ -61,6 +61,11 @@ final class FullscreenPlayerViewController: UIViewController {
     var onReturnCommentView: (() -> Void)?
     /// 全画面へ貸し出し中に、コメントの重ね物を固定する決まり (制約)。
     private var commentBorrowConstraints: [NSLayoutConstraint] = []
+    /// 映像と重ね物の付け替えが済んだかどうか。付け替えは開く動きが
+    /// 終わってから行い、返すのは閉じる動きが終わってからにする
+    /// (切り替わりの先頭で同期して行うと、その間ずっと画面が
+    /// 固まってしまうため)。
+    private var borrowedViewsAttached = false
     /// VLCKit 経路のときの受け渡し口。AVPlayer 経路では nil。
     private let hooks: PlaybackHooks?
     private let program: RecordedProgram
@@ -168,6 +173,53 @@ final class FullscreenPlayerViewController: UIViewController {
         // (通常画面の再生画面と同じ扱い)。
         setupFastSeek()
 
+        // 映像と重ね物の付け替えは、開く動きが終わってから
+        // attachBorrowedViews で行う (ここでは行わない)。
+        if hooks != nil {
+            // VLCKit 経路: 進み具合の見張りは 0.5 秒ごとのタイマーで行う。
+            progressTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+                self?.updateProgress()
+            }
+        } else if let player {
+            // 映像の層は呼び出し元のものをそのまま借りる。同じプレイヤーに
+            // 層を2つ作ると映像が出るのはどちらか1つだけになり、全画面側が
+            // 真っ暗になる (実機確認済み)。層を映像の枠へ載せるのは
+            // attachBorrowedViews で行う (addSublayer で前の親 (通常画面)
+            // からは自動で外れる)。
+            let layer = sharedPlayerLayer ?? AVPlayerLayer(player: player)
+            layer.videoGravity = .resizeAspect
+            layer.frame = videoView.bounds
+            playerLayer = layer
+
+            timeObserver = player.addPeriodicTimeObserver(
+                forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
+                queue: .main
+            ) { [weak self] _ in
+                self?.updateProgress()
+            }
+        }
+        updateProgress()
+        scheduleHideControls()
+    }
+
+    /// 映像と重ね物を、呼び出し元から借りてこちらへ付け替える。
+    /// 開く動きが終わってから (viewDidAppear) 行う。以前は開く前と
+    /// 切り替わりの先頭で行っていて、VLC が描いている最中の映像の枠や
+    /// 重ね物の付け替えが画面側の処理を止め、切り替わりごと固まって
+    /// いた (実機では、閉じるボタンが押されたままの見た目で固まり、
+    /// 映像だけ流れ続ける症状が出ていた)。動きの間は映像の枠が
+    /// 空になるが、操作は止まらない方を優先する。
+    private func attachBorrowedViews() {
+        guard !borrowedViewsAttached else { return }
+        borrowedViewsAttached = true
+        // VLCKit 経路: 映像の枠をこちらへ貸し出してもらう
+        // (生放送の全画面と同じ作り)。
+        hooks?.attachVideo(videoView)
+        // AVPlayer 経路: 借りた映像の層を映像の枠へ載せる。
+        if let playerLayer {
+            playerLayer.frame = videoView.bounds
+            videoView.layer.addSublayer(playerLayer)
+        }
         // コメントの重ね物を借りている場合は、映像の上・操作類の下に重ねる
         // (流れる表示の更新は呼び出し元が続ける)。
         if let commentView = borrowedCommentView {
@@ -181,7 +233,6 @@ final class FullscreenPlayerViewController: UIViewController {
             ]
             NSLayoutConstraint.activate(commentBorrowConstraints)
         }
-
         // 字幕の重ね物を借りている場合は、コメントの上・操作類の下に重ねる
         // (字幕の絵の更新は呼び出し元が続ける)。
         if let captionView = borrowedCaptionView {
@@ -199,44 +250,13 @@ final class FullscreenPlayerViewController: UIViewController {
             ]
             NSLayoutConstraint.activate(captionBorrowConstraints)
         }
-
-        if hooks != nil {
-            // VLCKit 経路: 映像の枠は viewWillAppear でこちらへ貸し出してもらう。
-            // 進み具合の見張りは 0.5 秒ごとのタイマーで行う。
-            progressTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-                self?.updateProgress()
-            }
-        } else if let player {
-            // 映像の層は呼び出し元のものをそのまま借りる。同じプレイヤーに
-            // 層を2つ作ると映像が出るのはどちらか1つだけになり、全画面側が
-            // 真っ暗になる (実機確認済み)。addSublayer で前の親 (通常画面)
-            // からは自動で外れる。
-            let layer = sharedPlayerLayer ?? AVPlayerLayer(player: player)
-            layer.videoGravity = .resizeAspect
-            layer.frame = videoView.bounds
-            videoView.layer.addSublayer(layer)
-            playerLayer = layer
-
-            timeObserver = player.addPeriodicTimeObserver(
-                forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
-                queue: .main
-            ) { [weak self] _ in
-                self?.updateProgress()
-            }
-        }
-        updateProgress()
-        scheduleHideControls()
-    }
-
-    override func viewWillAppear(_ animated: Bool) {
-        super.viewWillAppear(animated)
-        // VLCKit 経路: 映像の枠をこちらへ貸し出してもらう
-        // (生放送の全画面と同じ作り)。
-        hooks?.attachVideo(videoView)
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        // 映像と重ね物の付け替えは、開く動きが終わってから行う
+        // (attachBorrowedViews のコメント参照)。
+        attachBorrowedViews()
         // 横向きへの回転を明示的に促す (iOS 16 以降の作法)。
         if #available(iOS 16.0, *) {
             setNeedsUpdateOfSupportedInterfaceOrientations()
@@ -252,6 +272,23 @@ final class FullscreenPlayerViewController: UIViewController {
         fastSeekForwardController.invalidate()
         progressTimer?.invalidate()
         progressTimer = nil
+        if let player, let timeObserver {
+            player.removeTimeObserver(timeObserver)
+        }
+        timeObserver = nil
+        // 借りた映像と重ね物を返すのは、閉じる動きが終わってから
+        // viewDidDisappear で行う (下のコメント参照)。
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        // 借りた映像と重ね物は、閉じる動きが終わってから呼び出し元へ
+        // 返す。以前は viewWillDisappear (切り替わりの先頭) で返して
+        // いて、付け替えが画面側の処理を止め、閉じるボタンが押された
+        // ままの見た目で固まっていた。動きの間は通常画面側の映像が
+        // 戻っていないが、操作が止まらない方を優先する。
+        guard borrowedViewsAttached else { return }
+        borrowedViewsAttached = false
         // VLCKit 経路: 貸し出してもらった映像の枠を呼び出し元へ返す。
         hooks?.detachVideo()
         // AVPlayer 経路: 借りた映像の層を呼び出し元へ返す
@@ -274,10 +311,6 @@ final class FullscreenPlayerViewController: UIViewController {
             commentView.removeFromSuperview()
             onReturnCommentView?()
         }
-        if let player, let timeObserver {
-            player.removeTimeObserver(timeObserver)
-        }
-        timeObserver = nil
     }
 
     override func viewDidLayoutSubviews() {
