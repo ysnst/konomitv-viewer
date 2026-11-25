@@ -94,6 +94,7 @@ final class PlayerSettingsViewController: UITableViewController {
         var change: ((Bool) -> Void)? = nil
         var choices: [Choice] = []
         var action: (() -> Void)? = nil
+        var isEnabled = true
     }
     private let rowsProvider: () -> [Row]
     private var rows: [Row] = []
@@ -123,6 +124,9 @@ final class PlayerSettingsViewController: UITableViewController {
         let row = rows[path.row]
         let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
         cell.backgroundColor = AppPalette.panel
+        cell.isUserInteractionEnabled = row.isEnabled
+        if !row.isEnabled { cell.accessibilityTraits.insert(.notEnabled) }
+        cell.contentView.alpha = row.isEnabled ? 1 : 0.45
         cell.textLabel?.text = row.title
         cell.textLabel?.textColor = AppPalette.text
         cell.textLabel?.font = .scaledSystemFont(ofSize: 15)
@@ -133,6 +137,7 @@ final class PlayerSettingsViewController: UITableViewController {
         if let value = row.toggle {
             let control = UISwitch()
             control.isOn = value
+            control.isEnabled = row.isEnabled
             control.onTintColor = AppPalette.accent
             control.addAction(UIAction { [weak self, weak control] _ in
                 guard let control else { return }

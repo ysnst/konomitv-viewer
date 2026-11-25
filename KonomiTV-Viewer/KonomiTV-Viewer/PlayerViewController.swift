@@ -4173,6 +4173,11 @@ final class PlayerViewController: UIViewController {
             if self.pipController?.isActive != true, self.pipController?.isPending != true {
                 rows.append(.init(title: "プレイヤーを再起動", action: { [weak self] in self?.restartPlayer() }))
             }
+            if self.pipController?.isActive == true || self.pipController?.isPending == true {
+                for index in rows.indices where ["画質", "モバイル回線向け画質", "音声のみ再生"].contains(rows[index].title) {
+                    rows[index].isEnabled = false
+                }
+            }
             return rows
         }
         let navigation = PlayerSettingsNavigationController(rootViewController: menu)

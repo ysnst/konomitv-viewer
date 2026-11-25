@@ -2708,7 +2708,7 @@ final class LivePlayerViewController: UIViewController {
             guard let self else { return [] }
             let store = SettingsStore.shared
             let saver = store.dataSaverMode(media: .tv, profile: self.profile)
-            return [
+            var rows: [PlayerSettingsViewController.Row] = [
                 .init(title: "画質", value: self.quality, choices: SettingsStore.qualities.map { q in
                     .init(title: SettingsStore.qualityDisplayName(q, dataSaverMode: saver), selected: q == self.quality,
                           select: { [weak self] in self?.userSwitchQuality(q) })
@@ -2729,8 +2729,13 @@ final class LivePlayerViewController: UIViewController {
                     })
                 }),
                 .init(title: "音声のみ再生", toggle: self.audioOnly, change: { [weak self] _ in self?.toggleAudioOnly() }),
-                .init(title: "プレイヤーを再起動", action: { [weak self] in self?.restartPlayer() }),
             ]
+            if self.pipController?.isActive == true || self.pipController?.isPending == true {
+                for index in rows.indices where ["画質", "モバイル回線向け画質", "音声のみ再生"].contains(rows[index].title) {
+                    rows[index].isEnabled = false
+                }
+            } else { rows.append(.init(title: "プレイヤーを再起動", action: { [weak self] in self?.restartPlayer() })) }
+            return rows
         }
         let navigation = PlayerSettingsNavigationController(rootViewController: menu)
         navigation.onClose = { [weak self, weak presenter] in
