@@ -10,9 +10,12 @@ permissions:
 jobs:
   build:
     name: Build unsigned IPA
-    runs-on: macos-latest
+    # arm64 ランナーの容量不足で未開始のまま終了したため、Intel のプールを使う。
+    runs-on: macos-26-intel
     env:
       TZ: Asia/Tokyo
+      # 成功済みのビルドと同じ Xcode を選び、ホスト CPU 変更の影響を切り分ける。
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,7 +28,9 @@ jobs:
           python-version: '3.12'
 
       - name: Show Xcode version
-        run: xcodebuild -version
+        run: |
+          uname -m
+          xcodebuild -version
 
       - name: Test artifact verification
         run: python3 scripts/test_verify_ipa.py

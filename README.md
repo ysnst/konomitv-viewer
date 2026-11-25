@@ -62,7 +62,7 @@ AltStore や SideStore など、他のサイドロードの仕組みでも入り
 
 ## ビルド
 
-GitHub Actions の `Build (unsigned IPA)` は、作業ブランチを含む各ブランチへの push、Pull Request、手動実行で未署名 IPA を作ります。Windows では編集と Git 操作を行い、iOS のビルドは Actions の macOS ランナーで行えます。Mac でビルドする場合は `KonomiTV-Viewer` で `pod install` を実行し、生成された `KonomiTV-Viewer.xcworkspace` を使ってください。
+GitHub Actions の `Build (unsigned IPA)` は、作業ブランチを含む各ブランチへの push、Pull Request、手動実行で未署名 IPA を作ります。Windows では編集と Git 操作を行い、iOS のビルドは Actions の `macos-26-intel` と Xcode 26.6 で行います。Mac でビルドする場合は `KonomiTV-Viewer` で `pod install` を実行し、生成された `KonomiTV-Viewer.xcworkspace` を使ってください。
 
 成功した実行の Artifact `KonomiTV-Viewer-unsigned-ipa` には、IPA、`build-info.json`、`checksums.txt`、依存版の `Podfile.lock`、ビルドログが入ります。版番号は `0.<ワークフローの実行番号>`、IPA 名にはコミット SHA の先頭12文字も含まれます。完全な SHA はアプリ内の `build-info.json` と Info.plist の `KonomiTVViewerCommitSHA` にも記録します。取得後は `python scripts/verify-ipa.py <展開先> --expected-sha <完全なSHA>` で、IPA のハッシュと内外の記録を照合できます（Python 3.11 以降）。
 
