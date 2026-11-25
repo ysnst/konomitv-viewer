@@ -187,10 +187,12 @@ final class TimeTableSettingsStore {
         /// 意図が食い違うときに送り直すための控え (共通設定の同期と
         /// 同じ扱い)。
         var uncertainKeys: Set<String> = []
-        /// 結果が分からない送信の時点の編集後の値。ジャンル色の
-        /// ような項目ごとの値で、最終的な意図と食い違う分を特定
-        /// するために使う。
-        var uncertainDesired: TimeTableDisplaySettings?
+        /// 結果が分からない送信で色が変わったかもしれないジャンル。
+        /// 1回分の送信の値一式を控えにすると、次の結果が分からない
+        /// 送信で上書きされて前の回の変更が消えてしまうため、
+        /// ジャンルごとの集合として積み上げる (共通設定の同期の
+        /// 要素ごとの控えと同じ考え方)。
+        var uncertainGenres: Set<String> = []
     }
 
     /// サーバーへの送信の結果。届かなかったことが明らかな失敗と、
@@ -265,14 +267,14 @@ final class TimeTableSettingsStore {
         // 結果が分からない送信の控えも合わせて引き継ぐ。
         var carriedBase: TimeTableDisplaySettings?
         var carriedUncertainKeys: Set<String> = []
-        var carriedUncertainDesired: TimeTableDisplaySettings?
+        var carriedUncertainGenres: Set<String> = []
         if let unsent = unsentSave {
             unsentSave = nil
             if unsent.generation == generation,
                unsent.syncGeneration == syncGeneration {
                 carriedBase = unsent.base
                 carriedUncertainKeys = unsent.uncertainKeys
-                carriedUncertainDesired = unsent.uncertainDesired
+                carriedUncertainGenres = unsent.uncertainGenres
             }
         }
         let base: TimeTableDisplaySettings
@@ -281,8 +283,7 @@ final class TimeTableSettingsStore {
            pending.syncGeneration == syncGeneration {
             base = pending.base
             carriedUncertainKeys.formUnion(pending.uncertainKeys)
-            carriedUncertainDesired = pending.uncertainDesired
-                ?? carriedUncertainDesired
+            carriedUncertainGenres.formUnion(pending.uncertainGenres)
         } else if let carriedBase {
             base = carriedBase
         } else {
@@ -292,7 +293,7 @@ final class TimeTableSettingsStore {
             id: pendingSaveSequence, base: base, settings: settings,
             generation: generation, syncGeneration: syncGeneration,
             uncertainKeys: carriedUncertainKeys,
-            uncertainDesired: carriedUncertainDesired)
+            uncertainGenres: carriedUncertainGenres)
         syncPersistedRecord()
         consecutiveSaveFailures = 0
         guard !isSaving else { return }
@@ -324,7 +325,7 @@ final class TimeTableSettingsStore {
             let outcome = await saveToServer(
                 base: item.base, desired: item.settings,
                 uncertainKeys: item.uncertainKeys,
-                uncertainDesired: item.uncertainDesired,
+                uncertainGenres: item.uncertainGenres,
                 expectedGeneration: item.generation,
                 expectedSyncGeneration: item.syncGeneration)
             inFlightSave = nil
@@ -336,10 +337,12 @@ final class TimeTableSettingsStore {
             if outcome == .unknown {
                 // 届いたかどうか分からない送信。サーバー側にこの変更
                 // の値が残っているかもしれないので、含まれていた項目
-                // とその時点の値を控える (共通設定の同期と同じ扱い)。
+                // と、色が変わったジャンルを控えに積み上げる
+                // (共通設定の同期と同じ扱い)。
                 item.uncertainKeys.formUnion(
                     Self.changedKeys(base: item.base, desired: item.settings))
-                item.uncertainDesired = item.settings
+                item.uncertainGenres.formUnion(
+                    Self.changedGenres(base: item.base, desired: item.settings))
             }
             // 送信の途中でログインが変わっていたら、この変更は
             // 前のログインのものなので戻さない。
@@ -366,14 +369,14 @@ final class TimeTableSettingsStore {
                 if pending.generation == item.generation,
                    pending.syncGeneration == item.syncGeneration {
                     // 結果が分からない送信の控えは、失敗した分と新しい
-                    // 分の両方から引き継ぐ (共通設定の同期と同じ扱い)。
+                    // 分の両方から引き継ぐ (ジャンルごとの控えは合算
+                    // する。共通設定の同期と同じ扱い)。
                     let merged = PendingSave(
                         id: pending.id, base: item.base, settings: pending.settings,
                         generation: pending.generation,
                         syncGeneration: pending.syncGeneration,
                         uncertainKeys: item.uncertainKeys.union(pending.uncertainKeys),
-                        uncertainDesired: pending.uncertainDesired
-                            ?? item.uncertainDesired)
+                        uncertainGenres: item.uncertainGenres.union(pending.uncertainGenres))
                     if consecutiveSaveFailures > 3 {
                         // 送り直しの上限。合成した分は捨てずに未送信
                         // として残し、失敗したことは画面側へ知らせる。
@@ -459,7 +462,7 @@ final class TimeTableSettingsStore {
         let base: TimeTableDisplaySettings
         let desired: TimeTableDisplaySettings
         let uncertainKeys: Set<String>
-        let uncertainDesired: TimeTableDisplaySettings?
+        let uncertainGenres: Set<String>
     }
 
     /// 端末から読み出した控え。引き継ぐかどうかは、使う時点で
@@ -469,21 +472,35 @@ final class TimeTableSettingsStore {
 
     /// いま未送信の変更全体 (古い分から新しい分へ合成した形)。
     /// 端末への控えはこの形で残す。
+    /// 送信中の変更は、結果がまだ分からないので、端末への控えでは
+    /// 最初から「結果が分からないかもしれないもの」として、変わった
+    /// 項目とジャンルを控えに取り込んでおく。送信の応答を待っている
+    /// 間にアプリが終わっても、次に起動したときに意図どおりに
+    /// 送り直せるようにするため (共通設定の同期と同じ扱い)。
     private func outstandingSave() -> PendingSave? {
         var result: PendingSave?
-        for item in [unsentSave, inFlightSave, pendingSave].compactMap({ $0 }) {
+        func accumulate(_ item: PendingSave, inFlight: Bool) {
+            var composed = item
+            if inFlight {
+                composed.uncertainKeys.formUnion(
+                    Self.changedKeys(base: item.base, desired: item.settings))
+                composed.uncertainGenres.formUnion(
+                    Self.changedGenres(base: item.base, desired: item.settings))
+            }
             if let accumulated = result {
                 result = PendingSave(
-                    id: item.id, base: accumulated.base, settings: item.settings,
-                    generation: item.generation,
-                    syncGeneration: item.syncGeneration,
-                    uncertainKeys: accumulated.uncertainKeys.union(item.uncertainKeys),
-                    uncertainDesired: item.uncertainDesired
-                        ?? accumulated.uncertainDesired)
+                    id: composed.id, base: accumulated.base, settings: composed.settings,
+                    generation: composed.generation,
+                    syncGeneration: composed.syncGeneration,
+                    uncertainKeys: accumulated.uncertainKeys.union(composed.uncertainKeys),
+                    uncertainGenres: accumulated.uncertainGenres.union(composed.uncertainGenres))
             } else {
-                result = item
+                result = composed
             }
         }
+        if let unsentSave { accumulate(unsentSave, inFlight: false) }
+        if let inFlightSave { accumulate(inFlightSave, inFlight: true) }
+        if let pendingSave { accumulate(pendingSave, inFlight: false) }
         return result
     }
 
@@ -499,16 +516,13 @@ final class TimeTableSettingsStore {
             store.unsentTimeTableSettingsData = nil
             return
         }
-        var record: [String: Any] = [
+        let record: [String: Any] = [
             "identity": store.unsentSettingsIdentity,
             "base": Self.displaySettingsDictionary(from: item.base),
             "desired": Self.displaySettingsDictionary(from: item.settings),
             "uncertainKeys": Array(item.uncertainKeys),
+            "uncertainGenres": Array(item.uncertainGenres),
         ]
-        if let uncertainDesired = item.uncertainDesired {
-            record["uncertainDesired"] =
-                Self.displaySettingsDictionary(from: uncertainDesired)
-        }
         store.unsentTimeTableSettingsData =
             try? JSONSerialization.data(withJSONObject: record)
     }
@@ -551,7 +565,7 @@ final class TimeTableSettingsStore {
             generation: store.authGeneration,
             syncGeneration: store.syncGeneration,
             uncertainKeys: restored.uncertainKeys,
-            uncertainDesired: restored.uncertainDesired)
+            uncertainGenres: restored.uncertainGenres)
         syncPersistedRecord()
     }
 
@@ -563,15 +577,25 @@ final class TimeTableSettingsStore {
               let baseDict = record["base"] as? [String: Any],
               let desiredDict = record["desired"] as? [String: Any]
         else { return nil }
-        let uncertainDesired = (record["uncertainDesired"] as? [String: Any]).map {
-            settings(fromClientSettings: $0, fallback: .defaults)
+        let base = settings(fromClientSettings: baseDict, fallback: .defaults)
+        let uncertainGenres: Set<String>
+        if let genres = record["uncertainGenres"] as? [String] {
+            uncertainGenres = Set(genres)
+        } else if let legacyDict = record["uncertainDesired"] as? [String: Any] {
+            // 以前の版の控え (結果が分からない送信の時点の値一式) からは、
+            // 土台と色が違うジャンルを取り出す。
+            uncertainGenres = Self.changedGenres(
+                base: base,
+                desired: settings(fromClientSettings: legacyDict, fallback: .defaults))
+        } else {
+            uncertainGenres = []
         }
         return RestoredUnsent(
             identity: identity,
-            base: settings(fromClientSettings: baseDict, fallback: .defaults),
+            base: base,
             desired: settings(fromClientSettings: desiredDict, fallback: .defaults),
             uncertainKeys: Set(record["uncertainKeys"] as? [String] ?? []),
-            uncertainDesired: uncertainDesired)
+            uncertainGenres: uncertainGenres)
     }
 
     /// 表示設定一式を、サーバーの利用者設定と同じ形の辞書に写す
@@ -613,14 +637,14 @@ final class TimeTableSettingsStore {
                    pending.generation == unsent.generation,
                    pending.syncGeneration == unsent.syncGeneration {
                     // 送信待ちがある間は、その差分の元へ合成して引き継ぐ。
-                    // 結果が分からない送信の控えも合わせて引き継ぐ。
+                    // 結果が分からない送信の控えも合わせて引き継ぐ
+                    // (ジャンルごとの控えは合算する)。
                     pendingSave = PendingSave(
                         id: pending.id, base: unsent.base, settings: pending.settings,
                         generation: pending.generation,
                         syncGeneration: pending.syncGeneration,
                         uncertainKeys: unsent.uncertainKeys.union(pending.uncertainKeys),
-                        uncertainDesired: pending.uncertainDesired
-                            ?? unsent.uncertainDesired)
+                        uncertainGenres: unsent.uncertainGenres.union(pending.uncertainGenres))
                 } else if pendingSave == nil {
                     pendingSave = unsent
                     if !isSaving {
@@ -689,7 +713,7 @@ final class TimeTableSettingsStore {
     /// 値で送り直す (共通設定の同期と同じ扱い)。
     private func saveToServer(
         base: TimeTableDisplaySettings, desired: TimeTableDisplaySettings,
-        uncertainKeys: Set<String>, uncertainDesired: TimeTableDisplaySettings?,
+        uncertainKeys: Set<String>, uncertainGenres: Set<String>,
         expectedGeneration: Int, expectedSyncGeneration: Int
     ) async -> SaveOutcome {
         // 他の保存 (視聴履歴・各種設定) と重なって互いを上書きしないよう、
@@ -700,7 +724,7 @@ final class TimeTableSettingsStore {
         await ClientSettingsSaveQueue.shared.run {
             box.value = await self.saveToServerSerial(
                 base: base, desired: desired,
-                uncertainKeys: uncertainKeys, uncertainDesired: uncertainDesired,
+                uncertainKeys: uncertainKeys, uncertainGenres: uncertainGenres,
                 expectedGeneration: expectedGeneration,
                 expectedSyncGeneration: expectedSyncGeneration)
         }
@@ -709,7 +733,7 @@ final class TimeTableSettingsStore {
 
     private func saveToServerSerial(
         base: TimeTableDisplaySettings, desired: TimeTableDisplaySettings,
-        uncertainKeys: Set<String>, uncertainDesired: TimeTableDisplaySettings?,
+        uncertainKeys: Set<String>, uncertainGenres: Set<String>,
         expectedGeneration: Int, expectedSyncGeneration: Int
     ) async -> SaveOutcome {
         // 照合は、変更が起きた時点の世代で行う。順番待ちの間に
@@ -759,17 +783,16 @@ final class TimeTableSettingsStore {
                     desired.dimShoppingPrograms
             }
             // ジャンル色はジャンルごとに比べる。結果が分からない
-            // 送信に含まれていたジャンルは、その送信の値と最終的な
-            // 意図が食い違い、かつ最新の値も意図と違えば送り直す。
+            // 送信で色が変わったかもしれないジャンルは、編集の前後で
+            // 値が同じでも、最新の値が最終的な意図と違えば意図の
+            // 色で送り直す (その間に利用者が色を元へ戻した場合など)。
             let latestGenreColors =
                 clientSettings["timetable_genre_colors"] as? [String: Any] ?? [:]
             var changedGenreColors: [String: String] = [:]
             for (genre, name) in desired.genreColors {
                 if base.genreColors[genre] != name {
                     changedGenreColors[genre] = name
-                } else if uncertainKeys.contains("timetable_genre_colors"),
-                          let uncertainDesired,
-                          uncertainDesired.genreColors[genre] != name,
+                } else if uncertainGenres.contains(genre),
                           (latestGenreColors[genre] as? String) != name {
                     changedGenreColors[genre] = name
                 }
@@ -822,6 +845,20 @@ final class TimeTableSettingsStore {
             keys.append("timetable_genre_colors")
         }
         return keys
+    }
+
+    /// 編集の前後で色が変わったジャンルの一覧。結果が分からない
+    /// 送信に含まれていたジャンルを、ジャンルごとに積み上げる
+    /// ために使う。
+    private static func changedGenres(
+        base: TimeTableDisplaySettings, desired: TimeTableDisplaySettings
+    ) -> Set<String> {
+        var genres = Set<String>()
+        for genre in Set(base.genreColors.keys).union(desired.genreColors.keys)
+        where base.genreColors[genre] != desired.genreColors[genre] {
+            genres.insert(genre)
+        }
+        return genres
     }
 
     /// 利用者設定の辞書から表示設定を組み立てる。項目が無い・形が違う

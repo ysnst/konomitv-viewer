@@ -280,10 +280,99 @@ final class SyncedSettingsStore {
         /// 意図が食い違うときに送り直すための控えで、送信が成功
         /// するか、届かなかったことが明らかになれば役目を終える。
         var uncertainKeys: Set<String> = []
-        /// 結果が分からない送信の時点の編集後の値。配列の項目で、
-        /// その送信で入りながら最終的な意図では消えている要素を
-        /// 特定するために使う。
-        var uncertainDesired: SyncedClientSettings?
+        /// 結果が分からない送信で生じたかもしれない、サーバー側の
+        /// 値と最終的な意図の食い違い (配列の要素単位の控え)。
+        var uncertain = UncertainRecord()
+    }
+
+    /// 結果が分からない送信 (サーバーへ届いたかもしれないのに応答が
+    /// 返らなかった送信) が残したかもしれない、サーバー側の値と
+    /// 最終的な意図の食い違いを、配列の要素ごとに積み上げた控え。
+    /// 1回分の送信の値一式を控えにすると、次の結果が分からない送信で
+    /// 上書きされて前の回の操作が消えてしまうため、要素ごとの集合
+    /// として持ち、増える方向にだけ更新する。スカラーの項目は
+    /// uncertainKeys と最終的な意図の値だけで照合できるため、
+    /// ここには含めない。
+    private struct UncertainRecord {
+        /// その送信で増えたかもしれない要素の鍵 (ミュートキーワード)。
+        var addedKeywordKeys: Set<String> = []
+        /// その送信で減ったかもしれない要素の鍵 (ミュートキーワード)。
+        var removedKeywordKeys: Set<String> = []
+        /// その送信で増えたかもしれない要素 (ミュートするユーザー ID)。
+        var addedUserIDs: Set<String> = []
+        /// その送信で減ったかもしれない要素 (ミュートするユーザー ID)。
+        var removedUserIDs: Set<String> = []
+        /// その送信で増えたかもしれない要素 (ピン留めチャンネル)。
+        var addedPinnedIDs: Set<String> = []
+        /// その送信で減ったかもしれない要素 (ピン留めチャンネル)。
+        var removedPinnedIDs: Set<String> = []
+        /// ピン留めの並び順が、その送信で変わったかもしれない。
+        var pinnedOrderMayDiffer = false
+        /// その送信で増えたかもしれない要素の鍵 (マイリスト)。
+        var addedMylistKeys: Set<String> = []
+        /// その送信で減ったかもしれない要素の鍵 (マイリスト)。
+        var removedMylistKeys: Set<String> = []
+
+        /// もう一方の控えと合わせる (要素は合算し、並び順の印は
+        /// どちらかに立っていれば立てる)。
+        mutating func formUnion(_ other: UncertainRecord) {
+            addedKeywordKeys.formUnion(other.addedKeywordKeys)
+            removedKeywordKeys.formUnion(other.removedKeywordKeys)
+            addedUserIDs.formUnion(other.addedUserIDs)
+            removedUserIDs.formUnion(other.removedUserIDs)
+            addedPinnedIDs.formUnion(other.addedPinnedIDs)
+            removedPinnedIDs.formUnion(other.removedPinnedIDs)
+            pinnedOrderMayDiffer = pinnedOrderMayDiffer || other.pinnedOrderMayDiffer
+            addedMylistKeys.formUnion(other.addedMylistKeys)
+            removedMylistKeys.formUnion(other.removedMylistKeys)
+        }
+
+        /// 1回分の送信 (base → desired) の差分を、結果が分からない
+        /// 場合の控えとして取り込む。増えた要素は「サーバーに残って
+        /// いるかもしれない」、減った要素は「サーバーから消えている
+        /// かもしれない」として積み上げる。その要素を最終的にどう
+        /// するかは、適用のときに最終的な意図と照合して決める
+        /// (その間に利用者が消した要素を戻したり、並び替えを
+        /// 取り消したりした場合も、意図どおりにできるように)。
+        mutating func absorb(
+            base: SyncedClientSettings, desired: SyncedClientSettings
+        ) {
+            let baseKeywordKeys = Set(base.mutedCommentKeywords.map(
+                SyncedSettingsStore.keywordKey))
+            let desiredKeywordKeys = Set(desired.mutedCommentKeywords.map(
+                SyncedSettingsStore.keywordKey))
+            addedKeywordKeys.formUnion(desiredKeywordKeys.subtracting(baseKeywordKeys))
+            removedKeywordKeys.formUnion(baseKeywordKeys.subtracting(desiredKeywordKeys))
+            addedUserIDs.formUnion(Set(desired.mutedNiconicoUserIDs)
+                .subtracting(Set(base.mutedNiconicoUserIDs)))
+            removedUserIDs.formUnion(Set(base.mutedNiconicoUserIDs)
+                .subtracting(Set(desired.mutedNiconicoUserIDs)))
+            let basePinned = Set(base.pinnedChannelIDs)
+            let desiredPinned = Set(desired.pinnedChannelIDs)
+            addedPinnedIDs.formUnion(desiredPinned.subtracting(basePinned))
+            removedPinnedIDs.formUnion(basePinned.subtracting(desiredPinned))
+            // ピン留めの並び順が変わったかもしれないのは、編集前後で
+            // 共通する要素の相対的な順序が変わった場合。
+            let keptPinned = basePinned.intersection(desiredPinned)
+            if base.pinnedChannelIDs.filter({ keptPinned.contains($0) })
+                != desired.pinnedChannelIDs.filter({ keptPinned.contains($0) }) {
+                pinnedOrderMayDiffer = true
+            }
+            let baseMylistKeys = Set(base.mylist.map(SyncedSettingsStore.mylistKey))
+            let desiredMylistKeys = Set(desired.mylist.map(SyncedSettingsStore.mylistKey))
+            addedMylistKeys.formUnion(desiredMylistKeys.subtracting(baseMylistKeys))
+            removedMylistKeys.formUnion(baseMylistKeys.subtracting(desiredMylistKeys))
+        }
+    }
+
+    /// ミュートキーワードの要素の照合鍵 (照合の種類と文の組)。
+    fileprivate static func keywordKey(_ keyword: MutedCommentKeyword) -> String {
+        keyword.match + "\u{1}" + keyword.pattern
+    }
+
+    /// マイリストの要素の照合鍵 (種類と番号の組)。
+    fileprivate static func mylistKey(_ entry: MylistEntry) -> String {
+        entry.type + "#" + String(entry.id)
     }
 
     /// サーバーへの送信の結果。届かなかったことが明らかな失敗と、
@@ -370,14 +459,14 @@ final class SyncedSettingsStore {
         // (引き継がないと、未送信分の項目がサーバーへ届かないままになる)。
         var carriedBase: SyncedClientSettings?
         var carriedUncertainKeys: Set<String> = []
-        var carriedUncertainDesired: SyncedClientSettings?
+        var carriedUncertain = UncertainRecord()
         if let unsent = unsentSave {
             unsentSave = nil
             if unsent.generation == generation,
                unsent.syncGeneration == syncGeneration {
                 carriedBase = unsent.base
                 carriedUncertainKeys = unsent.uncertainKeys
-                carriedUncertainDesired = unsent.uncertainDesired
+                carriedUncertain = unsent.uncertain
             }
         }
         let base: SyncedClientSettings
@@ -386,8 +475,7 @@ final class SyncedSettingsStore {
            pending.syncGeneration == syncGeneration {
             base = pending.base
             carriedUncertainKeys.formUnion(pending.uncertainKeys)
-            carriedUncertainDesired = pending.uncertainDesired
-                ?? carriedUncertainDesired
+            carriedUncertain.formUnion(pending.uncertain)
         } else if let carriedBase {
             base = carriedBase
         } else {
@@ -397,7 +485,7 @@ final class SyncedSettingsStore {
             id: pendingSaveSequence, base: base, desired: settings,
             generation: generation, syncGeneration: syncGeneration,
             uncertainKeys: carriedUncertainKeys,
-            uncertainDesired: carriedUncertainDesired)
+            uncertain: carriedUncertain)
         syncPersistedRecord()
         guard !isSaving else { return }
         isSaving = true
@@ -430,7 +518,7 @@ final class SyncedSettingsStore {
             let outcome = await saveToServer(
                 base: item.base, desired: item.desired,
                 uncertainKeys: item.uncertainKeys,
-                uncertainDesired: item.uncertainDesired,
+                uncertain: item.uncertain,
                 expectedGeneration: item.generation,
                 expectedSyncGeneration: item.syncGeneration)
             inFlightSave = nil
@@ -441,14 +529,15 @@ final class SyncedSettingsStore {
             }
             if outcome == .unknown {
                 // 届いたかどうか分からない送信。サーバー側にこの変更の
-                // 値が残っているかもしれないので、含まれていた項目と
-                // その時点の値を控える。後から取り込んだ値と最終的な
-                // 意図が食い違えば、送り直して意図どおりにする (その間に
-                // 利用者が値を元へ戻していた場合も、値の差分だけでは
-                // 「変更なし」になってしまうため、差分とは別に持つ)。
+                // 値が残っているかもしれないので、含まれていた項目と、
+                // 配列については要素ごとの食い違いを控えに積み上げる。
+                // 後から取り込んだ値と最終的な意図が食い違えば、送り
+                // 直して意図どおりにする (その間に利用者が値を元へ
+                // 戻していた場合も、値の差分だけでは「変更なし」に
+                // なってしまうため、差分とは別に持つ)。
                 item.uncertainKeys.formUnion(
                     Self.changedKeys(base: item.base, desired: item.desired))
-                item.uncertainDesired = item.desired
+                item.uncertain.absorb(base: item.base, desired: item.desired)
             }
             // 送信の途中でログインが変わっていたら、この変更は
             // 前のログインのものなので戻さない。
@@ -479,14 +568,15 @@ final class SyncedSettingsStore {
                 if pending.generation == item.generation,
                    pending.syncGeneration == item.syncGeneration {
                     // 結果が分からない送信の控えは、失敗した分と新しい
-                    // 分の両方から引き継ぐ (新しい分の控えが新しい)。
+                    // 分の両方から引き継ぐ (要素ごとの控えは合算する)。
+                    var mergedUncertain = item.uncertain
+                    mergedUncertain.formUnion(pending.uncertain)
                     let merged = PendingSave(
                         id: pending.id, base: item.base, desired: pending.desired,
                         generation: pending.generation,
                         syncGeneration: pending.syncGeneration,
                         uncertainKeys: item.uncertainKeys.union(pending.uncertainKeys),
-                        uncertainDesired: pending.uncertainDesired
-                            ?? item.uncertainDesired)
+                        uncertain: mergedUncertain)
                     if consecutiveSaveFailures > 3 {
                         // 試し直しの上限。合成した分は捨てずに未送信
                         // として残し、失敗したことを画面側へ知らせる。
@@ -572,7 +662,7 @@ final class SyncedSettingsStore {
         let base: SyncedClientSettings
         let desired: SyncedClientSettings
         let uncertainKeys: Set<String>
-        let uncertainDesired: SyncedClientSettings?
+        let uncertain: UncertainRecord
     }
 
     /// 端末から読み出した控え。引き継ぐかどうかは、使う時点で
@@ -582,21 +672,42 @@ final class SyncedSettingsStore {
 
     /// いま未送信の変更全体 (古い分から新しい分へ合成した形)。
     /// 端末への控えはこの形で残す。
+    /// 送信中の変更は、結果がまだ分からないので、端末への控えでは
+    /// 最初から「結果が分からないかもしれないもの」として差分を
+    /// 控えに取り込んでおく。送信の応答を待っている間にアプリが
+    /// 終わっても、次に起動したときに、サーバー側に残っているかも
+    /// しれない値と最終的な意図を照合して送り直せるようにするため。
+    /// 送信の結果が分かれば、その時点で控えは正しい内容に残し直す
+    /// (成功すれば控え自体が消え、届かなかったことが明らかなら、
+    /// 取り込んだ差分は控えから外れる)。
     private func outstandingSave() -> PendingSave? {
         var result: PendingSave?
-        for item in [unsentSave, inFlightSave, pendingSave].compactMap({ $0 }) {
+        func accumulate(_ item: PendingSave, inFlight: Bool) {
+            var composed = item
+            if inFlight {
+                // 送信中の差分は、結果が分からない場合の控えとして
+                // 先に取り込んでおく (控え専用の写しで、本体の送信
+                // 待ちの控えは結果が分かってから更新する)。
+                composed.uncertainKeys.formUnion(
+                    Self.changedKeys(base: item.base, desired: item.desired))
+                composed.uncertain.absorb(base: item.base, desired: item.desired)
+            }
             if let accumulated = result {
+                var uncertain = accumulated.uncertain
+                uncertain.formUnion(composed.uncertain)
                 result = PendingSave(
-                    id: item.id, base: accumulated.base, desired: item.desired,
-                    generation: item.generation,
-                    syncGeneration: item.syncGeneration,
-                    uncertainKeys: accumulated.uncertainKeys.union(item.uncertainKeys),
-                    uncertainDesired: item.uncertainDesired
-                        ?? accumulated.uncertainDesired)
+                    id: composed.id, base: accumulated.base, desired: composed.desired,
+                    generation: composed.generation,
+                    syncGeneration: composed.syncGeneration,
+                    uncertainKeys: accumulated.uncertainKeys.union(composed.uncertainKeys),
+                    uncertain: uncertain)
             } else {
-                result = item
+                result = composed
             }
         }
+        if let unsentSave { accumulate(unsentSave, inFlight: false) }
+        if let inFlightSave { accumulate(inFlightSave, inFlight: true) }
+        if let pendingSave { accumulate(pendingSave, inFlight: false) }
         return result
     }
 
@@ -612,18 +723,50 @@ final class SyncedSettingsStore {
             store.unsentSyncedSettingsData = nil
             return
         }
-        var record: [String: Any] = [
+        let record: [String: Any] = [
             "identity": store.unsentSettingsIdentity,
             "base": Self.clientSettingsDictionary(from: item.base),
             "desired": Self.clientSettingsDictionary(from: item.desired),
             "uncertainKeys": Array(item.uncertainKeys),
+            "uncertain": Self.uncertainRecordDictionary(from: item.uncertain),
         ]
-        if let uncertainDesired = item.uncertainDesired {
-            record["uncertainDesired"] =
-                Self.clientSettingsDictionary(from: uncertainDesired)
-        }
         store.unsentSyncedSettingsData =
             try? JSONSerialization.data(withJSONObject: record)
+    }
+
+    /// 結果が分からない送信の控えを、端末への保存の形 (辞書) に写す。
+    private static func uncertainRecordDictionary(
+        from record: UncertainRecord
+    ) -> [String: Any] {
+        [
+            "addedKeywordKeys": Array(record.addedKeywordKeys),
+            "removedKeywordKeys": Array(record.removedKeywordKeys),
+            "addedUserIDs": Array(record.addedUserIDs),
+            "removedUserIDs": Array(record.removedUserIDs),
+            "addedPinnedIDs": Array(record.addedPinnedIDs),
+            "removedPinnedIDs": Array(record.removedPinnedIDs),
+            "pinnedOrderMayDiffer": record.pinnedOrderMayDiffer,
+            "addedMylistKeys": Array(record.addedMylistKeys),
+            "removedMylistKeys": Array(record.removedMylistKeys),
+        ]
+    }
+
+    /// 端末への保存の形 (辞書) から、結果が分からない送信の控えを
+    /// 読み戻す。
+    private static func uncertainRecord(
+        fromDictionary dict: [String: Any]
+    ) -> UncertainRecord {
+        var record = UncertainRecord()
+        record.addedKeywordKeys = Set(dict["addedKeywordKeys"] as? [String] ?? [])
+        record.removedKeywordKeys = Set(dict["removedKeywordKeys"] as? [String] ?? [])
+        record.addedUserIDs = Set(dict["addedUserIDs"] as? [String] ?? [])
+        record.removedUserIDs = Set(dict["removedUserIDs"] as? [String] ?? [])
+        record.addedPinnedIDs = Set(dict["addedPinnedIDs"] as? [String] ?? [])
+        record.removedPinnedIDs = Set(dict["removedPinnedIDs"] as? [String] ?? [])
+        record.pinnedOrderMayDiffer = dict["pinnedOrderMayDiffer"] as? Bool ?? false
+        record.addedMylistKeys = Set(dict["addedMylistKeys"] as? [String] ?? [])
+        record.removedMylistKeys = Set(dict["removedMylistKeys"] as? [String] ?? [])
+        return record
     }
 
     /// 端末に残した未送信の変更を読み出し、条件が合えば未送信分と
@@ -666,7 +809,7 @@ final class SyncedSettingsStore {
             generation: store.authGeneration,
             syncGeneration: store.syncGeneration,
             uncertainKeys: restored.uncertainKeys,
-            uncertainDesired: restored.uncertainDesired)
+            uncertain: restored.uncertain)
         syncPersistedRecord()
     }
 
@@ -678,15 +821,27 @@ final class SyncedSettingsStore {
               let baseDict = record["base"] as? [String: Any],
               let desiredDict = record["desired"] as? [String: Any]
         else { return nil }
-        let uncertainDesired = (record["uncertainDesired"] as? [String: Any]).map {
-            settings(fromClientSettings: $0, fallback: .defaults)
+        let base = settings(fromClientSettings: baseDict, fallback: .defaults)
+        let uncertain: UncertainRecord
+        if let uncertainDict = record["uncertain"] as? [String: Any] {
+            uncertain = uncertainRecord(fromDictionary: uncertainDict)
+        } else if let legacyDict = record["uncertainDesired"] as? [String: Any] {
+            // 以前の版の控え (結果が分からない送信の時点の値一式) からは、
+            // 土台との差分を、要素ごとの控えへ移し替える。
+            var migrated = UncertainRecord()
+            migrated.absorb(
+                base: base,
+                desired: settings(fromClientSettings: legacyDict, fallback: .defaults))
+            uncertain = migrated
+        } else {
+            uncertain = UncertainRecord()
         }
         return RestoredUnsent(
             identity: identity,
-            base: settings(fromClientSettings: baseDict, fallback: .defaults),
+            base: base,
             desired: settings(fromClientSettings: desiredDict, fallback: .defaults),
             uncertainKeys: Set(record["uncertainKeys"] as? [String] ?? []),
-            uncertainDesired: uncertainDesired)
+            uncertain: uncertain)
     }
 
     /// 設定一式を、サーバーの利用者設定と同じ形の辞書に写す
@@ -749,14 +904,16 @@ final class SyncedSettingsStore {
                    pending.generation == unsent.generation,
                    pending.syncGeneration == unsent.syncGeneration {
                     // 送信待ちがある間は、その差分の元へ合成して引き継ぐ。
-                    // 結果が分からない送信の控えも合わせて引き継ぐ。
+                    // 結果が分からない送信の控えも合わせて引き継ぐ
+                    // (要素ごとの控えは合算する)。
+                    var mergedUncertain = unsent.uncertain
+                    mergedUncertain.formUnion(pending.uncertain)
                     pendingSave = PendingSave(
                         id: pending.id, base: unsent.base, desired: pending.desired,
                         generation: pending.generation,
                         syncGeneration: pending.syncGeneration,
                         uncertainKeys: unsent.uncertainKeys.union(pending.uncertainKeys),
-                        uncertainDesired: pending.uncertainDesired
-                            ?? unsent.uncertainDesired)
+                        uncertain: mergedUncertain)
                 } else if pendingSave == nil {
                     pendingSave = unsent
                     if !isSaving {
@@ -999,14 +1156,14 @@ final class SyncedSettingsStore {
     /// (順番待ちの実行時点で読み直さない)。
     private func saveToServer(
         base: SyncedClientSettings, desired: SyncedClientSettings,
-        uncertainKeys: Set<String>, uncertainDesired: SyncedClientSettings?,
+        uncertainKeys: Set<String>, uncertain: UncertainRecord,
         expectedGeneration: Int, expectedSyncGeneration: Int
     ) async -> SaveOutcome {
         let box = SaveOutcomeBox()
         await ClientSettingsSaveQueue.shared.run {
             box.value = await self.saveToServerSerial(
                 base: base, desired: desired,
-                uncertainKeys: uncertainKeys, uncertainDesired: uncertainDesired,
+                uncertainKeys: uncertainKeys, uncertain: uncertain,
                 expectedGeneration: expectedGeneration,
                 expectedSyncGeneration: expectedSyncGeneration)
         }
@@ -1023,7 +1180,7 @@ final class SyncedSettingsStore {
     /// ないもの (応答が返ってこなかった失敗) に分けて返す。
     private func saveToServerSerial(
         base: SyncedClientSettings, desired: SyncedClientSettings,
-        uncertainKeys: Set<String>, uncertainDesired: SyncedClientSettings?,
+        uncertainKeys: Set<String>, uncertain: UncertainRecord,
         expectedGeneration: Int, expectedSyncGeneration: Int
     ) async -> SaveOutcome {
         // 照合は、変更が起きた時点の世代で行う。順番待ちの間に
@@ -1052,7 +1209,7 @@ final class SyncedSettingsStore {
             var clientSettings = fetched
             Self.applyEdits(base: base, desired: desired,
                             uncertainKeys: uncertainKeys,
-                            uncertainDesired: uncertainDesired,
+                            uncertain: uncertain,
                             to: &clientSettings)
             clientSettings["last_synced_at"] = Date().timeIntervalSince1970
             do {
@@ -1167,9 +1324,14 @@ final class SyncedSettingsStore {
     /// 食い違えば意図の値で送り直す。サーバー側にその送信の値が
     /// 残っているかもしれず、値の差分だけでは「変更なし」になって
     /// しまうため (その間に利用者が値を元へ戻した場合など)。
+    /// 配列は、要素ごとの控え (uncertain) も使う。その送信で増えた
+    /// かもしれない要素は、最終的な意図に無ければ落とす対象に足し、
+    /// 減ったかもしれない要素は、最終的な意図にあれば戻す対象に足す
+    /// (その間に利用者が消した要素を登録し直したり、並び替えを
+    /// 取り消したりした場合に、意図どおりにするため)。
     private static func applyEdits(
         base: SyncedClientSettings, desired: SyncedClientSettings,
-        uncertainKeys: Set<String>, uncertainDesired: SyncedClientSettings?,
+        uncertainKeys: Set<String>, uncertain: UncertainRecord,
         to clientSettings: inout [String: Any]
     ) {
         if base.captionFont != desired.captionFont
@@ -1270,35 +1432,27 @@ final class SyncedSettingsStore {
         }
         if base.mutedCommentKeywords != desired.mutedCommentKeywords
             || uncertainKeys.contains("muted_comment_keywords") {
-            // 結果が分からない送信で入ったキーワードが、最終的な
-            // 意図では消えている場合は、その分も落とす対象に足す。
-            var extraRemoved: Set<String> = []
-            if uncertainKeys.contains("muted_comment_keywords"),
-               let uncertainDesired {
-                let desiredKeys = Set(desired.mutedCommentKeywords.map {
-                    $0.match + "\u{1}" + $0.pattern
-                })
-                extraRemoved = Set(uncertainDesired.mutedCommentKeywords.map {
-                    $0.match + "\u{1}" + $0.pattern
-                }).subtracting(desiredKeys)
-            }
+            // 結果が分からない送信で増えたかもしれないキーワードが
+            // 最終的な意図では消えている場合は、その分も落とす対象に
+            // 足す。逆に、その送信で消えたかもしれないキーワードが
+            // 最終的な意図では戻っている場合は、戻す対象に足す。
+            let desiredKeys = Set(desired.mutedCommentKeywords.map(Self.keywordKey))
+            let extraRemoved = uncertain.addedKeywordKeys.subtracting(desiredKeys)
+            let extraAdded = uncertain.removedKeywordKeys.intersection(desiredKeys)
             clientSettings["muted_comment_keywords"] = mergedKeywordEntries(
                 latest: clientSettings["muted_comment_keywords"],
                 base: base.mutedCommentKeywords, desired: desired.mutedCommentKeywords,
-                extraRemovedKeys: extraRemoved)
+                extraRemovedKeys: extraRemoved, extraAddedKeys: extraAdded)
         }
         if base.mutedNiconicoUserIDs != desired.mutedNiconicoUserIDs
             || uncertainKeys.contains("muted_niconico_user_ids") {
-            var extraRemoved: Set<String> = []
-            if uncertainKeys.contains("muted_niconico_user_ids"),
-               let uncertainDesired {
-                extraRemoved = Set(uncertainDesired.mutedNiconicoUserIDs)
-                    .subtracting(Set(desired.mutedNiconicoUserIDs))
-            }
+            let desiredIDs = Set(desired.mutedNiconicoUserIDs)
+            let extraRemoved = uncertain.addedUserIDs.subtracting(desiredIDs)
+            let extraAdded = uncertain.removedUserIDs.intersection(desiredIDs)
             clientSettings["muted_niconico_user_ids"] = mergedStringEntries(
                 latest: clientSettings["muted_niconico_user_ids"],
                 base: base.mutedNiconicoUserIDs, desired: desired.mutedNiconicoUserIDs,
-                extraRemoved: extraRemoved)
+                extraRemoved: extraRemoved, extraAdded: extraAdded)
         }
         if base.videoWatchedHistoryMaxCount != desired.videoWatchedHistoryMaxCount
             || (uncertainKeys.contains("video_watched_history_max_count")
@@ -1342,30 +1496,24 @@ final class SyncedSettingsStore {
         }
         if base.pinnedChannelIDs != desired.pinnedChannelIDs
             || uncertainKeys.contains("pinned_channel_ids") {
-            var extraRemoved: Set<String> = []
-            if uncertainKeys.contains("pinned_channel_ids"),
-               let uncertainDesired {
-                extraRemoved = Set(uncertainDesired.pinnedChannelIDs)
-                    .subtracting(Set(desired.pinnedChannelIDs))
-            }
+            let desiredIDs = Set(desired.pinnedChannelIDs)
+            let extraRemoved = uncertain.addedPinnedIDs.subtracting(desiredIDs)
+            let extraAdded = uncertain.removedPinnedIDs.intersection(desiredIDs)
             clientSettings["pinned_channel_ids"] = mergedPinnedChannelIDs(
                 latest: clientSettings["pinned_channel_ids"],
                 base: base.pinnedChannelIDs, desired: desired.pinnedChannelIDs,
-                extraRemoved: extraRemoved)
+                extraRemoved: extraRemoved, extraAdded: extraAdded,
+                forceDesiredOrder: uncertain.pinnedOrderMayDiffer)
         }
         if base.mylist != desired.mylist
             || uncertainKeys.contains("mylist") {
-            var extraRemoved: Set<String> = []
-            if uncertainKeys.contains("mylist"), let uncertainDesired {
-                let desiredKeys = Set(desired.mylist.map { $0.type + "#" + String($0.id) })
-                extraRemoved = Set(uncertainDesired.mylist.map {
-                    $0.type + "#" + String($0.id)
-                }).subtracting(desiredKeys)
-            }
+            let desiredKeys = Set(desired.mylist.map(Self.mylistKey))
+            let extraRemoved = uncertain.addedMylistKeys.subtracting(desiredKeys)
+            let extraAdded = uncertain.removedMylistKeys.intersection(desiredKeys)
             clientSettings["mylist"] = mergedMylistEntries(
                 latest: clientSettings["mylist"],
                 base: base.mylist, desired: desired.mylist,
-                extraRemovedKeys: extraRemoved)
+                extraRemovedKeys: extraRemoved, extraAddedKeys: extraAdded)
         }
     }
 
@@ -1395,7 +1543,7 @@ final class SyncedSettingsStore {
     /// 形の違う要素も) はそのまま残る。
     private static func mergedKeywordEntries(
         latest: Any?, base: [MutedCommentKeyword], desired: [MutedCommentKeyword],
-        extraRemovedKeys: Set<String> = []
+        extraRemovedKeys: Set<String> = [], extraAddedKeys: Set<String> = []
     ) -> [Any] {
         func key(match: String, pattern: String) -> String { match + "\u{1}" + pattern }
         let baseKeys = Set(base.map { key(match: $0.match, pattern: $0.pattern) })
@@ -1420,8 +1568,13 @@ final class SyncedSettingsStore {
                 presentKeys.insert(entryKey)
             }
         }
+        // 土台に無い要素は足す。土台にある要素は通常は最新の値に
+        // 残っている前提だが、結果が分からない送信で消えたかも
+        // しれない要素 (extraAddedKeys) は、最新の値に無ければ
+        // 最終的な意図の要素で戻す。
         for keyword in desired
-        where !baseKeys.contains(key(match: keyword.match, pattern: keyword.pattern))
+        where (!baseKeys.contains(key(match: keyword.match, pattern: keyword.pattern))
+                || extraAddedKeys.contains(key(match: keyword.match, pattern: keyword.pattern)))
             && !presentKeys.contains(key(match: keyword.match, pattern: keyword.pattern)) {
             result.append(["match": keyword.match, "pattern": keyword.pattern] as [String: Any])
         }
@@ -1434,7 +1587,7 @@ final class SyncedSettingsStore {
     /// 登録は消えない。
     private static func mergedMylistEntries(
         latest: Any?, base: [MylistEntry], desired: [MylistEntry],
-        extraRemovedKeys: Set<String> = []
+        extraRemovedKeys: Set<String> = [], extraAddedKeys: Set<String> = []
     ) -> [Any] {
         func key(type: String, id: Int) -> String { type + "#" + String(id) }
         let baseKeys = Set(base.map { key(type: $0.type, id: $0.id) })
@@ -1456,8 +1609,12 @@ final class SyncedSettingsStore {
                 presentKeys.insert(entryKey)
             }
         }
+        // キーワードと同じく、結果が分からない送信で消えたかも
+        // しれない要素 (extraAddedKeys) は、最新の値に無ければ
+        // 最終的な意図の要素で戻す。
         for entry in desired
-        where !baseKeys.contains(key(type: entry.type, id: entry.id))
+        where (!baseKeys.contains(key(type: entry.type, id: entry.id))
+                || extraAddedKeys.contains(key(type: entry.type, id: entry.id)))
             && !presentKeys.contains(key(type: entry.type, id: entry.id)) {
             result.append(entry.dictionary as Any)
         }
@@ -1468,7 +1625,7 @@ final class SyncedSettingsStore {
     /// 適用する。文字列でない要素はそのまま残す。
     private static func mergedStringEntries(
         latest: Any?, base: [String], desired: [String],
-        extraRemoved: Set<String> = []
+        extraRemoved: Set<String> = [], extraAdded: Set<String> = []
     ) -> [Any] {
         let removed = Set(base).subtracting(Set(desired)).union(extraRemoved)
         var result: [Any] = []
@@ -1484,7 +1641,11 @@ final class SyncedSettingsStore {
                 present.insert(value)
             }
         }
-        for value in desired where !base.contains(value) && !present.contains(value) {
+        // キーワードと同じく、結果が分からない送信で消えたかも
+        // しれない要素 (extraAdded) は、最新の値に無ければ戻す。
+        for value in desired
+        where (!base.contains(value) || extraAdded.contains(value))
+            && !present.contains(value) {
             result.append(value)
         }
         return result
@@ -1501,11 +1662,17 @@ final class SyncedSettingsStore {
     /// 占めている枠の中でだけ順序を入れ替える。他の端末が足した
     /// 要素や、他の端末が消した要素、文字列でない要素は、そのまま
     /// の位置に残る。
+    /// 結果が分からない送信で並び順が変わったかもしれない場合
+    /// (forceDesiredOrder) は、編集前後の相対的な順序が同じでも、
+    /// 最終的な意図の並びを適用する。その送信で並び替えた後に
+    /// 利用者が並びを取り消すと、編集前後の順序が同じになって
+    /// しまい、サーバーに残った並びを意図どおりに戻せないため。
     /// サーバー側の値が配列の形でないときは、受け皿として利用者の
     /// 並びそのものを返す。
     private static func mergedPinnedChannelIDs(
         latest: Any?, base: [String], desired: [String],
-        extraRemoved: Set<String> = []
+        extraRemoved: Set<String> = [], extraAdded: Set<String> = [],
+        forceDesiredOrder: Bool = false
     ) -> [Any] {
         guard let rawEntries = latest as? [Any] else { return desired }
         let baseSet = Set(base)
@@ -1527,10 +1694,12 @@ final class SyncedSettingsStore {
         }
         // この端末で実際に並び替えたかどうかは、共通する要素の
         // 相対的な順序が編集前後で変わったかで判定する。変わって
-        // いなければ、最新の並び順をそのまま保つ。
+        // いなければ、最新の並び順をそのまま保つ。結果が分からない
+        // 送信で並び順が変わったかもしれない場合だけは、編集前後が
+        // 同じでも最終的な意図の並びを適用する。
         let keptInBaseOrder = base.filter { keptSet.contains($0) }
         let keptInDesiredOrder = desired.filter { keptSet.contains($0) }
-        if keptInBaseOrder != keptInDesiredOrder {
+        if keptInBaseOrder != keptInDesiredOrder || forceDesiredOrder {
             // 対象の要素が占めている枠の中でだけ、順序を入れ替える。
             // 枠の位置そのものは動かさないため、対象でない要素 (他の
             // 端末の追加分や文字列でない要素) の位置は変わらない。
@@ -1543,9 +1712,13 @@ final class SyncedSettingsStore {
                 result[slot] = value
             }
         }
-        // この端末で足した要素を、末尾に加える。
+        // この端末で足した要素を、末尾に加える。結果が分からない
+        // 送信で消えたかもしれない要素 (extraAdded) は、土台に
+        // あっても、最新の値に無ければ末尾に戻す。
         var present = Set(result.compactMap { $0 as? String })
-        for value in desired where !baseSet.contains(value) && !present.contains(value) {
+        for value in desired
+        where (!baseSet.contains(value) || extraAdded.contains(value))
+            && !present.contains(value) {
             result.append(value)
             present.insert(value)
         }
