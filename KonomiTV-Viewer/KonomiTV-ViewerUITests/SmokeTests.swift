@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 
 /// 自動テスト (スモークテスト)。仮サーバー (SmokeTests/stub_server.py) の
@@ -29,6 +30,34 @@ final class SmokeTests: XCTestCase {
     override func tearDownWithError() throws {
         app?.terminate()
         app = nil
+    }
+
+    /// 【切り分け用】アプリを介さず、テスト実行側のプロセスで仮サーバーの
+    /// 再生リストを直接再生し、再生の時計が進むかを確かめる。アプリ側の
+    /// 問題か、シミュレータ環境側の問題かを分けるための診断。
+    /// (名前の先頭を揃えて、本体のテストより先に実行されるようにしている。)
+    func testAADiagnosticAVPlayerClock() throws {
+        let url = URL(string: stubBaseURL
+            + "/api/streams/video/1/720p/playlist?session_id=diagnostic")!
+        let player = AVPlayer(url: url)
+        player.play()
+        let deadline = Date().addingTimeInterval(25)
+        var advanced = false
+        while Date() < deadline {
+            if player.currentTime().seconds > 1.0 {
+                advanced = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        let item = player.currentItem
+        let state = "tcs=\(player.timeControlStatus.rawValue)"
+            + " rate=\(player.rate)"
+            + " status=\(item?.status.rawValue ?? -1)"
+            + " err=\(item?.error?.localizedDescription ?? "nil")"
+            + " time=\(player.currentTime().seconds)"
+        player.pause()
+        XCTAssertTrue(advanced, "直接再生でも時計が進みませんでした: \(state)")
     }
 
     func testRecordedPlaybackAndFullscreenOverlays() throws {
