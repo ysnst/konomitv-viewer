@@ -104,7 +104,7 @@ final class FullscreenPlayerViewController: UIViewController {
     private let skipForwardButton = RippleButton()
     private let prevChapterButton = RippleButton()
     private let nextChapterButton = RippleButton()
-    private let seekSlider = UISlider()
+    private let seekSlider = PlayerSeekSlider(frame: .zero)
     private let bandView = CMSectionBandView()
     /// 盛り上がりの波形の帯 (通常画面と同じ部品)。シークバーの上に
     /// 置き、材料 (密度と区間) が呼び出し元から渡されたときだけ出す。
@@ -120,16 +120,15 @@ final class FullscreenPlayerViewController: UIViewController {
     private let captionButton = RippleButton()
     private let settingsButton = RippleButton()
     private let pipButton = RippleButton()
-    private let captureButton = RippleButton()
-    private let commentCaptureButton = RippleButton()
-    var captureAvailable: (() -> Bool)?
-    var commentCaptureAvailable: (() -> Bool)?
-    var onCapture: ((Bool, UIViewController) -> Void)?
     var pipAvailable: (() -> Bool)?
     var pipActive: (() -> Bool)?
     var pipPending: (() -> Bool)?
     var onTogglePiP: (() -> Void)?
     private let fullscreenButton = RippleButton()
+    private let commentButton = RippleButton()
+    var commentsEnabled: (() -> Bool)?
+    var commentAvailable: (() -> Bool)?
+    var onToggleComments: (() -> Void)?
     var captionsEnabled: (() -> Bool)?
     var captionAvailable: (() -> Bool)?
     var onToggleCaptions: (() -> Void)?
@@ -406,9 +405,10 @@ final class FullscreenPlayerViewController: UIViewController {
         // 盛り上がりの波形の帯は、シークバーの真上に置く (通常画面と
         // 同じ置き場所)。材料が渡るまでは隠しておく (材料が先に
         // 渡っている場合は、その状態を引き継ぐ)。
-        excitementStrip.heightAnchor.constraint(equalToConstant: 26).isActive = true
-        excitementStrip.isHidden =
-            !(hasExcitementData && SettingsStore.shared.showExcitementInFullscreen)
+        excitementStrip.isHidden = true
+        excitementStrip.isUserInteractionEnabled = false
+        excitementStrip.backgroundColor = .clear
+        excitementStrip.translatesAutoresizingMaskIntoConstraints = false
         excitementStrip.onTapped = { [weak self] ratio in
             guard let self else { return }
             self.seek(to: ratio * self.effectiveDuration)
@@ -417,10 +417,12 @@ final class FullscreenPlayerViewController: UIViewController {
             self.scheduleHideControls()
         }
 
-        let seekRow = UIStackView(arrangedSubviews: [currentTimeLabel, seekContainer, durationLabel])
-        seekRow.axis = .horizontal
-        seekRow.spacing = 10
-        seekRow.alignment = .center
+        let separator = UILabel()
+        separator.text = "/"
+        separator.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        separator.textColor = .white
+        let timeRow = UIStackView(arrangedSubviews: [currentTimeLabel, separator, durationLabel])
+        timeRow.spacing = 3
 
         // 操作の5つは下のパネルから出し、画面の真ん中に置く
         // (本家 Web 版の中央の並びと同じ顔ぶれと置き場所)。
@@ -449,17 +451,19 @@ final class FullscreenPlayerViewController: UIViewController {
             self.onShowSettings?(self)
         }, for: .touchUpInside)
         fullscreenButton.addTarget(self, action: #selector(exitFullscreen), for: .touchUpInside)
+        styleVideoOverlayButton(commentButton, symbol: "text.bubble", title: "実況コメントの表示を切り替え")
+        commentButton.addAction(UIAction { [weak self] _ in
+            self?.onToggleComments?()
+            self?.updateCaptionControl()
+            self?.scheduleHideControls()
+        }, for: .touchUpInside)
         styleVideoOverlayButton(pipButton, symbol: "pip.enter", title: "ピクチャ・イン・ピクチャ")
         pipButton.addAction(UIAction { [weak self] _ in self?.onTogglePiP?() }, for: .touchUpInside)
-        styleVideoOverlayButton(captureButton, symbol: "camera", title: "キャプチャ")
-        styleVideoOverlayButton(commentCaptureButton, symbol: "camera.badge.ellipsis", title: "コメント付きキャプチャ")
-        captureButton.addAction(UIAction { [weak self] _ in guard let self else { return }; self.onCapture?(false, self) }, for: .touchUpInside)
-        commentCaptureButton.addAction(UIAction { [weak self] _ in guard let self else { return }; self.onCapture?(true, self) }, for: .touchUpInside)
-        let optionsRow = UIStackView(arrangedSubviews: [UIView(), captureButton, commentCaptureButton, captionButton, settingsButton, pipButton, fullscreenButton])
+        let optionsRow = UIStackView(arrangedSubviews: [timeRow, UIView(), commentButton, captionButton, settingsButton, pipButton, fullscreenButton])
         optionsRow.spacing = 0
         optionsRow.axis = .horizontal
 
-        let panelStack = UIStackView(arrangedSubviews: [excitementStrip, seekRow, optionsRow])
+        let panelStack = UIStackView(arrangedSubviews: [optionsRow])
         panelStack.axis = .vertical
         panelStack.spacing = 10
         panelStack.translatesAutoresizingMaskIntoConstraints = false
@@ -469,6 +473,9 @@ final class FullscreenPlayerViewController: UIViewController {
         bottomPanel.translatesAutoresizingMaskIntoConstraints = false
         bottomPanel.isUserInteractionEnabled = true
         bottomPanel.addSubview(panelStack)
+        bottomPanel.addSubview(excitementStrip)
+        bottomPanel.addSubview(seekContainer)
+        seekContainer.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(bottomPanel)
 
         NSLayoutConstraint.activate([
@@ -488,10 +495,19 @@ final class FullscreenPlayerViewController: UIViewController {
             bottomPanel.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             centerControls.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             centerControls.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            panelStack.topAnchor.constraint(equalTo: bottomPanel.topAnchor, constant: 18),
-            panelStack.bottomAnchor.constraint(equalTo: bottomPanel.safeAreaLayoutGuide.bottomAnchor, constant: -10),
-            panelStack.leadingAnchor.constraint(equalTo: bottomPanel.safeAreaLayoutGuide.leadingAnchor, constant: 16),
-            panelStack.trailingAnchor.constraint(equalTo: bottomPanel.safeAreaLayoutGuide.trailingAnchor, constant: -16),
+            panelStack.topAnchor.constraint(equalTo: bottomPanel.topAnchor),
+            panelStack.bottomAnchor.constraint(equalTo: seekContainer.topAnchor),
+            panelStack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 8),
+            panelStack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -4),
+            seekContainer.heightAnchor.constraint(equalToConstant: 32),
+            seekContainer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            seekContainer.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            // 全画面だけはホームインジケーターを避ける。映像外の専用領域は追加しない。
+            seekContainer.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            excitementStrip.heightAnchor.constraint(equalToConstant: 26),
+            excitementStrip.leadingAnchor.constraint(equalTo: seekContainer.leadingAnchor),
+            excitementStrip.trailingAnchor.constraint(equalTo: seekContainer.trailingAnchor),
+            excitementStrip.bottomAnchor.constraint(equalTo: seekContainer.bottomAnchor, constant: -4),
         ])
     }
 
@@ -590,8 +606,7 @@ final class FullscreenPlayerViewController: UIViewController {
         excitementStrip.segments = segments
         excitementStrip.duration = duration
         hasExcitementData = !densities.isEmpty
-        excitementStrip.isHidden =
-            !(hasExcitementData && SettingsStore.shared.showExcitementInFullscreen)
+        excitementStrip.isHidden = !(isScrubbing && hasExcitementData && SettingsStore.shared.showExcitementInFullscreen)
     }
 
     // MARK: - 進み具合の表示
@@ -623,6 +638,11 @@ final class FullscreenPlayerViewController: UIViewController {
     }
 
     private func updateCaptionControl() {
+        let commentsOn = commentsEnabled?() ?? false
+        commentButton.isEnabled = commentAvailable?() ?? false
+        commentButton.setImage(UIImage(systemName: commentsOn ? "text.bubble.fill" : "text.bubble"), for: .normal)
+        commentButton.alpha = commentButton.isEnabled ? (commentsOn ? 1 : 0.4) : 0.25
+        commentButton.accessibilityValue = commentsOn ? "オン" : "オフ"
         let on = captionsEnabled?() ?? false
         captionButton.setImage(UIImage(systemName: on ? "captions.bubble.fill" : "captions.bubble"), for: .normal)
         captionButton.isEnabled = captionAvailable?() ?? false
@@ -632,10 +652,6 @@ final class FullscreenPlayerViewController: UIViewController {
 
     private func updateProgress() {
         updateCaptionControl()
-        captureButton.isEnabled = captureAvailable?() ?? false
-        commentCaptureButton.isEnabled = commentCaptureAvailable?() ?? false
-        captureButton.alpha = captureButton.isEnabled ? 1 : 0.35
-        commentCaptureButton.alpha = commentCaptureButton.isEnabled ? 1 : 0.35
         pipButton.isHidden = !(pipAvailable?() ?? false)
         pipButton.isEnabled = !(pipPending?() ?? false)
         pipButton.setImage(UIImage(systemName: pipActive?() == true ? "pip.exit" : "pip.enter"), for: .normal)
@@ -798,6 +814,7 @@ final class FullscreenPlayerViewController: UIViewController {
 
     @objc private func scrubBegan() {
         isScrubbing = true
+        excitementStrip.isHidden = !(hasExcitementData && SettingsStore.shared.showExcitementInFullscreen)
         wasPlayingBeforeScrub = isPlayingNow
         pausePlayback()
         hideTimer?.invalidate()
@@ -811,6 +828,7 @@ final class FullscreenPlayerViewController: UIViewController {
 
     @objc private func scrubEnded() {
         isScrubbing = false
+        excitementStrip.isHidden = true
         let target = Double(seekSlider.value) * effectiveDuration
         seek(to: target)
         if wasPlayingBeforeScrub {

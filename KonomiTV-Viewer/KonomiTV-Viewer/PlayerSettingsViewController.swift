@@ -4,16 +4,9 @@ import UIKit
 func styleVideoOverlayButton(_ button: UIButton, symbol: String, title: String) {
     button.configuration = nil
     button.setTitle(nil, for: .normal)
-    let configuration = UIImage.SymbolConfiguration(pointSize: 21)
-    var icon = UIImage(systemName: symbol, withConfiguration: configuration)
-    if symbol == "camera.badge.ellipsis" {
-        // 実況付きはカメラへ吹き出しを重ね、文字だけの説明に頼らず通常撮影と区別する。
-        let format = UIGraphicsImageRendererFormat()
-        icon = UIGraphicsImageRenderer(size: CGSize(width: 28, height: 28), format: format).image { _ in
-            UIImage(systemName: "camera", withConfiguration: configuration)?.withTintColor(.white).draw(in: CGRect(x: 0, y: 1, width: 24, height: 22))
-            UIImage(systemName: "text.bubble.fill")?.withTintColor(.white).draw(in: CGRect(x: 15, y: 15, width: 13, height: 12))
-        }.withRenderingMode(.alwaysTemplate)
-    }
+    let configuration = UIImage.SymbolConfiguration(pointSize: 20)
+    button.setPreferredSymbolConfiguration(configuration, forImageIn: .normal)
+    let icon = UIImage(systemName: symbol, withConfiguration: configuration)
     button.setImage(icon, for: .normal)
     button.tintColor = .white
     button.backgroundColor = .clear
@@ -118,6 +111,11 @@ final class PlayerSettingsViewController: UITableViewController {
         rows = rowsProvider()
         tableView.reloadData()
     }
+    func refreshRows() {
+        guard isViewLoaded else { return }
+        rows = rowsProvider()
+        tableView.reloadData()
+    }
     @objc private func close() { dismiss(animated: true) }
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { rows.count }
     override func tableView(_ tableView: UITableView, cellForRowAt path: IndexPath) -> UITableViewCell {
@@ -169,5 +167,38 @@ final class PlayerSettingsViewController: UITableViewController {
             rows = rowsProvider()
             tableView.reloadData()
         }
+    }
+}
+
+/// 見た目はDPlayerの4pt/11pt、操作は映像内の32pt領域で受ける。
+/// 下端基準なので、波形表示や操作行の高さにトラック位置が影響されない。
+final class PlayerSeekSlider: UISlider {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 11, height: 11)).image { _ in
+            AppPalette.accent.setFill()
+            UIBezierPath(ovalIn: CGRect(x: 0, y: 0, width: 11, height: 11)).fill()
+        }
+        setThumbImage(image, for: .normal)
+        setThumbImage(image, for: .highlighted)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func trackRect(forBounds bounds: CGRect) -> CGRect {
+        CGRect(x: 0, y: bounds.maxY - 4, width: bounds.width, height: 4)
+    }
+    override func thumbRect(forBounds bounds: CGRect, trackRect rect: CGRect, value: Float) -> CGRect {
+        let ratio = maximumValue > minimumValue ? CGFloat((value - minimumValue) / (maximumValue - minimumValue)) : 0
+        return CGRect(x: rect.minX + min(1, max(0, ratio)) * rect.width - 5.5,
+                      y: rect.midY - 5.5, width: 11, height: 11)
+    }
+    override func beginTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
+        // トラックの任意位置を押してからドラッグできる。再生への反映は所有元の終了処理で行う。
+        let rect = trackRect(forBounds: bounds)
+        guard rect.width > 0 else { return false }
+        let ratio = min(1, max(0, (touch.location(in: self).x - rect.minX) / rect.width))
+        value = minimumValue + Float(ratio) * (maximumValue - minimumValue)
+        let tracking = super.beginTracking(touch, with: event)
+        sendActions(for: .valueChanged)
+        return tracking
     }
 }

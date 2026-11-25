@@ -32,8 +32,8 @@ final class CMSectionBandView: UIView {
         guard let slider, duration > 0, !sections.isEmpty else { return }
         let track = slider.trackRect(forBounds: slider.bounds)
         guard track.width > 0 else { return }
-        // 帯はトラックより少し太くし、中心をトラックの中心に合わせる。
-        let bandHeight: CGFloat = 12
+        // 表示の高さも実トラックに合わせ、区間表示のために太い帯を作らない。
+        let bandHeight = track.height
         let y = track.midY - bandHeight / 2
         bandColor.setFill()
         for section in sections {

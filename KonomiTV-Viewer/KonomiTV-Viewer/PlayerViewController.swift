@@ -54,7 +54,7 @@ final class NoticeLabel: UILabel {
 /// 残りは白の薄い色、つまみは白。
 func stylePlayerSeekSlider(_ slider: UISlider) {
     slider.minimumTrackTintColor = AppPalette.accent
-    slider.maximumTrackTintColor = UIColor.white.withAlphaComponent(0.25)
+    slider.maximumTrackTintColor = UIColor.white.withAlphaComponent(0.2)
     slider.thumbTintColor = .white
 }
 
@@ -334,7 +334,7 @@ final class PlayerViewController: UIViewController {
     private let skipForwardButton = RippleButton()
     private let prevChapterButton = RippleButton()
     private let nextChapterButton = RippleButton()
-    private let seekSlider = UISlider()
+    private let seekSlider = PlayerSeekSlider(frame: .zero)
     private let bandView = CMSectionBandView()
     /// コメント (ニコニコ実況の過去ログ) を映像の上に流す重ね物。
     private let commentOverlay = JikkyoCommentOverlayView()
@@ -439,9 +439,8 @@ final class PlayerViewController: UIViewController {
     private let fullscreenButton = RippleButton()
     private let settingsButton = RippleButton()
     private let pipButton = RippleButton()
-    private let captureButton = RippleButton()
-    private let commentCaptureButton = RippleButton()
     private let captureController = VideoCaptureController()
+    private var captureMenuState: [Bool] = []
     private var pipController: PlaybackPiPController?
     private var vlcStateObserver: VLCStateObserver?
     private weak var playbackNavigation: UINavigationController?
@@ -891,9 +890,10 @@ final class PlayerViewController: UIViewController {
         for label in [currentTimeLabel, durationLabel] {
             label.textColor = AppPalette.text
             label.font = .scaledMonospacedDigitSystemFont(ofSize: 11, weight: .regular)
+            label.adjustsFontSizeToFitWidth = true
+            label.minimumScaleFactor = 0.65
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         }
-        currentTimeLabel.widthAnchor.constraint(equalToConstant: 52).isActive = true
-        durationLabel.widthAnchor.constraint(equalToConstant: 52).isActive = true
         durationLabel.textAlignment = .right
 
         // 真ん中の並び: [前の場面へ] [少し戻る] [再生/一時停止] [少し進む]
@@ -910,6 +910,8 @@ final class PlayerViewController: UIViewController {
         centerTransport.translatesAutoresizingMaskIntoConstraints = false
 
         // 下の帯の並び: [現在時刻] ... [全体の長さ・字幕切り替え・コメント切り替え]。
+        styleVideoOverlayButton(commentButton, symbol: "text.bubble", title: "実況コメントの表示を切り替え")
+        updateCommentButton()
         styleVideoOverlayButton(captionButton, symbol: "captions.bubble", title: "字幕の表示を切り替え")
         updateCaptionButton()
         styleVideoOverlayButton(settingsButton, symbol: "gearshape.fill", title: "プレイヤー設定")
@@ -918,18 +920,18 @@ final class PlayerViewController: UIViewController {
         styleVideoOverlayButton(pipButton, symbol: "pip.enter", title: "ピクチャ・イン・ピクチャ")
         pipButton.isHidden = true
         pipButton.addTarget(self, action: #selector(togglePiP), for: .touchUpInside)
-        styleVideoOverlayButton(captureButton, symbol: "camera", title: "キャプチャ")
-        styleVideoOverlayButton(commentCaptureButton, symbol: "camera.badge.ellipsis", title: "コメント付きキャプチャ")
-        captureButton.addAction(UIAction { [weak self] _ in guard let self else { return }; self.captureVideo(comments: false, presenter: self) }, for: .touchUpInside)
-        commentCaptureButton.addAction(UIAction { [weak self] _ in guard let self else { return }; self.captureVideo(comments: true, presenter: self) }, for: .touchUpInside)
-        let rightGroup = UIStackView(arrangedSubviews: [captureButton, commentCaptureButton, captionButton, settingsButton, pipButton, fullscreenButton])
+        let rightGroup = UIStackView(arrangedSubviews: [commentButton, captionButton, settingsButton, pipButton, fullscreenButton])
         rightGroup.axis = .horizontal
         rightGroup.spacing = 0
         rightGroup.alignment = .center
 
-        let timeGroup = UIStackView(arrangedSubviews: [currentTimeLabel, UIView(), durationLabel])
+        let separator = UILabel()
+        separator.text = "/"
+        separator.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        separator.textColor = .white
+        let timeGroup = UIStackView(arrangedSubviews: [currentTimeLabel, separator, durationLabel])
         timeGroup.spacing = 2
-        let transportRow = UIStackView(arrangedSubviews: [UIView(), rightGroup])
+        let transportRow = UIStackView(arrangedSubviews: [timeGroup, UIView(), rightGroup])
         transportRow.axis = .horizontal
         transportRow.alignment = .center
         transportRow.spacing = 0
@@ -938,14 +940,14 @@ final class PlayerViewController: UIViewController {
         // シークバーは Web 版スマホ縦と同じく、映像の下辺いっぱいに置く。
         bottomGradient.translatesAutoresizingMaskIntoConstraints = false
         videoContainer.addSubview(bottomGradient)
-        controlsStackView.addArrangedSubview(timeGroup)
         controlsStackView.addArrangedSubview(transportRow)
-        controlsStackView.addArrangedSubview(seekContainer)
         controlsStackView.axis = .vertical
         controlsStackView.spacing = 2
         controlsStackView.translatesAutoresizingMaskIntoConstraints = false
         controlsContainer.translatesAutoresizingMaskIntoConstraints = false
         controlsContainer.addSubview(controlsStackView)
+        controlsContainer.addSubview(seekContainer)
+        seekContainer.translatesAutoresizingMaskIntoConstraints = false
         videoContainer.addSubview(controlsContainer)
         // 真ん中の並びは操作帯より上に置く (映像が低いときでも帯に
         // 触れて押せなくならないように)。
@@ -954,7 +956,7 @@ final class PlayerViewController: UIViewController {
         overlayHeader.translatesAutoresizingMaskIntoConstraints = false
         videoContainer.addSubview(overlayTopGradient)
         videoContainer.addSubview(overlayHeader)
-        // 中央操作は見出しと下部操作帯の間へ置き、6ボタンや波形と当たり判定を重ねない。
+        // 中央操作は見出しと下部の操作行の間へ置き、タップ領域を重ねない。
         let transportGuide = UILayoutGuide()
         videoContainer.addLayoutGuide(transportGuide)
         NSLayoutConstraint.activate([
@@ -1010,7 +1012,18 @@ final class PlayerViewController: UIViewController {
 
         // 盛り上がりの波形の帯: 高さだけ決めておき、実況コメントから
         // 密度が計算できた時点で操作帯の並び (シークバーの上) へ差し込む。
-        excitementStrip.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        // 密度はシーク中だけ描く。レイアウトから独立したオーバーレイにする。
+        excitementStrip.translatesAutoresizingMaskIntoConstraints = false
+        excitementStrip.isUserInteractionEnabled = false
+        excitementStrip.backgroundColor = .clear
+        excitementStrip.isHidden = true
+        controlsContainer.insertSubview(excitementStrip, belowSubview: seekContainer)
+        NSLayoutConstraint.activate([
+            excitementStrip.heightAnchor.constraint(equalToConstant: 26),
+            excitementStrip.leadingAnchor.constraint(equalTo: seekContainer.leadingAnchor),
+            excitementStrip.trailingAnchor.constraint(equalTo: seekContainer.trailingAnchor),
+            excitementStrip.bottomAnchor.constraint(equalTo: seekContainer.bottomAnchor, constant: -4),
+        ])
         excitementStrip.onTapped = { [weak self] ratio in
             guard let self, self.hasActiveEngine else { return }
             self.seek(to: ratio * self.effectiveDuration)
@@ -1421,9 +1434,9 @@ final class PlayerViewController: UIViewController {
         infoStack.setCustomSpacing(24, after: buttonsFlowView)
         scrollView.addSubview(infoStack)
 
-        // 原則16:9と情報欄の余地で高さを決め、狭幅では操作に必要な216ptを優先する。
+        // 16:9を基本とし、見出し44・中央操作56・下部76が重ならない最小高さだけ保つ。
         // 映像自体はaspect-fitで収め、実際の高さはviewDidLayoutSubviewsで更新する。
-        let heightConstraint = videoContainer.heightAnchor.constraint(equalToConstant: 216)
+        let heightConstraint = videoContainer.heightAnchor.constraint(equalToConstant: 176)
         videoHeightConstraint = heightConstraint
 
         // 映像の枠の固定は、貸し出し・返却で付け外しできるよう別に持つ。
@@ -1454,8 +1467,8 @@ final class PlayerViewController: UIViewController {
         ]
         NSLayoutConstraint.activate(commentHomeConstraints)
 
-        // 操作帯の高さは控えに持ち、盛り上がりの帯を差し込むときに広げる。
-        controlsHeightConstraint = controlsContainer.heightAnchor.constraint(equalToConstant: 88)
+        // 操作行44ptと映像内のシーク操作32pt。波形は重ねるため高さを加算しない。
+        controlsHeightConstraint = controlsContainer.heightAnchor.constraint(equalToConstant: 76)
         NSLayoutConstraint.activate([
             videoContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             videoContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -1464,17 +1477,20 @@ final class PlayerViewController: UIViewController {
             bottomGradient.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
             bottomGradient.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
             bottomGradient.bottomAnchor.constraint(equalTo: videoContainer.bottomAnchor),
-            bottomGradient.heightAnchor.constraint(equalToConstant: 88),
+            bottomGradient.heightAnchor.constraint(equalToConstant: 76),
             controlsContainer.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
             controlsContainer.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
             controlsContainer.bottomAnchor.constraint(equalTo: videoContainer.bottomAnchor),
             controlsHeightConstraint!,
             centerTransport.centerXAnchor.constraint(equalTo: videoContainer.centerXAnchor),
             centerTransport.centerYAnchor.constraint(equalTo: transportGuide.centerYAnchor),
-            controlsStackView.leadingAnchor.constraint(equalTo: videoContainer.safeAreaLayoutGuide.leadingAnchor, constant: 16),
-            controlsStackView.trailingAnchor.constraint(equalTo: videoContainer.safeAreaLayoutGuide.trailingAnchor, constant: -16),
-            controlsStackView.bottomAnchor.constraint(equalTo: controlsContainer.bottomAnchor, constant: -4),
-            seekContainer.heightAnchor.constraint(equalToConstant: 20),
+            controlsStackView.leadingAnchor.constraint(equalTo: videoContainer.safeAreaLayoutGuide.leadingAnchor, constant: 8),
+            controlsStackView.trailingAnchor.constraint(equalTo: videoContainer.safeAreaLayoutGuide.trailingAnchor, constant: -4),
+            controlsStackView.bottomAnchor.constraint(equalTo: seekContainer.topAnchor),
+            seekContainer.heightAnchor.constraint(equalToConstant: 32),
+            seekContainer.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
+            seekContainer.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
+            seekContainer.bottomAnchor.constraint(equalTo: videoContainer.bottomAnchor),
             infoTabBar.topAnchor.constraint(equalTo: videoContainer.bottomAnchor),
             infoTabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             infoTabBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -1836,7 +1852,9 @@ final class PlayerViewController: UIViewController {
             UIImage(systemName: on ? "text.bubble.fill" : "text.bubble", withConfiguration: config),
             for: .normal)
         commentButton.tintColor = .white
-        commentButton.alpha = on ? 1 : 0.4
+        commentButton.isEnabled = !audioOnly
+        commentButton.alpha = audioOnly ? 0.25 : (on ? 1 : 0.4)
+        commentButton.accessibilityValue = on ? "オン" : "オフ"
         commentButton.accessibilityLabel = on ? "コメント表示オン" : "コメント表示オフ"
     }
 
@@ -2658,9 +2676,8 @@ final class PlayerViewController: UIViewController {
                 - view.safeAreaInsets.top
                 - view.safeAreaInsets.bottom
                 - 120
-            // 見出し44 + 中央操作56 + 波形を含む操作帯116を確保する。
-            // 狭い幅では映像をaspect-fitし、情報欄は残りの高さでスクロールする。
-            let target = max(216, min(ideal, available))
+            // 波形の有無によって映像や番組情報の領域を変えない。
+            let target = max(176, min(ideal, available))
             if abs(heightConstraint.constant - target) > 0.5 {
                 heightConstraint.constant = target
             }
@@ -3183,12 +3200,7 @@ final class PlayerViewController: UIViewController {
         // 同じ材料を渡す。
         activeFullscreenPlayer?.setExcitement(
             densities: density.densities, segments: segments, duration: density.duration)
-        // 帯は操作帯の並びの中で、シークバーの真上に差し込む。
-        // 操作帯はその分だけ高くする。
-        if excitementStrip.superview == nil {
-            controlsStackView.insertArrangedSubview(excitementStrip, at: controlsStackView.arrangedSubviews.count - 1)
-            controlsHeightConstraint?.constant = 88 + 28
-        }
+        excitementStrip.isHidden = !isScrubbing
         if !segments.isEmpty {
             digestButton.isHidden = false
             buttonsFlowView.setNeedsLayout()
@@ -3776,6 +3788,7 @@ final class PlayerViewController: UIViewController {
 
     @objc private func scrubBegan() {
         isScrubbing = true
+        excitementStrip.isHidden = excitementDensity == nil
         wasPlayingBeforeScrub = isCurrentlyPlaying()
         pauseEngine()
         hideTimer?.invalidate()
@@ -3793,6 +3806,7 @@ final class PlayerViewController: UIViewController {
 
     @objc private func scrubEnded() {
         isScrubbing = false
+        excitementStrip.isHidden = true
         seekPreviewView.isHidden = true
         let target = Double(seekSlider.value) * effectiveDuration
         seek(to: target)
@@ -3986,10 +4000,11 @@ final class PlayerViewController: UIViewController {
     }
 
     private func updateCaptureControls() {
-        captureButton.isEnabled = canCaptureVideo
-        commentCaptureButton.isEnabled = canCaptureVideo && SettingsStore.shared.showComments
-        captureButton.alpha = captureButton.isEnabled ? 1 : 0.35
-        commentCaptureButton.alpha = commentCaptureButton.isEnabled ? 1 : 0.35
+        let state = [canCaptureVideo, SettingsStore.shared.showComments]
+        guard state != captureMenuState else { return }
+        captureMenuState = state
+        let navigation = (activeFullscreenPlayer?.presentedViewController ?? presentedViewController) as? PlayerSettingsNavigationController
+        (navigation?.topViewController as? PlayerSettingsViewController)?.refreshRows()
     }
 
     private func captureVideo(comments: Bool, presenter: UIViewController) {
@@ -4110,22 +4125,22 @@ final class PlayerViewController: UIViewController {
     @objc private func openPlayerSettings() { showPlayerSettings(from: self) }
 
     private func configureFullscreenControls(_ fullscreen: FullscreenPlayerViewController) {
+        fullscreen.commentsEnabled = { SettingsStore.shared.showComments }
+        fullscreen.commentAvailable = { [weak self] in self?.audioOnly == false }
+        fullscreen.onToggleComments = { [weak self] in self?.toggleComments() }
         fullscreen.captionsEnabled = { SettingsStore.shared.showCaptions }
         fullscreen.captionAvailable = { [weak self] in self?.audioOnly == false }
         fullscreen.onToggleCaptions = { [weak self] in self?.toggleCaptions() }
         fullscreen.onShowSettings = { [weak self] presenter in self?.showPlayerSettings(from: presenter) }
         fullscreen.pipAvailable = { [weak self] in self?.pipController?.isReady == true && self?.audioOnly == false }
         fullscreen.onTogglePiP = { [weak self] in self?.togglePiP() }
-        fullscreen.captureAvailable = { [weak self] in self?.canCaptureVideo == true }
-        fullscreen.commentCaptureAvailable = { [weak self] in self?.canCaptureVideo == true && SettingsStore.shared.showComments }
-        fullscreen.onCapture = { [weak self] includeComments, presenter in self?.captureVideo(comments: includeComments, presenter: presenter) }
         fullscreen.pipActive = { [weak self] in self?.pipController?.isActive == true }
         fullscreen.pipPending = { [weak self] in self?.pipController?.isPending == true }
     }
 
     private func showPlayerSettings(from presenter: UIViewController) {
         hideTimer?.invalidate()
-        let menu = PlayerSettingsViewController { [weak self] in
+        let menu = PlayerSettingsViewController { [weak self, weak presenter] in
             guard let self else { return [] }
             let store = SettingsStore.shared
             let saver = store.dataSaverMode(media: .video, profile: self.profile)
@@ -4170,6 +4185,16 @@ final class PlayerViewController: UIViewController {
             if !self.digestButton.isHidden {
                 rows.append(.init(title: "ダイジェスト再生", toggle: self.digestPlaybackEnabled, change: { [weak self] _ in self?.toggleDigestPlayback() }))
             }
+            rows.insert(contentsOf: [
+                .init(title: "キャプチャ", action: { [weak self, weak presenter] in
+                    guard let self, let presenter else { return }
+                    presenter.dismiss(animated: true) { self.captureVideo(comments: false, presenter: presenter) }
+                }, isEnabled: self.canCaptureVideo),
+                .init(title: "コメント付きキャプチャ", action: { [weak self, weak presenter] in
+                    guard let self, let presenter else { return }
+                    presenter.dismiss(animated: true) { self.captureVideo(comments: true, presenter: presenter) }
+                }, isEnabled: self.canCaptureVideo && store.showComments),
+            ], at: rows.count)
             if self.pipController?.isActive != true, self.pipController?.isPending != true {
                 rows.append(.init(title: "プレイヤーを再起動", action: { [weak self] in self?.restartPlayer() }))
             }
@@ -4312,6 +4337,7 @@ final class PlayerViewController: UIViewController {
         let target = audioOnly ? (qualityBeforeAudioOnly ?? SettingsStore.shared.streamingQuality(media: .video, profile: profile)) : SettingsStore.audioOnlyQuality
         if deferEngineChange(base: target, profile: profile, action: { [weak self] in self?.toggleAudioOnly() }) { return }
         audioOnly.toggle()
+        updateCommentButton()
         audioOnlyButton.setTitle(audioOnly ? "音声のみ: ON" : "音声のみ: OFF", for: .normal)
         buttonsFlowView.setNeedsLayout()
         playerLayer?.isHidden = audioOnly
