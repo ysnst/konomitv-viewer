@@ -72,6 +72,7 @@
 		200000000000000000000040 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000021 /* Assets.xcassets */; };
 		200000000000000000000041 /* Settings.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000022 /* Settings.bundle */; };
 		200000000000000000000042 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200000000000000000000024 /* AVFoundation.framework */; };
+		300000000000000000000030 /* SmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300000000000000000000010 /* SmokeTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -142,6 +143,8 @@
 		200000000000000000000022 /* Settings.bundle */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.plug-in"; path = Settings.bundle; sourceTree = "<group>"; };
 		200000000000000000000023 /* KonomiTV-Viewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "KonomiTV-Viewer.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		200000000000000000000024 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
+		300000000000000000000010 /* SmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeTests.swift; sourceTree = "<group>"; };
+		300000000000000000000011 /* KonomiTV-ViewerUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "KonomiTV-ViewerUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -153,6 +156,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		300000000000000000000051 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -160,6 +170,7 @@
 			isa = PBXGroup;
 			children = (
 				200000000000000000000004 /* KonomiTV-Viewer */,
+				300000000000000000000020 /* KonomiTV-ViewerUITests */,
 				200000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -168,8 +179,17 @@
 			isa = PBXGroup;
 			children = (
 				200000000000000000000023 /* KonomiTV-Viewer.app */,
+				300000000000000000000011 /* KonomiTV-ViewerUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		300000000000000000000020 /* KonomiTV-ViewerUITests */ = {
+			isa = PBXGroup;
+			children = (
+				300000000000000000000010 /* SmokeTests.swift */,
+			);
+			path = "KonomiTV-ViewerUITests";
 			sourceTree = "<group>";
 		};
 		2000000000000000000000B0 /* Licenses */ = {
@@ -272,6 +292,23 @@
 			productReference = 200000000000000000000023 /* KonomiTV-Viewer.app */;
 			productType = "com.apple.product-type.application";
 		};
+		300000000000000000000060 /* KonomiTV-ViewerUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 300000000000000000000070 /* Build configuration list for PBXNativeTarget "KonomiTV-ViewerUITests" */;
+			buildPhases = (
+				300000000000000000000050 /* Sources */,
+				300000000000000000000051 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				300000000000000000000090 /* PBXTargetDependency */,
+			);
+			name = "KonomiTV-ViewerUITests";
+			productName = "KonomiTV-ViewerUITests";
+			productReference = 300000000000000000000011 /* KonomiTV-ViewerUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -284,6 +321,10 @@
 				TargetAttributes = {
 					200000000000000000000060 = {
 						CreatedOnToolsVersion = 15.0;
+					};
+					300000000000000000000060 = {
+						CreatedOnToolsVersion = 15.0;
+						TestTargetID = 200000000000000000000060;
 					};
 				};
 			};
@@ -302,6 +343,7 @@
 			projectRoot = "";
 			targets = (
 				200000000000000000000060 /* KonomiTV-Viewer */,
+				300000000000000000000060 /* KonomiTV-ViewerUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -388,7 +430,33 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		300000000000000000000050 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				300000000000000000000030 /* SmokeTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXContainerItemProxy section */
+		300000000000000000000091 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 200000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 200000000000000000000060;
+			remoteInfo = "KonomiTV-Viewer";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		300000000000000000000090 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 200000000000000000000060 /* KonomiTV-Viewer */;
+			targetProxy = 300000000000000000000091 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		200000000000000000000080 /* Debug */ = {
@@ -485,6 +553,46 @@
 			};
 			name = Release;
 		};
+		300000000000000000000080 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = jp.tatsuya0902.konomitv.viewer.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "KonomiTV-Viewer";
+			};
+			name = Debug;
+		};
+		300000000000000000000081 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = jp.tatsuya0902.konomitv.viewer.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "KonomiTV-Viewer";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -502,6 +610,15 @@
 			buildConfigurations = (
 				200000000000000000000082 /* Debug */,
 				200000000000000000000083 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		300000000000000000000070 /* Build configuration list for PBXNativeTarget "KonomiTV-ViewerUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				300000000000000000000080 /* Debug */,
+				300000000000000000000081 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

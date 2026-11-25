@@ -904,9 +904,17 @@ final class PlayerViewController: UIViewController {
         // 字幕の重ね物は映像の枠の中に入れる (映像の上・コメントより下)。
         // 全画面でも枠の中のままで、枠が広がるのに合わせて広がる。
         captionOverlayView.translatesAutoresizingMaskIntoConstraints = false
+        // 自動テストから重ね物を見つけるための目印 (見た目・動きは変えない)。
+        captionOverlayView.isAccessibilityElement = true
+        captionOverlayView.accessibilityIdentifier = "player.captionOverlay"
+        captionOverlayView.accessibilityLabel = "字幕表示"
         surfaceView.addSubview(captionOverlayView)
         // コメントの重ね物は映像の上・操作帯の下に置く (操作は受けない)。
         commentOverlay.translatesAutoresizingMaskIntoConstraints = false
+        // 自動テストから重ね物を見つけるための目印 (見た目・動きは変えない)。
+        commentOverlay.isAccessibilityElement = true
+        commentOverlay.accessibilityIdentifier = "player.commentOverlay"
+        commentOverlay.accessibilityLabel = "コメント表示"
         videoContainer.addSubview(commentOverlay)
         // 映像をタップしたら操作帯を出し入れする (Web 版と同じ作り)。
         let tap = UITapGestureRecognizer(target: self, action: #selector(toggleControls))
@@ -975,6 +983,8 @@ final class PlayerViewController: UIViewController {
         bandView.sections = program.cmSections
 
         currentTimeLabel.text = "0:00"
+        // 自動テストから再生位置を見つけるための目印 (見た目・動きは変えない)。
+        currentTimeLabel.accessibilityIdentifier = "player.currentTime"
         durationLabel.text = TimeFormat.hms(program.duration)
         for label in [currentTimeLabel, durationLabel] {
             label.textColor = AppPalette.text
