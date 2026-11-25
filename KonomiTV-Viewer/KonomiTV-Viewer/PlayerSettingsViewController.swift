@@ -1,6 +1,6 @@
 import UIKit
 
-/// 映像に重ねる操作。iOS 26 の標準ボタンの大きな塗りを避け、44pt の当たりを持たせる。
+/// 映像に重ねる操作。iOS 26 の標準ボタンの大きな塗りを避け、高さ44pt の操作領域を持たせる。
 func styleVideoOverlayButton(_ button: UIButton, symbol: String, title: String, adaptive: Bool = false) {
     button.configuration = nil
     button.setTitle(nil, for: .normal)
