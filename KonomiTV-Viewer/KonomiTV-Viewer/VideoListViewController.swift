@@ -120,9 +120,9 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     /// リンクに相当)。見出し行の右端に置く。拡張版かつ管理者で
     /// ログインしているときだけ出す。
     private let trashLinkButton = RippleButton()
-    /// ログイン中の利用者が管理者かどうか。ゴミ箱の入口と、長押し
-    /// メニューの「ゴミ箱に移動する」の出し分けに使う (Web 版と同じく、
-    /// ゴミ箱まわりは管理者だけに出す)。
+    /// ログイン中の利用者が管理者かどうか。ゴミ箱の入口と、カードの
+    /// 「⋮」ボタンのメニューの「ゴミ箱に移動する」の出し分けに使う
+    /// (Web 版と同じく、ゴミ箱まわりは管理者だけに出す)。
     private var isAdminUser = false
     /// ゴミ箱の入口を出すかどうか。
     private var showsTrashLink: Bool { AppEdition.trashEnabled && isAdminUser }
@@ -1490,6 +1490,11 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         cell.configureSelection(
             active: isSelectionMode,
             selected: selectedProgramsByID[program.id] != nil)
+        // 「⋮」ボタン。選択中は出さない (以前の長押しメニューと
+        // 同じく、選択中はタップでの付け外しに一本化する)。
+        cell.configureCardMenu(isSelectionMode ? nil : { [weak self] in
+            self?.cardMenu(for: program)
+        })
         loadThumbnail(for: program, into: cell)
         // 局ロゴはキャッシュにあればその場で出し、無ければ行ごとに後から読み込む
         // (一覧の表示をロゴの取得で待たせない)。
@@ -1845,64 +1850,63 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         updateBulkBar()
     }
 
-    /// 長押しメニュー。「視聴済みにする」「マイリストに追加／から削除」と
-    /// 「保護する／外す」を出す (保護の項目は拡張版だけ)。「ゴミ箱に移動する」は
-    /// Web 版のカードのメニューと同じく、拡張版かつ管理者のときだけ出し、
-    /// 録画中と保護中は押せなくする。マイリストは Web 版ではカード右上の
-    /// 「＋」ボタンだが、アプリのカードにはボタンの置き場が無いため、
-    /// このメニューに寄せた (両版に出す)。
-    func tableView(
-        _ tableView: UITableView,
-        contextMenuConfigurationForRowAt indexPath: IndexPath,
-        point: CGPoint
-    ) -> UIContextMenuConfiguration? {
-        // 選択中は長押しメニューを出さない (タップでの付け外しに一本化する)。
-        guard !isSelectionMode else { return nil }
-        guard programs.indices.contains(indexPath.row) else { return nil }
-        let program = programs[indexPath.row]
-        let isAdmin = isAdminUser
-        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
-            var actions: [UIMenuElement] = []
-            if !program.isRecording, (program.watched_ratio ?? 0) < 1 {
-                actions.append(UIAction(
-                    title: "視聴済みにする",
-                    image: UIImage(systemName: "checkmark.circle")
-                ) { _ in
-                    self?.markWatched(program: program)
-                })
-            }
-            let inMylist = SyncedSettingsStore.shared.isInMylist(videoID: program.id)
+    /// カードの「⋮」ボタンのメニュー。先頭に「録画ファイル情報を
+    /// 表示」(Web 版のカードのメニューと同じ情報画面を開く) を置き、
+    /// 「視聴済みにする」「マイリストに追加／から削除」と
+    /// 「保護する／外す」を出す (保護の項目は拡張版だけ)。
+    /// 「ゴミ箱に移動する」は Web 版のカードのメニューと同じく、
+    /// 拡張版かつ管理者のときだけ出し、録画中と保護中は押せなくする。
+    /// マイリストは Web 版ではカード右上の「＋」ボタンだが、アプリの
+    /// カードには「＋」が無いため、このメニューに寄せた (両版に出す)。
+    /// 中身はボタンが押されるたびに作り直すので、その時点の状態
+    /// (マイリストに入っているか、管理者かどうか) がそのまま出る。
+    private func cardMenu(for program: RecordedProgram) -> UIMenu {
+        var actions: [UIMenuElement] = []
+        actions.append(UIAction(
+            title: "録画ファイル情報を表示",
+            image: UIImage(systemName: "info.circle")
+        ) { [weak self] _ in
+            self?.presentRecordedFileInfo(program: program)
+        })
+        if !program.isRecording, (program.watched_ratio ?? 0) < 1 {
             actions.append(UIAction(
-                title: inMylist ? "マイリストから削除" : "マイリストに追加",
-                image: UIImage(systemName: inMylist ? "bookmark.fill" : "bookmark")
-            ) { _ in
-                self?.toggleMylist(program: program)
+                title: "視聴済みにする",
+                image: UIImage(systemName: "checkmark.circle")
+            ) { [weak self] _ in
+                self?.markWatched(program: program)
             })
-            if AppEdition.protectionEnabled {
-                let protected = program.isProtected
-                actions.append(UIAction(
-                    title: protected ? "保護を外す" : "保護する",
-                    image: UIImage(systemName: protected ? "lock.open" : "lock")
-                ) { _ in
-                    self?.toggleProtection(program: program)
-                })
-            }
-            if AppEdition.trashEnabled, isAdmin {
-                let trashAction = UIAction(
-                    title: "ゴミ箱に移動する",
-                    image: UIImage(systemName: "archivebox")
-                ) { _ in
-                    self?.moveToTrash(program: program)
-                }
-                // 録画中と保護中は Web 版と同じく押せなくする
-                // (サーバー側でも録画中は 409 で拒否される)。
-                if program.isRecording || program.isProtected {
-                    trashAction.attributes.insert(.disabled)
-                }
-                actions.append(trashAction)
-            }
-            return UIMenu(children: actions)
         }
+        let inMylist = SyncedSettingsStore.shared.isInMylist(videoID: program.id)
+        actions.append(UIAction(
+            title: inMylist ? "マイリストから削除" : "マイリストに追加",
+            image: UIImage(systemName: inMylist ? "bookmark.fill" : "bookmark")
+        ) { [weak self] _ in
+            self?.toggleMylist(program: program)
+        })
+        if AppEdition.protectionEnabled {
+            let protected = program.isProtected
+            actions.append(UIAction(
+                title: protected ? "保護を外す" : "保護する",
+                image: UIImage(systemName: protected ? "lock.open" : "lock")
+            ) { [weak self] _ in
+                self?.toggleProtection(program: program)
+            })
+        }
+        if AppEdition.trashEnabled, isAdminUser {
+            let trashAction = UIAction(
+                title: "ゴミ箱に移動する",
+                image: UIImage(systemName: "archivebox")
+            ) { [weak self] _ in
+                self?.moveToTrash(program: program)
+            }
+            // 録画中と保護中は Web 版と同じく押せなくする
+            // (サーバー側でも録画中は 409 で拒否される)。
+            if program.isRecording || program.isProtected {
+                trashAction.attributes.insert(.disabled)
+            }
+            actions.append(trashAction)
+        }
+        return UIMenu(children: actions)
     }
 
     // MARK: - 番組への操作
@@ -2435,6 +2439,18 @@ final class VideoCell: UITableViewCell {
     /// 押したときの波紋 (共通部品)。本家 Web 版のカードと同じく、
     /// カード全体を対象に、触れた位置から広げる。
     private let ripple = RippleSurface()
+    /// カードの右側に出す「⋮」ボタン。タップすると、その番組への
+    /// 操作のメニューが滑らかに出る (以前の長押しメニューの代わり。
+    /// 長押しは、カードが拡大するアニメーションが付くため廃止した)。
+    private let menuButton = UIButton(type: .system)
+    /// メニューの中身の作り手。画面側がセルの設定時に渡す。
+    /// ボタンが押されるたびに作り直すため、その時点の状態
+    /// (マイリストに入っているかなど) がそのまま出る。
+    /// 渡されていない画面 (ゴミ箱など) ではボタン自体を出さない。
+    private var cardMenuProvider: (() -> UIMenu?)?
+    /// 本文の右端の制約。「⋮」ボタンを出すときは、本文がボタンの
+    /// 下に隠れないよう、右端をボタンの分だけ内側へ寄せる。
+    private var textStackTrailingConstraint: NSLayoutConstraint?
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -2508,6 +2524,21 @@ final class VideoCell: UITableViewCell {
         configureUnwatchedBadge()
         progressView.isHidden = true
         progressView.translatesAutoresizingMaskIntoConstraints = false
+
+        // 「⋮」ボタン。タップでメニューを開く (プルダウンの標準の
+        // 出方で、拡大アニメーションは付かない)。中身は押される
+        // たびに作り手から取り直す形にしてある。
+        menuButton.setImage(Self.verticalEllipsisImage, for: .normal)
+        menuButton.tintColor = AppPalette.metaText
+        menuButton.accessibilityLabel = "番組の操作"
+        menuButton.showsMenuAsPrimaryAction = true
+        menuButton.menu = UIMenu(children: [
+            UIDeferredMenuElement.uncached { [weak self] completion in
+                completion(self?.cardMenuProvider?()?.children ?? [])
+            },
+        ])
+        menuButton.isHidden = true
+        menuButton.translatesAutoresizingMaskIntoConstraints = false
 
         // 局ロゴと局名の間隔は Web 版どおり (アイコン右 4px + 局名左 4px = 8px)。
         // 容量はこの行の右端に置く (局名が伸びて右端まで届く並び)。
@@ -2604,6 +2635,9 @@ final class VideoCell: UITableViewCell {
 
         // 波紋の入れ物はカードの一番上に重ねる (操作は受けない)。
         cardView.addSubview(ripple.container)
+        // 「⋮」ボタンは波紋よりも上に置く (波紋の入れ物は操作を
+        // 受けないため、どちらでもタップは届く)。
+        cardView.addSubview(menuButton)
 
         // カード間の余白はテレビ一覧 (スマホ縦) の行間 10px、
         // 画面の左右は同コンテナの左右パディング 8px。
@@ -2614,6 +2648,10 @@ final class VideoCell: UITableViewCell {
         thumbnailLeadingConstraint = thumbnailView.leadingAnchor.constraint(
             equalTo: cardView.leadingAnchor, constant: Self.cardContentLeading)
         thumbnailLeadingConstraint?.isActive = true
+        // 本文の右端は、「⋮」ボタンを出すときに付け替えるので別に持つ。
+        textStackTrailingConstraint = textStack.trailingAnchor.constraint(
+            equalTo: cardView.trailingAnchor, constant: -9)
+        textStackTrailingConstraint?.isActive = true
         NSLayoutConstraint.activate([
             cardView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 10),
             cardView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
@@ -2633,8 +2671,11 @@ final class VideoCell: UITableViewCell {
             logoView.widthAnchor.constraint(equalToConstant: 24),
             logoView.heightAnchor.constraint(equalToConstant: 14),
             textStack.leadingAnchor.constraint(equalTo: thumbnailView.trailingAnchor, constant: 12),
-            textStack.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -9),
             textStack.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 8),
+            menuButton.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -2),
+            menuButton.centerYAnchor.constraint(equalTo: cardView.centerYAnchor),
+            menuButton.widthAnchor.constraint(equalToConstant: 36),
+            menuButton.heightAnchor.constraint(equalToConstant: 48),
             textStack.bottomAnchor.constraint(equalTo: cardView.bottomAnchor, constant: -8),
             statusBadge.topAnchor.constraint(equalTo: thumbnailView.topAnchor, constant: 4),
             statusBadge.trailingAnchor.constraint(equalTo: thumbnailView.trailingAnchor, constant: -4),
@@ -2779,6 +2820,7 @@ final class VideoCell: UITableViewCell {
         actionRow.isHidden = true
         onTrashRestore = nil
         onTrashDelete = nil
+        configureCardMenu(nil)
         selectionMarkView.isHidden = true
         selectionCheckView.isHidden = true
         thumbnailLeadingConstraint?.constant = Self.cardContentLeading
@@ -2801,6 +2843,34 @@ final class VideoCell: UITableViewCell {
             ? Self.cardContentLeading + Self.selectionSlotWidth
             : Self.cardContentLeading
     }
+
+    /// 「⋮」ボタンと、そのメニューの中身の作り手を設定する。
+    /// 作り手が nil のときはボタンを出さない (ゴミ箱の画面や、
+    /// 録画一覧の選択中)。ボタンを出すときは、本文がボタンの下に
+    /// 隠れないよう、本文の右端をボタンの分だけ内側へ寄せる。
+    func configureCardMenu(_ provider: (() -> UIMenu?)?) {
+        cardMenuProvider = provider
+        menuButton.isHidden = provider == nil
+        textStackTrailingConstraint?.constant = provider == nil ? -9 : -40
+    }
+
+    /// 縦向きの三点の絵。SF Symbol の「ellipsis」は横向きしか
+    /// 無いため、90度回して縦向きにしたものを使う。
+    private static let verticalEllipsisImage: UIImage? = {
+        let configuration = UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold)
+        guard let base = UIImage(systemName: "ellipsis", withConfiguration: configuration)
+        else { return nil }
+        let rotatedSize = CGSize(width: base.size.height, height: base.size.width)
+        let renderer = UIGraphicsImageRenderer(size: rotatedSize)
+        return renderer.image { _ in
+            guard let context = UIGraphicsGetCurrentContext() else { return }
+            context.translateBy(x: rotatedSize.width / 2, y: rotatedSize.height / 2)
+            context.rotate(by: .pi / 2)
+            base.draw(in: CGRect(
+                x: -base.size.width / 2, y: -base.size.height / 2,
+                width: base.size.width, height: base.size.height))
+        }.withRenderingMode(.alwaysTemplate)
+    }()
 
     /// ゴミ箱の画面用の追加表示を設定する (通常の一覧では呼ばない)。
     /// notice は「あと○日で完全に削除されます」の文。showsActions が

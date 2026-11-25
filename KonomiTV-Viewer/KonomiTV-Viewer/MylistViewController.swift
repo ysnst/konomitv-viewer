@@ -12,9 +12,9 @@ import UIKit
 ///   (Web 版と同じ取り方)。
 /// - 並びは録画一覧と同じカード (VideoCell) で、30件ごとのページ分け、
 ///   ページ送りは一覧の上と下の両方に置く (録画一覧・視聴履歴と同じ)。
-/// - カードを押すと再生画面へ移る。長押しメニューに「マイリストから削除」を
-///   置く。録画一覧と同じ「視聴済みにする」と「保護する／外す」(拡張版だけ)
-///   も一緒に出す。
+/// - カードを押すと再生画面へ移る。カードの「⋮」ボタンのメニューに
+///   「マイリストから削除」を置く。録画一覧と同じ「録画ファイル情報を
+///   表示」「視聴済みにする」「保護する／外す」(拡張版だけ) も一緒に出す。
 ///
 /// マイリストは、ログイン中かつ「設定をデバイス間で同期する」がオンのとき
 /// だけ働く (視聴履歴と揃えた扱い)。その条件を満たさないときは一覧の代わりに
@@ -439,7 +439,7 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
     /// アプリの入り口の形を合わせたもの)。
     private static let emptyText =
         "あとで観たい番組をマイリストに保存できます。\n"
-        + "録画番組の長押しメニューや再生画面のボタンから、番組をマイリストに追加できます。"
+        + "録画番組のカードの「⋮」ボタンや再生画面のボタンから、番組をマイリストに追加できます。"
 
     /// 同期が効いていないときの案内。状態 (未ログイン／同期オフ) で出し分ける。
     private static var guidanceText: String {
@@ -461,6 +461,10 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
         let cell = tableView.dequeueReusableCell(withIdentifier: VideoCell.reuseID, for: indexPath) as! VideoCell
         let program = programs[indexPath.row]
         cell.configure(with: program)
+        // 「⋮」ボタン (録画一覧と同じ出し方)。
+        cell.configureCardMenu { [weak self] in
+            self?.cardMenu(for: program)
+        }
         loadThumbnail(for: program, into: cell)
         if let channelID = program.channel?.id {
             if let cached = logoCache.object(forKey: channelID as NSString) {
@@ -570,43 +574,44 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
         navigationController?.pushViewController(player, animated: true)
     }
 
-    /// 長押しメニュー。録画一覧と同じ「視聴済みにする」「保護する／外す」
-    /// (保護の項目は拡張版だけ) に、この画面固有の「マイリストから削除」を足す。
-    func tableView(
-        _ tableView: UITableView,
-        contextMenuConfigurationForRowAt indexPath: IndexPath,
-        point: CGPoint
-    ) -> UIContextMenuConfiguration? {
-        guard programs.indices.contains(indexPath.row) else { return nil }
-        let program = programs[indexPath.row]
-        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
-            var actions: [UIMenuElement] = []
-            if !program.isRecording, (program.watched_ratio ?? 0) < 1 {
-                actions.append(UIAction(
-                    title: "視聴済みにする",
-                    image: UIImage(systemName: "checkmark.circle")
-                ) { _ in
-                    self?.markWatched(program: program)
-                })
-            }
-            if AppEdition.protectionEnabled {
-                let protected = program.isProtected
-                actions.append(UIAction(
-                    title: protected ? "保護を外す" : "保護する",
-                    image: UIImage(systemName: protected ? "lock.open" : "lock")
-                ) { _ in
-                    self?.toggleProtection(program: program)
-                })
-            }
+    /// カードの「⋮」ボタンのメニュー。先頭の「録画ファイル情報を
+    /// 表示」と、録画一覧と同じ「視聴済みにする」「保護する／外す」
+    /// (保護の項目は拡張版だけ) に、この画面固有の
+    /// 「マイリストから削除」を足す。
+    /// 中身はボタンが押されるたびに作り直す。
+    private func cardMenu(for program: RecordedProgram) -> UIMenu {
+        var actions: [UIMenuElement] = []
+        actions.append(UIAction(
+            title: "録画ファイル情報を表示",
+            image: UIImage(systemName: "info.circle")
+        ) { [weak self] _ in
+            self?.presentRecordedFileInfo(program: program)
+        })
+        if !program.isRecording, (program.watched_ratio ?? 0) < 1 {
             actions.append(UIAction(
-                title: "マイリストから削除",
-                image: UIImage(systemName: "bookmark.slash"),
-                attributes: .destructive
-            ) { _ in
-                self?.removeFromMylist(program: program)
+                title: "視聴済みにする",
+                image: UIImage(systemName: "checkmark.circle")
+            ) { [weak self] _ in
+                self?.markWatched(program: program)
             })
-            return UIMenu(children: actions)
         }
+        if AppEdition.protectionEnabled {
+            let protected = program.isProtected
+            actions.append(UIAction(
+                title: protected ? "保護を外す" : "保護する",
+                image: UIImage(systemName: protected ? "lock.open" : "lock")
+            ) { [weak self] _ in
+                self?.toggleProtection(program: program)
+            })
+        }
+        actions.append(UIAction(
+            title: "マイリストから削除",
+            image: UIImage(systemName: "bookmark.slash"),
+            attributes: .destructive
+        ) { [weak self] _ in
+            self?.removeFromMylist(program: program)
+        })
+        return UIMenu(children: actions)
     }
 
     // MARK: - 番組への操作
