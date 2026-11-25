@@ -82,6 +82,7 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
     private var total = 0
     private var currentPage = 1
     private var isLoading = false
+    private var loadContext: WatchedHistoryStore.Context?
 
     private let thumbnailCache = NSCache<NSNumber, UIImage>()
     /// サムネイルを取得中の番組 ID と、失敗して取り直し待ちの番組 ID。
@@ -287,9 +288,9 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
         // (視聴履歴の画面と同じ扱い)。
         navigationController?.setNavigationBarHidden(true, animated: animated)
         navigationController?.interactivePopGestureRecognizer?.isEnabled = true
-        // 追加・削除が他の画面や Web 版であった場合に追いつくため、
-        // 開くたびに1ページ目から読み直す。
-        reloadMylist(page: 1)
+        // 新規画面は既定の1ページ目。タブ・再生からの復帰では同じページと位置を保つ。
+        let page = loadContext == WatchedHistoryStore.Context.current ? currentPage : 1
+        reloadMylist(page: page)
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -335,6 +336,8 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
         }
         failedLogoIDs.removeAll()
         isLoading = true
+        let expectedContext = WatchedHistoryStore.Context.current
+        loadContext = expectedContext
         updatePagination()
         Task { [weak self] in
             guard let self else { return }
@@ -342,6 +345,11 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
             // (取り込みに失敗しても、手元の値で表示は続ける)。
             if refreshSettings {
                 _ = await SyncedSettingsStore.shared.refreshFromServer()
+            }
+            guard expectedContext == WatchedHistoryStore.Context.current else {
+                self.isLoading = false
+                self.reloadMylist(page: 1)
+                return
             }
             let entries = SyncedSettingsStore.shared.current.mylist
                 .filter { $0.isRecordedProgram }
@@ -375,27 +383,42 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
     }
 
     /// 並べた ID のまま、指定ページの番組を取る。
-    private func loadPage(_ page: Int) async {
+    private func loadPage(_ page: Int, scrollToTop: Bool = false) async {
+        let expectedContext = loadContext
+        let idsAtStart = mylistIDs
         do {
             var response = try await APIClient.shared.fetchVideos(
-                page: page, order: sortOrder.apiOrder, ids: mylistIDs)
+                page: page, order: sortOrder.apiOrder, ids: idsAtStart)
             // 指定ページが総ページ数を超えていたら、最後のページを取り直す
             // (登録を消してページが無くなっている場合。録画一覧と同じ)。
             let lastPage = max(1, Int(ceil(Double(response.total) / Double(Self.pageSize))))
             if page > lastPage {
                 response = try await APIClient.shared.fetchVideos(
-                    page: lastPage, order: sortOrder.apiOrder, ids: mylistIDs)
-                currentPage = lastPage
-            } else {
-                currentPage = page
+                    page: lastPage, order: sortOrder.apiOrder, ids: idsAtStart)
             }
+            guard expectedContext == WatchedHistoryStore.Context.current else {
+                isLoading = false
+                reloadMylist(page: 1)
+                return
+            }
+            currentPage = min(page, lastPage)
             total = response.total
             programs = response.recorded_programs
             // 登録はあるのに録画自体が残っていない場合は、空の表示にする。
             statusLabel.text = programs.isEmpty ? Self.emptyText : nil
+            let oldOffset = tableView.contentOffset.y
             tableView.reloadData()
-            tableView.setContentOffset(.zero, animated: false)
+            updatePagination()
+            tableView.layoutIfNeeded()
+            let minimum = -tableView.adjustedContentInset.top
+            let maximum = max(minimum, tableView.contentSize.height - tableView.bounds.height + tableView.adjustedContentInset.bottom)
+            tableView.setContentOffset(CGPoint(x: 0, y: scrollToTop ? minimum : min(maximum, max(minimum, oldOffset))), animated: false)
         } catch {
+            guard expectedContext == WatchedHistoryStore.Context.current else {
+                isLoading = false
+                reloadMylist(page: 1)
+                return
+            }
             if programs.isEmpty {
                 statusLabel.text = "読み込めませんでした。\n接続先とネットワークを確認してください。"
             }
@@ -414,11 +437,15 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
     /// 取得済みの並びでページだけ取り直す。
     private func goToPage(_ page: Int) {
         guard page != currentPage, !isLoading, !mylistIDs.isEmpty else { return }
+        guard loadContext == WatchedHistoryStore.Context.current else {
+            reloadMylist(page: 1)
+            return
+        }
         isLoading = true
         updatePagination()
         Task { [weak self] in
             guard let self else { return }
-            await self.loadPage(page)
+            await self.loadPage(page, scrollToTop: SettingsStore.shared.scrollToTopOnPageChange)
         }
     }
 

@@ -439,7 +439,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         selectButton.translatesAutoresizingMaskIntoConstraints = false
         selectButton.isHidden = true
         selectFilterRowView.addSubview(selectButton)
-        // 前回保存した表示状態 (ページ・並び順・両フィルタ) を復元する。
+        // 恒久的な並び順だけを復元する。ページ・検索・一時フィルタは新規画面へ持ち込まない。
         restoreViewState()
         if isSearchBarOpen {
             // ホームから検索した場合、前回一覧のフィルタやページを持ち込まない。
@@ -979,18 +979,24 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     /// ページ送りから指定されたページへ移る。
     private func goToPage(_ page: Int) {
         guard page != currentPage, !isLoading else { return }
+        // 旧ページの復元タイマーが、新ページの位置を後から上書きしないよう終了する。
+        scrollRestoreTimer?.invalidate()
+        scrollRestoreTimer = nil
+        pendingScrollRestore = nil
+        isScrollRestoring = false
+        let moveToTop = SettingsStore.shared.scrollToTopOnPageChange
         if isFilterActive {
             // フィルタ中は取得済みの結果から切り出すだけなので、通信はしない。
             currentPage = page
-            showFilteredPage()
+            showFilteredPage(scrollToTop: moveToTop)
             saveViewState()
         } else {
-            loadPage(page)
+            loadPage(page, scrollToTop: moveToTop)
         }
     }
 
     /// 指定ページを読み込む (フィルタ中は全件取得して絞り込んでから切り出す)。
-    private func loadPage(_ page: Int) {
+    private func loadPage(_ page: Int, scrollToTop: Bool = false) {
         guard !isLoading else { return }
         guard SettingsStore.shared.isConfigured else {
             statusLabel.text = "設定タブで接続先 URL を設定してください。"
@@ -1006,21 +1012,29 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         // 一覧が新しい接続先のものとして扱われてしまうため。
         let baseURLAtStart = SettingsStore.shared.baseURL?.absoluteString
         let queryAtStart = searchText
+        let contextAtStart = WatchedHistoryStore.Context.current
         if isFilterActive {
-            loadAllForFilter(targetPage: page, baseURLAtStart: baseURLAtStart)
+            loadAllForFilter(targetPage: page, baseURLAtStart: baseURLAtStart, scrollToTop: scrollToTop)
         } else {
             Task { [weak self] in
                 guard let self else { return }
                 do {
                     var response = try await APIClient.shared.fetchVideos(page: page, order: self.sortOrder, searchQuery: queryAtStart)
+                    guard contextAtStart == WatchedHistoryStore.Context.current else {
+                        self.isLoading = false
+                        self.refresh()
+                        return
+                    }
                     // 復元したページが総ページ数を超えていたら、最後のページを取り直す
                     // (録画が減ってページが無くなっている場合)。
                     let lastPage = max(1, Int(ceil(Double(response.total) / Double(Self.pageSize))))
                     if page > lastPage {
                         response = try await APIClient.shared.fetchVideos(page: lastPage, order: self.sortOrder, searchQuery: queryAtStart)
-                        self.currentPage = lastPage
-                    } else {
-                        self.currentPage = page
+                    }
+                    guard contextAtStart == WatchedHistoryStore.Context.current else {
+                        self.isLoading = false
+                        self.refresh()
+                        return
                     }
                     guard self.searchText == queryAtStart else {
                         self.isLoading = false
@@ -1029,6 +1043,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                         self.applySearchChange()
                         return
                     }
+                    self.currentPage = min(page, lastPage)
                     self.loadedBaseURLString = baseURLAtStart
                     self.loadedSearchQuery = queryAtStart
                     self.total = response.total
@@ -1036,10 +1051,15 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                     // サーバー側のページ分けで読んだので、全件の控えは使えない。
                     self.hasCollectedAllPrograms = false
                     self.allCollectedPrograms = []
-                    self.applyLoadedPage()
+                    self.applyLoadedPage(scrollToTop: scrollToTop)
                     self.saveViewState()
                     self.restoreScrollPositionIfNeeded()
                 } catch {
+                    guard contextAtStart == WatchedHistoryStore.Context.current else {
+                        self.isLoading = false
+                        self.refresh()
+                        return
+                    }
                     if self.programs.isEmpty {
                         self.statusLabel.text = "読み込めませんでした。\n接続先とネットワークを確認してください。\n(\(error.localizedDescription))"
                     }
@@ -1061,8 +1081,9 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     /// 既存の改造サーバー向けフィルタは最大50ページまで取得する。
     /// 検索中は検索結果のページだけを対象とし、通常検索ではこの経路を使わない。
     /// 絞り込みは端末側で、並びはサーバーの並びをそのまま保つ (Web 版と同じ)。
-    private func loadAllForFilter(targetPage: Int, baseURLAtStart: String?) {
+    private func loadAllForFilter(targetPage: Int, baseURLAtStart: String?, scrollToTop: Bool) {
         let queryAtStart = searchText
+        let contextAtStart = WatchedHistoryStore.Context.current
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -1071,11 +1092,16 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                 var allTotal = Int.max
                 while collected.count < allTotal, page <= 50 {
                     let response = try await APIClient.shared.fetchVideos(page: page, order: self.sortOrder, searchQuery: queryAtStart)
-                    guard self.searchText == queryAtStart else { break }
+                    guard self.searchText == queryAtStart, contextAtStart == WatchedHistoryStore.Context.current else { break }
                     allTotal = response.total
                     collected += response.recorded_programs
                     if response.recorded_programs.isEmpty { break }
                     page += 1
+                }
+                guard contextAtStart == WatchedHistoryStore.Context.current else {
+                    self.isLoading = false
+                    self.refresh()
+                    return
                 }
                 guard self.searchText == queryAtStart else {
                     self.isLoading = false
@@ -1095,10 +1121,15 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                 self.total = self.filteredPrograms.count
                 // 復元したページが絞り込み後のページ数を超えていたら、最後のページにする。
                 self.currentPage = min(max(targetPage, 1), self.totalPages)
-                self.showFilteredPage()
+                self.showFilteredPage(scrollToTop: scrollToTop)
                 self.saveViewState()
                 self.restoreScrollPositionIfNeeded()
             } catch {
+                guard contextAtStart == WatchedHistoryStore.Context.current else {
+                    self.isLoading = false
+                    self.refresh()
+                    return
+                }
                 if self.programs.isEmpty {
                     self.statusLabel.text = "読み込めませんでした。\n接続先とネットワークを確認してください。\n(\(error.localizedDescription))"
                 }
@@ -1117,18 +1148,19 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     }
 
     /// 絞り込み済みの結果から、いまのページの分を切り出して表示する。
-    private func showFilteredPage() {
+    private func showFilteredPage(scrollToTop: Bool = false) {
         let start = (currentPage - 1) * Self.pageSize
         if start < filteredPrograms.count {
             programs = Array(filteredPrograms[start ..< min(start + Self.pageSize, filteredPrograms.count)])
         } else {
             programs = []
         }
-        applyLoadedPage()
+        applyLoadedPage(scrollToTop: scrollToTop)
     }
 
-    /// 読み込み後の共通の反映。一覧を先頭に戻し、件数表示を更新する。
-    private func applyLoadedPage() {
+    /// データ取得成功後だけ位置を決める。明示ページ送り以外は現在位置を維持する。
+    private func applyLoadedPage(scrollToTop: Bool = false) {
+        let previousOffset = tableView.contentOffset.y
         if programs.isEmpty {
             // 検索中で1件も無いときは、Web 版の検索結果と同じ文面にする。
             statusLabel.text = searchText.isEmpty
@@ -1142,9 +1174,12 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         // 先頭まわりを組み直す。
         refreshHeadContainer()
         tableView.reloadData()
-        // ページの切り替えでは一覧の先頭に戻る。
-        tableView.setContentOffset(.zero, animated: false)
         updatePagination()
+        // 可変行高とヘッダーの更新を確定させてから移動する。失敗時はこの経路へ入らない。
+        tableView.layoutIfNeeded()
+        let minimum = -tableView.adjustedContentInset.top
+        let maximum = max(minimum, tableView.contentSize.height - tableView.bounds.height + tableView.adjustedContentInset.bottom)
+        tableView.setContentOffset(CGPoint(x: 0, y: scrollToTop ? minimum : min(maximum, max(minimum, previousOffset))), animated: false)
     }
 
     /// 総ページ数 (最低1)。
@@ -1388,49 +1423,16 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     }
 
     private func saveViewState(page: Int) {
-        // ホームの一時的な検索で、通常一覧のページ・フィルタ・スクロール設定を潰さない。
-        guard persistsViewState, searchText.isEmpty else { return }
-        var state: [String: Any] = [
-            "page": page,
-            "order": sortOrder,
-            "unwatched_only": unwatchedOnly,
-            "protected_only": protectedOnly,
-        ]
-        // スクロール位置は、そのページで取れた目印があるときだけ
-        // 一緒に保存する (別のページの目印を持ち越さないため)。
-        if let markerID = scrollMarkerProgramID, scrollMarkerPage == page {
-            state["scroll_program_id"] = markerID
-            state["scroll_offset"] = Double(scrollMarkerOffset)
-            state["scroll_top"] = Double(scrollFallbackTop)
-        }
-        UserDefaults.standard.set(state, forKey: Self.viewStateKey)
+        guard persistsViewState else { return }
+        // サーバー設定と分離し、通常一覧では恒久的な並び順だけを保存する。
+        UserDefaults.standard.set(["order": sortOrder], forKey: Self.viewStateKey)
     }
 
-    /// 保存しておいた表示状態を読み戻す。最初の読み込みは、保存ページから始める。
-    /// スクロール位置 (目印の録画とずれ、ピクセルの控え) も読み戻し、
-    /// 最初の読み込みの後に条件が一致すれば戻す (Web 版と同じ)。
-    /// アプリは再生画面から戻っても一覧を作り直さないため、戻す場面は
-    /// 起動し直したときと読み直したときになる。
+    /// 新規遷移と復帰を分ける。復帰は同じインスタンスの状態をそのまま使用する。
     private func restoreViewState() {
         guard let state = UserDefaults.standard.dictionary(forKey: Self.viewStateKey) else { return }
         if let order = state["order"] as? String, order == "desc" || order == "asc" {
             sortOrder = order
-        }
-        unwatchedOnly = state["unwatched_only"] as? Bool ?? false
-        // 録画の保護がオフでは、保護中のみフィルタは無いものとして扱う。
-        protectedOnly = AppEdition.protectionEnabled && (state["protected_only"] as? Bool ?? false)
-        if let page = state["page"] as? Int, page > 1 {
-            pendingRestorePage = page
-        }
-        if let markerID = state["scroll_program_id"] as? Int {
-            pendingScrollRestore = (
-                programID: markerID,
-                offset: CGFloat((state["scroll_offset"] as? NSNumber)?.doubleValue ?? 0),
-                fallbackTop: CGFloat((state["scroll_top"] as? NSNumber)?.doubleValue ?? 0),
-                page: state["page"] as? Int ?? 1,
-                order: sortOrder,
-                unwatchedOnly: unwatchedOnly,
-                protectedOnly: protectedOnly)
         }
     }
 

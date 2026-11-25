@@ -76,6 +76,7 @@ final class SettingsViewController: UIViewController {
     private let loginStatusLabel = UILabel()
     /// 「設定をデバイス間で同期する」のスイッチ (Web 版の sync_settings に相当)。
     private let syncSettingsSwitch = WebToggle()
+    private let pageScrollSwitch = WebToggle()
     /// 表示の大きさのプリセットを選ぶボタンと、数値を直接入れる欄。
     private let uiScaleButton = RippleButton()
     private let uiScaleField = UITextField()
@@ -560,6 +561,20 @@ final class SettingsViewController: UIViewController {
         ])
         uiScaleGroup.axis = .vertical
 
+        // ページ操作の好みは認証やサーバー同期と分け、この端末へ即時保存する。
+        pageScrollSwitch.isOn = SettingsStore.shared.scrollToTopOnPageChange
+        pageScrollSwitch.addTarget(self, action: #selector(pageScrollChanged), for: .valueChanged)
+        let pageScrollRow = UIStackView(arrangedSubviews: [
+            makeDescriptionLabel("オンではページを切り替えた後に一覧の先頭へ移動します。オフではスクロール位置を可能な範囲で保ちます。画面復帰や自動更新には適用しません。"),
+            pageScrollSwitch,
+        ])
+        pageScrollRow.axis = .horizontal
+        pageScrollRow.alignment = .center
+        pageScrollRow.spacing = 12
+        pageScrollSwitch.setContentCompressionResistancePriority(.required, for: .horizontal)
+        pageScrollSwitch.setContentHuggingPriority(.required, for: .horizontal)
+        let pageScrollGroup = itemGroup(title: "ページ切り替え時に先頭へ移動", field: pageScrollRow)
+
         // 拡張オプションの区分。録画の保護・ゴミ箱など、
         // konomitv-customizations を適用したサーバーが持つ受け口を使う
         // 機能の出し入れは、1つ下の階層の専用画面
@@ -658,6 +673,7 @@ final class SettingsViewController: UIViewController {
             urlParameterNameGroup,
             urlParameterValueGroup,
             uiScaleGroup,
+            pageScrollGroup,
             connectionDivider,
             usernameGroup,
             passwordGroup,
@@ -1035,6 +1051,10 @@ final class SettingsViewController: UIViewController {
     }
 
     /// 同期の切り替えはその場で保存する (「保存」ボタンは待たない)。
+    @objc private func pageScrollChanged() {
+        SettingsStore.shared.scrollToTopOnPageChange = pageScrollSwitch.isOn
+    }
+
     @objc private func syncSettingsChanged() {
         SettingsStore.shared.syncSettings = syncSettingsSwitch.isOn
     }

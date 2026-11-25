@@ -226,6 +226,7 @@ final class SettingsStore {
         // 表示の大きさ (Web 版うち改造の ui_scale に相当)。Web 版と同じく
         // 端末ごとに持つ設定で、デバイス間同期の対象にはしない。
         static let uiScale = "viewer_ui_scale"
+        static let scrollToTopOnPageChange = "viewer_scroll_to_top_on_page_change"
         // 拡張オプションの区分の解放状態と、機能ごとのトグル。
         // どれも端末ごとに持つ設定で、デバイス間同期の対象にはしない。
         // customizedFeaturesEnabled は旧まとめトグルの値で、個別トグルへ
@@ -958,6 +959,12 @@ final class SettingsStore {
             defaults.set(clamped, forKey: Key.uiScale)
             NotificationCenter.default.post(name: .uiScaleDidChange, object: nil)
         }
+    }
+
+    /// 明示的なページ送りだけに適用する端末設定。既存端末も未設定ならオン。
+    var scrollToTopOnPageChange: Bool {
+        get { (defaults.object(forKey: Key.scrollToTopOnPageChange) as? Bool) ?? true }
+        set { defaults.set(newValue, forKey: Key.scrollToTopOnPageChange) }
     }
 
     /// 表示の大きさの倍率 (100% で 1.0)。

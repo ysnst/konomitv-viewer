@@ -48,6 +48,7 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
     private var total = 0
     private var currentPage = 1
     private var isLoading = false
+    private var loadContext: WatchedHistoryStore.Context?
 
     private let thumbnailCache = NSCache<NSNumber, UIImage>()
     /// サムネイルを取得中の番組 ID と、失敗して取り直し待ちの番組 ID。
@@ -196,9 +197,10 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
         // (設定まわりの画面と同じ扱い)。
         navigationController?.setNavigationBarHidden(true, animated: animated)
         navigationController?.interactivePopGestureRecognizer?.isEnabled = true
-        // 再生画面から戻ったときは、見た番組が先頭に来るよう取り直す。
-        // 並びが最後に見た順なので、開くたびに1ページ目から読み直す。
-        reloadHistory(page: 1)
+        // 履歴の更新は取り込むが、復帰時は同じページとスクロール位置を保つ。
+        // ホームから新しく生成した画面は currentPage の既定値1から始まる。
+        let page = loadContext == WatchedHistoryStore.Context.current ? currentPage : 1
+        reloadHistory(page: page)
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -249,6 +251,7 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
         }
         failedLogoIDs.removeAll()
         isLoading = true
+        loadContext = WatchedHistoryStore.Context.current
         loadAuthGeneration = SettingsStore.shared.authGeneration
         loadSyncGeneration = SettingsStore.shared.syncGeneration
         updatePagination()
@@ -260,7 +263,8 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
                 // ときは失敗の表示を出さず、今の状態で読み直す
                 // (同期が切れていれば案内になり、別のログインなら
                 // その履歴が読み込まれる)。
-                if SettingsStore.shared.authGeneration != self.loadAuthGeneration
+                if self.loadContext != WatchedHistoryStore.Context.current
+                    || SettingsStore.shared.authGeneration != self.loadAuthGeneration
                     || SettingsStore.shared.syncGeneration != self.loadSyncGeneration
                     || !WatchedHistorySync.isEnabled {
                     self.isLoading = false
@@ -273,6 +277,10 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
                 }
                 self.statusLabel.text = "読み込めませんでした。\n接続先とネットワークを確認してください。"
                 self.finishLoadAndRunPendingReload()
+                return
+            }
+            guard self.loadContext == WatchedHistoryStore.Context.current else {
+                self.abandonLoad()
                 return
             }
             self.historyIDs = ids
@@ -308,6 +316,7 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
     /// 読み込み開始時点と同じで、履歴 ID の並びも差し替わっていないか)。
     private func isLoadValid(authGeneration: Int, syncGeneration: Int, ids: [Int]) -> Bool {
         WatchedHistorySync.isEnabled
+            && loadContext == WatchedHistoryStore.Context.current
             && SettingsStore.shared.authGeneration == authGeneration
             && SettingsStore.shared.syncGeneration == syncGeneration
             && historyIDs == ids
@@ -326,7 +335,7 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
     }
 
     /// 履歴の ID の並びのまま、指定ページの番組を取る。
-    private func loadPage(_ page: Int) async {
+    private func loadPage(_ page: Int, scrollToTop: Bool = false) async {
         // 取得の間に状態が変わっていたら、返ってきた番組は今の
         // 状態のものではないため、反映する前に照合する。
         let authAtStart = loadAuthGeneration
@@ -357,8 +366,13 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
             programs = response.recorded_programs
             // 履歴の ID はあるのに録画自体が残っていない場合は、空の表示にする。
             statusLabel.text = programs.isEmpty ? Self.emptyText : nil
+            let oldOffset = tableView.contentOffset.y
             tableView.reloadData()
-            tableView.setContentOffset(.zero, animated: false)
+            updatePagination()
+            tableView.layoutIfNeeded()
+            let minimum = -tableView.adjustedContentInset.top
+            let maximum = max(minimum, tableView.contentSize.height - tableView.bounds.height + tableView.adjustedContentInset.bottom)
+            tableView.setContentOffset(CGPoint(x: 0, y: scrollToTop ? minimum : min(maximum, max(minimum, oldOffset))), animated: false)
         } catch {
             guard isLoadValid(authGeneration: authAtStart, syncGeneration: syncAtStart,
                               ids: idsAtStart) else {
@@ -386,7 +400,8 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
     /// 前のログインで取った並びがそのまま使われてしまうため)。
     private func goToPage(_ page: Int) {
         guard page != currentPage, !isLoading, !historyIDs.isEmpty else { return }
-        guard loadAuthGeneration == SettingsStore.shared.authGeneration,
+        guard loadContext == WatchedHistoryStore.Context.current,
+              loadAuthGeneration == SettingsStore.shared.authGeneration,
               loadSyncGeneration == SettingsStore.shared.syncGeneration else {
             historyIDs = []
             programs = []
@@ -400,7 +415,7 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
         updatePagination()
         Task { [weak self] in
             guard let self else { return }
-            await self.loadPage(page)
+            await self.loadPage(page, scrollToTop: SettingsStore.shared.scrollToTopOnPageChange)
         }
     }
 
