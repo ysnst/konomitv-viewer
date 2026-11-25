@@ -52,6 +52,7 @@
 		2000000000000000000000AF /* LicenseViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000AE /* LicenseViewController.swift */; };
 		2000000000000000000000BA /* WatchedHistoryViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000B9 /* WatchedHistoryViewController.swift */; };
 		2000000000000000000000BC /* MylistViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000BB /* MylistViewController.swift */; };
+		2000000000000000000000E7 /* RecordedFileInfoViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000E6 /* RecordedFileInfoViewController.swift */; };
 		2000000000000000000000E1 /* DataBroadcastingSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000E0 /* DataBroadcastingSettingsViewController.swift */; };
 		2000000000000000000000E3 /* LiveCommentSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000E2 /* LiveCommentSession.swift */; };
 		2000000000000000000000E5 /* CustomizedFeaturesSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000E4 /* CustomizedFeaturesSettingsViewController.swift */; };
@@ -132,6 +133,7 @@
 		2000000000000000000000AE /* LicenseViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LicenseViewController.swift; sourceTree = "<group>"; };
 		2000000000000000000000B9 /* WatchedHistoryViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchedHistoryViewController.swift; sourceTree = "<group>"; };
 		2000000000000000000000BB /* MylistViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MylistViewController.swift; sourceTree = "<group>"; };
+		2000000000000000000000E6 /* RecordedFileInfoViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordedFileInfoViewController.swift; sourceTree = "<group>"; };
 		2000000000000000000000E0 /* DataBroadcastingSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataBroadcastingSettingsViewController.swift; sourceTree = "<group>"; };
 		2000000000000000000000E2 /* LiveCommentSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveCommentSession.swift; sourceTree = "<group>"; };
 		2000000000000000000000E4 /* CustomizedFeaturesSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CustomizedFeaturesSettingsViewController.swift; sourceTree = "<group>"; };
@@ -256,6 +258,7 @@
 				2000000000000000000000AE /* LicenseViewController.swift */,
 				2000000000000000000000B9 /* WatchedHistoryViewController.swift */,
 				2000000000000000000000BB /* MylistViewController.swift */,
+				2000000000000000000000E6 /* RecordedFileInfoViewController.swift */,
 				2000000000000000000000E0 /* DataBroadcastingSettingsViewController.swift */,
 				2000000000000000000000E2 /* LiveCommentSession.swift */,
 				2000000000000000000000E4 /* CustomizedFeaturesSettingsViewController.swift */,
@@ -408,6 +411,7 @@
 				2000000000000000000000AF /* LicenseViewController.swift in Sources */,
 				2000000000000000000000BA /* WatchedHistoryViewController.swift in Sources */,
 				2000000000000000000000BC /* MylistViewController.swift in Sources */,
+				2000000000000000000000E7 /* RecordedFileInfoViewController.swift in Sources */,
 				2000000000000000000000E1 /* DataBroadcastingSettingsViewController.swift in Sources */,
 				2000000000000000000000E3 /* LiveCommentSession.swift in Sources */,
 				2000000000000000000000E5 /* CustomizedFeaturesSettingsViewController.swift in Sources */,

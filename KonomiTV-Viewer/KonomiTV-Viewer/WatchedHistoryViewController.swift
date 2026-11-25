@@ -10,10 +10,10 @@ import UIKit
 ///   ページ送りは一覧の上と下の両方に置く (録画一覧と同じ)。
 /// - カードを押すと再生画面へ移る。続きの位置は再生画面側が履歴から取る
 ///   ため、この画面では位置を渡さない。
-/// - 長押しメニューに「視聴履歴から削除」を置く (Web 版ではカード右端の
-///   ゴミ箱ボタン。アプリのカードには端のボタンが無いため、録画一覧と
-///   同じ長押しメニューに寄せた)。録画一覧と同じ「視聴済みにする」と
-///   「保護する／外す」(拡張版だけ) も一緒に出す。
+/// - カードの「⋮」ボタンのメニューに「視聴履歴から削除」を置く
+///   (Web 版ではカード右端のゴミ箱ボタン。アプリでは録画一覧と同じ
+///   「⋮」ボタンのメニューに寄せた)。録画一覧と同じ「録画ファイル情報を
+///   表示」「視聴済みにする」「保護する／外す」(拡張版だけ) も一緒に出す。
 ///
 /// 履歴は、ログイン中かつ「設定をデバイス間で同期する」がオンのときだけ
 /// 記録・共有される (再生画面の書き戻しと同じ条件)。その条件を満たさない
@@ -475,6 +475,10 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
         let cell = tableView.dequeueReusableCell(withIdentifier: VideoCell.reuseID, for: indexPath) as! VideoCell
         let program = programs[indexPath.row]
         cell.configure(with: program)
+        // 「⋮」ボタン (録画一覧と同じ出し方)。
+        cell.configureCardMenu { [weak self] in
+            self?.cardMenu(for: program)
+        }
         loadThumbnail(for: program, into: cell)
         if let channelID = program.channel?.id {
             if let cached = logoCache.object(forKey: channelID as NSString) {
@@ -584,43 +588,44 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
         navigationController?.pushViewController(player, animated: true)
     }
 
-    /// 長押しメニュー。録画一覧と同じ「視聴済みにする」「保護する／外す」
-    /// (保護の項目は拡張版だけ) に、この画面固有の「視聴履歴から削除」を足す。
-    func tableView(
-        _ tableView: UITableView,
-        contextMenuConfigurationForRowAt indexPath: IndexPath,
-        point: CGPoint
-    ) -> UIContextMenuConfiguration? {
-        guard programs.indices.contains(indexPath.row) else { return nil }
-        let program = programs[indexPath.row]
-        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
-            var actions: [UIMenuElement] = []
-            if !program.isRecording, (program.watched_ratio ?? 0) < 1 {
-                actions.append(UIAction(
-                    title: "視聴済みにする",
-                    image: UIImage(systemName: "checkmark.circle")
-                ) { _ in
-                    self?.markWatched(program: program)
-                })
-            }
-            if AppEdition.protectionEnabled {
-                let protected = program.isProtected
-                actions.append(UIAction(
-                    title: protected ? "保護を外す" : "保護する",
-                    image: UIImage(systemName: protected ? "lock.open" : "lock")
-                ) { _ in
-                    self?.toggleProtection(program: program)
-                })
-            }
+    /// カードの「⋮」ボタンのメニュー。先頭の「録画ファイル情報を
+    /// 表示」と、録画一覧と同じ「視聴済みにする」「保護する／外す」
+    /// (保護の項目は拡張版だけ) に、この画面固有の
+    /// 「視聴履歴から削除」を足す。
+    /// 中身はボタンが押されるたびに作り直す。
+    private func cardMenu(for program: RecordedProgram) -> UIMenu {
+        var actions: [UIMenuElement] = []
+        actions.append(UIAction(
+            title: "録画ファイル情報を表示",
+            image: UIImage(systemName: "info.circle")
+        ) { [weak self] _ in
+            self?.presentRecordedFileInfo(program: program)
+        })
+        if !program.isRecording, (program.watched_ratio ?? 0) < 1 {
             actions.append(UIAction(
-                title: "視聴履歴から削除",
-                image: UIImage(systemName: "trash"),
-                attributes: .destructive
-            ) { _ in
-                self?.removeFromHistory(program: program)
+                title: "視聴済みにする",
+                image: UIImage(systemName: "checkmark.circle")
+            ) { [weak self] _ in
+                self?.markWatched(program: program)
             })
-            return UIMenu(children: actions)
         }
+        if AppEdition.protectionEnabled {
+            let protected = program.isProtected
+            actions.append(UIAction(
+                title: protected ? "保護を外す" : "保護する",
+                image: UIImage(systemName: protected ? "lock.open" : "lock")
+            ) { [weak self] _ in
+                self?.toggleProtection(program: program)
+            })
+        }
+        actions.append(UIAction(
+            title: "視聴履歴から削除",
+            image: UIImage(systemName: "trash"),
+            attributes: .destructive
+        ) { [weak self] _ in
+            self?.removeFromHistory(program: program)
+        })
+        return UIMenu(children: actions)
     }
 
     // MARK: - 番組への操作

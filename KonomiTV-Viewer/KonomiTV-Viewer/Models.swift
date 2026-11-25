@@ -111,6 +111,26 @@ struct RecordedVideoInfo: Codable {
     /// Web 版の録画ファイル情報やダウンロードの表示でも同じ値を使っている。
     /// 応答に無いことがあるため任意。
     let file_size: Int64?
+    /// ファイルの場所と最終更新日時。録画ファイル情報の表示に使う
+    /// (Web 版の同名ダイアログと同じ項目で、同じ応答に含まれる値)。
+    /// 応答に無いことがあるため任意。
+    let file_path: String?
+    let file_modified_at: String?
+    /// 映像と音声の情報。録画ファイル情報の表示に使う (Web 版と
+    /// 同じ項目)。解析が済んでいない録画では値が無いことがある
+    /// ため、すべて任意。
+    let video_codec: String?
+    let video_codec_profile: String?
+    let video_resolution_width: Int?
+    let video_resolution_height: Int?
+    let video_frame_rate: Double?
+    let video_scan_type: String?
+    let primary_audio_codec: String?
+    let primary_audio_channel: String?
+    let primary_audio_sampling_rate: Int?
+    let secondary_audio_codec: String?
+    let secondary_audio_channel: String?
+    let secondary_audio_sampling_rate: Int?
     let cm_sections: [CMSection]?
     /// 実際に録画された期間 (API が返す)。本番 Web 版カードの時刻表示はこちらを使う。
     let recording_start_time: String?
@@ -120,6 +140,7 @@ struct RecordedVideoInfo: Codable {
 
     var recordingStartDate: Date? { recording_start_time.flatMap(DateParser.parse) }
     var recordingEndDate: Date? { recording_end_time.flatMap(DateParser.parse) }
+    var fileModifiedDate: Date? { file_modified_at.flatMap(DateParser.parse) }
 
     /// 容量の表示文 ("3.2 GB" など)。値が無い・0 のときは nil (出さない)。
     var fileSizeText: String? {
