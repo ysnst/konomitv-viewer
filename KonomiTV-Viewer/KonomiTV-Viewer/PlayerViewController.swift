@@ -2788,14 +2788,15 @@ final class PlayerViewController: UIViewController {
         captureController.cancel()
         // VLCの描き先はteardownVLCPlaybackがstop完了まで保持する。
 #if canImport(VLCKit)
-        if vlcPlayer == nil {
+        let retainsVLCDrawable = vlcPlayer != nil
+#else
+        let retainsVLCDrawable = false
 #endif
+        if !retainsVLCDrawable {
             let pip = pipController
             pipController = nil
             pip?.dispose()
-#if canImport(VLCKit)
         }
-#endif
         playbackGeneration += 1
         captionEngine.resetForNewPlayback()
         captionOverlayView.setImage(nil)
