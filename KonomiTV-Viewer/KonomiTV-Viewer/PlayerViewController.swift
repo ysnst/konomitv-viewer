@@ -442,7 +442,10 @@ final class PlayerViewController: UIViewController {
     private var pipController: PlaybackPiPController?
     private var vlcStateObserver: VLCStateObserver?
     private weak var playbackNavigation: UINavigationController?
+    private weak var playbackTabs: MainTabBarController?
+    private var playbackTabIndex = 1
     private var pipWasActive = false
+    private var lastVLCPosition: Double = 0
     private let overlayTopGradient = GradientView(direction: .top)
     private lazy var overlayHeader = PlayerOverlayHeader(title: program.title) { [weak self] in
         self?.navigationController?.popViewController(animated: true)
@@ -731,6 +734,8 @@ final class PlayerViewController: UIViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         playbackNavigation = navigationController
+        playbackTabs = mainTabBarController
+        playbackTabIndex = playbackTabs?.selectedIndex ?? playbackTabIndex
         // 戻る・題名・時計は映像へ重ね、独立した大型ナビゲーション帯を使わない。
         navigationController?.setNavigationBarHidden(true, animated: animated)
         // フルスクリーンから戻ってきたとき用に、消えるタイマーを仕掛け直す。
@@ -2099,6 +2104,7 @@ final class PlayerViewController: UIViewController {
     /// 再生の仕組みを出し分ける。画質の切り替えで H.264 ⇄ HEVC が切り替わったら、
     /// 仕組みごと作り直す (呼び出し側が位置を引き継いで渡す)。
     private func startPlayback(at seconds: Double) {
+        if pipController?.isActive != true, pipController?.isPending != true { PlaybackPiPController.stopCurrentPlayback() }
         startPlaybackCount += 1
         guard let url = APIClient.shared.playlistURL(videoID: program.id, quality: quality, profile: profile, sessionID: sessionID) else {
             messageLabel.text = "接続先が設定されていません。"
@@ -2329,6 +2335,7 @@ final class PlayerViewController: UIViewController {
             messageLabel.text = "中継の用意ができず、再生を開始できませんでした。再生ボタンでもう一度お試しください。"
             return false
         }
+        lastVLCPosition = seconds.isFinite ? max(0, seconds) : 0
         let vlc = VLCMediaPlayer()
         let observer = VLCStateObserver { [weak self, weak vlc] state in
             guard let vlc else { return }
@@ -2657,7 +2664,11 @@ final class PlayerViewController: UIViewController {
 #if canImport(VLCKit)
         if let vlcPlayer {
             let ms = vlcPlayer.time.intValue
-            return ms > 0 ? Double(ms) / 1000 : 0
+            // 4系では終端で時計が0へ戻ることがあるため、最終表示・保存に直前位置を使う。
+            if vlcPlayer.state == .stopped { return lastVLCPosition }
+            let position = ms > 0 ? Double(ms) / 1000 : 0
+            lastVLCPosition = position
+            return position
         }
 #endif
         return player?.currentTime().seconds ?? 0
@@ -3554,6 +3565,11 @@ final class PlayerViewController: UIViewController {
     /// 読み直す復帰にあたる)。利用者が自分で止めている間は再開しない。
     /// 続けて起きすぎないよう、復帰は5秒に1回までに間引く。
     private func recoverChasePlayback() {
+        if pipController?.isActive == true || pipController?.isPending == true {
+            showPlayerNotice("追いかけ再生を復旧するため PiP を終了します。")
+            pipController?.stop()
+            return
+        }
         let now = Date().timeIntervalSince1970
         guard now - chaseLastRecoveryAt >= 5 else { return }
         chaseLastRecoveryAt = now
@@ -3654,7 +3670,7 @@ final class PlayerViewController: UIViewController {
     /// で、「利用者が動かした」印は付けない。印が付くと、保留中の
     /// 確定した続き位置まで「利用者が動かした」扱いになり、捨て
     /// られてしまうため。
-    private func seek(to seconds: Double, isUserInitiated: Bool = true) {
+    private func seek(to seconds: Double, isUserInitiated: Bool = true, completion: (() -> Void)? = nil) {
         // 位置が動いたら「終わった」出来事は古くなる。終わった直後の
         // 次の話の取り込みが終わっても、自動再生は始めない。
         playbackEndEventID += 1
@@ -3677,16 +3693,20 @@ final class PlayerViewController: UIViewController {
             self?.refreshCaptions()
         }
 #if canImport(VLCKit)
-        if vlcPlayer != nil {
-            vlcSeek(to: clamped)
+        if let vlcPlayer {
+            if let completion {
+                let offset = min(Double(Int32.max), max(Double(Int32.min), (clamped - currentPosition()) * 1000))
+                if !vlcPlayer.jump(withOffset: Int32(offset), completion: completion) { completion() }
+            } else { vlcSeek(to: clamped) }
             return
         }
 #endif
-        player?.seek(
+        guard let player else { completion?(); return }
+        player.seek(
             to: CMTime(seconds: clamped, preferredTimescale: 600),
             toleranceBefore: CMTime(seconds: 0.5, preferredTimescale: 600),
             toleranceAfter: CMTime(seconds: 0.5, preferredTimescale: 600)
-        )
+        ) { _ in completion?() }
     }
 
     @objc private func skipBack() {
@@ -3928,20 +3948,37 @@ final class PlayerViewController: UIViewController {
             duration: { [weak self] in self?.effectiveDuration ?? 0 },
             isPlaying: { [weak self] in self?.isCurrentlyPlaying() ?? false },
             play: { [weak self] in self?.playAtCurrentRate() }, pause: { [weak self] in self?.pauseEngine() },
-            seek: { [weak self] target, completion in self?.seek(to: target); completion() })
+            seek: { [weak self] target, completion in
+                guard let self else { completion(); return }
+                self.seek(to: target, completion: completion)
+            })
         pip.onStateChanged = { [weak self] in
             guard let self else { return }
             let active = self.pipController?.isActive == true
             if self.pipWasActive, !active {
                 // PiP終了時も最終位置を保存する。最大到達位置とは別の既存同期経路を使う。
-                self.runHistorySync(current: self.currentPosition(), registerIfNeeded: Date().timeIntervalSince1970 - self.playbackOpenedAt >= 30)
-                if self.navigationController == nil { self.didLeaveScreen = true; self.stopPlayback() }
+                let position = self.currentPosition()
+                if WatchedHistorySync.isEnabled, !self.recordingInProgress, position.isFinite {
+                    self.historySyncEpoch += 1
+                    self.lastHistorySyncAt = Date().timeIntervalSince1970
+                    let id = self.program.id
+                    let register = self.lastHistorySyncAt - self.playbackOpenedAt >= 30
+                    let context = WatchedHistoryStore.Context.current
+                    Task {
+                        guard context == WatchedHistoryStore.Context.current else { return }
+                        await WatchedHistorySync.syncPosition(videoID: id, position: position, registerIfNeeded: register)
+                    }
+                }
             }
+            // 開始失敗後に既に一覧へ戻っていた場合も、繰り返しTimer・通信を残さない。
+            if self.pipController?.isActive == false, self.pipController?.isPending == false,
+               self.navigationController == nil { self.didLeaveScreen = true; self.stopPlayback() }
             self.pipWasActive = active
             self.updatePiPButton()
         }
         pip.onRestoreInterface = { [weak self] in
             guard let self, let navigation = self.playbackNavigation else { return }
+            self.playbackTabs?.selectedIndex = self.playbackTabIndex
             if navigation.viewControllers.contains(where: { $0 === self }) {
                 navigation.popToViewController(self, animated: false)
             } else { navigation.pushViewController(self, animated: false) }
@@ -3951,7 +3988,10 @@ final class PlayerViewController: UIViewController {
             guard let self else { return }
             let alert = UIAlertController(title: "PiP", message: text, preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "閉じる", style: .default))
-            (self.presentedViewController ?? self).present(alert, animated: true)
+            let visible = self.playbackTabs?.selectedTabViewController?.visibleViewController ?? self
+            let presenter = visible.presentedViewController ?? visible
+            if presenter.viewIfLoaded?.window != nil { presenter.present(alert, animated: true) }
+            else { self.messageLabel.text = text }
         }
         return pip
     }

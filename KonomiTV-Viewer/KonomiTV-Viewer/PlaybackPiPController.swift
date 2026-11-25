@@ -103,6 +103,8 @@ final class PlaybackPiPController: NSObject, VLCDrawable, VLCPictureInPictureDra
     }
 
     func stop() {
+        let owner = Self.current === self ? Self.retainedOwner : nil
+        defer { withExtendedLifetime(owner) {} }
         startTimer?.invalidate()
         startTimer = nil
         let wasPending = isPending
@@ -167,7 +169,7 @@ final class PlaybackPiPController: NSObject, VLCDrawable, VLCPictureInPictureDra
     }
 
     // libVLC からの同期問い合わせも main へ寄せ、UIKit と再生状態を同時に読み書きしない。
-    private nonisolated func readOnMain<T>(_ action: @MainActor () -> T) -> T {
+    private nonisolated func readOnMain<T: Sendable>(_ action: @MainActor () -> T) -> T {
         if Thread.isMainThread { return MainActor.assumeIsolated { action() } }
         return DispatchQueue.main.sync { action() }
     }
@@ -183,6 +185,9 @@ final class PlaybackPiPController: NSObject, VLCDrawable, VLCPictureInPictureDra
 
     nonisolated func bounds() -> CGRect { readOnMain { videoView?.bounds ?? .zero } }
 
+    // libVLC は selector 不在を自動開始ONと解釈する。保持準備を伴う明示操作だけに限定する。
+    @objc nonisolated func canStartPictureInPictureAutomaticallyFromInline() -> Bool { false }
+
     nonisolated func mediaController() -> any VLCPictureInPictureMediaControlling { self }
 
     nonisolated func pictureInPictureReady() -> (any VLCPictureInPictureWindowControlling) -> Void {
@@ -191,8 +196,11 @@ final class PlaybackPiPController: NSObject, VLCDrawable, VLCPictureInPictureDra
                 guard let self, !self.disposed else { return }
                 self.vlcWindow?.stateChangeEventHandler = nil
                 self.vlcWindow = window
-                window.stateChangeEventHandler = { [weak self] started in
-                    DispatchQueue.main.async { self?.receivedState(started, restoreVLCInterface: true) }
+                window.stateChangeEventHandler = { [weak self, weak window] started in
+                    DispatchQueue.main.async {
+                        guard let self, let window, self.vlcWindow === window else { return }
+                        self.receivedState(started, restoreVLCInterface: true)
+                    }
                 }
                 self.onStateChanged?()
             }

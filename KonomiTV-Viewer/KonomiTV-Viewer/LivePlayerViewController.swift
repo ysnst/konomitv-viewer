@@ -49,6 +49,8 @@ final class LivePlayerViewController: UIViewController {
     private var pipController: PlaybackPiPController?
     private var vlcStateObserver: VLCStateObserver?
     private weak var playbackNavigation: UINavigationController?
+    private weak var playbackTabs: MainTabBarController?
+    private var playbackTabIndex = 0
     private weak var activeFullscreen: LiveFullscreenViewController?
     private let overlayTopGradient = GradientView(direction: .top)
     private lazy var overlayHeader = PlayerOverlayHeader(title: channel.name) { [weak self] in
@@ -282,6 +284,8 @@ final class LivePlayerViewController: UIViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         playbackNavigation = navigationController
+        playbackTabs = mainTabBarController
+        playbackTabIndex = playbackTabs?.selectedIndex ?? playbackTabIndex
         navigationController?.setNavigationBarHidden(true, animated: animated)
         // 設定でデータ放送機能のオン/オフが変わっていたら、入り口の
         // 出し分けと実行中の重ね合わせに反映する。
@@ -1574,6 +1578,7 @@ final class LivePlayerViewController: UIViewController {
     }
 
     private func startStream() {
+        if pipController?.isActive != true, pipController?.isPending != true { PlaybackPiPController.stopCurrentPlayback() }
 #if canImport(VLCKit)
         guard let url = APIClient.shared.liveStreamURL(
             displayChannelID: channel.display_channel_id,
@@ -2594,20 +2599,27 @@ final class LivePlayerViewController: UIViewController {
         }
         pip.onRestoreInterface = { [weak self] in
             guard let self, let navigation = self.playbackNavigation else { return }
+            self.playbackTabs?.selectedIndex = self.playbackTabIndex
             if navigation.viewControllers.contains(where: { $0 === self }) {
                 navigation.popToViewController(self, animated: false)
             } else { navigation.pushViewController(self, animated: false) }
         }
         pip.onSuperseded = { [weak self] in
-            self?.commentSession?.stop()
-            self?.commentOverlay.stop()
-            self?.stopStream()
+            guard let self else { return }
+            self.wasPlayingBeforeStop = self.vlcPlayer?.isPlaying ?? false
+            self.stoppedOnDisappear = true
+            self.commentSession?.stop()
+            self.commentOverlay.stop()
+            self.stopStream()
         }
         pip.onError = { [weak self] text in
             guard let self else { return }
             let alert = UIAlertController(title: "PiP", message: text, preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "閉じる", style: .default))
-            (self.presentedViewController ?? self).present(alert, animated: true)
+            let visible = self.playbackTabs?.selectedTabViewController?.visibleViewController ?? self
+            let presenter = visible.presentedViewController ?? visible
+            if presenter.viewIfLoaded?.window != nil { presenter.present(alert, animated: true) }
+            else { self.messageLabel.text = text }
         }
         return pip
     }
