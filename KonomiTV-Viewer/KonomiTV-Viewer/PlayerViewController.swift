@@ -180,11 +180,15 @@ private func programMarkChipImage(_ mark: String, baseFont: UIFont) -> UIImage {
 }
 
 /// 録画番組の再生画面。HLS を再生する。
-/// 再生の仕組みは画質で出し分ける: 通常 (H.264) は AVPlayer、
-/// H.265 / HEVC の画質のときだけ VLCKit。サーバーは録画の映像を
-/// MPEG-TS の分割ファイルで送っており、AVPlayer は HEVC を MP4 形式の
-/// 分割でしか映像として出せない (TS に入った HEVC は音だけ出て映像が
-/// 出ない) ため。VLCKit は TS に入った HEVC を読み解ける。
+/// 再生の仕組みは画質で出し分ける: 通常 (H.264) は AVPlayer。
+/// H.265 / HEVC は、サーバーが fMP4 形式で出せるかどうかを先に
+/// 確かめ、出せれば AVPlayer、出せなければ VLCKit。サーバーは録画の
+/// 映像を通常は MPEG-TS の分割ファイルで送っており、AVPlayer は
+/// HEVC を MP4 形式の分割でしか映像として出せない (TS に入った
+/// HEVC は音だけ出て映像が出ない) ため。fMP4 形式は、詰め替え
+/// (再変換なし) で出せるサーバーが合図つきのときにだけ返す出し方で、
+/// 対応していないサーバー・録画では従来の TS が返る。VLCKit は
+/// TS に入った HEVC を読み解ける。
 /// CM チャプター移動、前後スキップ (秒数は設定値)、シークバー、画質切り替え、
 /// 音声のみ切り替え、再生速度の切り替え、CM自動スキップ、前回見た位置からの
 /// 再開 (巻き戻し付き) を持つ (どちらの仕組みでも同じに効かせる)。
@@ -193,6 +197,18 @@ final class PlayerViewController: UIViewController {
 
     private var player: AVPlayer?
     private var playerLayer: AVPlayerLayer?
+    /// 小窓再生 (PiP) の受け口。標準の再生部品 (AVPlayer) の経路
+    /// でのみ用意する (VLCKit の経路と生放送は対象外)。
+    private var pipController: AVPictureInPictureController?
+    /// 小窓再生の最中 (開始の合図から終了の合図まで) かどうか。
+    private var pipInProgress = false
+    /// 小窓再生の最中に画面を離れたかどうか。この場合は、再生を
+    /// 壊さないよう、後片付けを小窓再生が終わるまで遅らせる。
+    private var leftScreenDuringPiP = false
+    /// 小窓再生の最中に画面を離れた再生画面を、小窓再生が終わるまで
+    /// 保持しておく控え (画面の持ち主から外れても、再生とセッション
+    /// 維持が続くようにするため)。
+    private static var retainedForPiP: PlayerViewController?
     private var timeObserver: Any?
     private var timeControlObservation: NSKeyValueObservation?
     /// AVPlayer 経路で、読み込みの失敗を拾うための観測。
@@ -389,6 +405,9 @@ final class PlayerViewController: UIViewController {
     /// 映像の右下に重ねる全画面ボタン (Web 版と同じ置き場所のアイコン)。
     /// 全画面の間は、元へ戻すアイコンに変える。
     private let fullscreenEnterButton = RippleButton()
+    /// 小窓再生のボタン (操作帯の右端、全画面ボタンの隣)。
+    /// 標準の再生部品の経路でのみ出す (出し分けは updatePiPButton)。
+    private let pipButton = RippleButton()
     /// 全画面のまま画面を離れたとき (全画面では戻るボタンが出ないため
     /// スワイプで戻る場合がある) に、向きを戻す要求を出す先の控え。
     private weak var fullscreenWindowScene: UIWindowScene?
@@ -839,6 +858,15 @@ final class PlayerViewController: UIViewController {
             self?.updateHeaderClock()
         }
         updateHeaderClock()
+        // 小窓再生の最中に離れて、再生を続けたまま戻ってきた場合は、
+        // 作り直しは要らないため、離れた扱いの印と保持の控えだけ
+        // 消す (小窓から戻す操作で戻ってきた場合は、戻す側で
+        // すでに消してある)。
+        if didLeaveScreen, leftScreenDuringPiP, hasActiveEngine {
+            didLeaveScreen = false
+            leftScreenDuringPiP = false
+            Self.retainedForPiP = nil
+        }
         // 次の話など別の画面へ進んで戻ってきたときは、離れるときに
         // 片付けた再生を作り直す (この画面が閉じられた場合はここへは
         // 来ない)。全画面はこの画面の中の状態で、離れる扱いには
@@ -879,6 +907,26 @@ final class PlayerViewController: UIViewController {
             navigationController?.setNeedsUpdateOfSupportedInterfaceOrientations()
             restoreOrientation(on: fullscreenWindowScene)
             fullscreenWindowScene = nil
+        }
+        // 小窓再生の最中に離れた場合は、再生を壊さないよう後片付けを
+        // 遅らせる。小窓再生が終わったときに、遅らせた後片付けを行う
+        // (小窓再生の受け口側)。その間、この画面は控え (retainedForPiP)
+        // で保持し続け、セッション維持の合図も送り続ける。小窓から
+        // 画面へ戻す操作があった場合は、後片付けせずにそのまま戻る。
+        // ただし、別の再生画面へ進んだ場合は話が別で、進んだ先の
+        // 画面が再生を引き継ぐため、この画面は通常どおり片付ける
+        // (小窓再生も後片付けの中で終える。2つの再生を重ねないため)。
+        if pipInProgress {
+            if let top = navigationController?.topViewController,
+               top !== self, top is PlayerViewController {
+                didLeaveScreen = true
+                stopPlayback()
+                return
+            }
+            didLeaveScreen = true
+            leftScreenDuringPiP = true
+            Self.retainedForPiP = self
+            return
         }
         // 離れることが確定してから後片付けする。以前は viewWillDisappear
         // (切り替わりの先頭) で行っていて、VLC を止める呼び出し (終わる
@@ -958,6 +1006,11 @@ final class PlayerViewController: UIViewController {
         fullscreenEnterButton.addTarget(self, action: #selector(toggleFullscreen), for: .touchUpInside)
         updateFullscreenEnterButton()
 
+        // 小窓再生のボタン (全画面ボタンの隣)。標準の再生部品の経路
+        // でのみ出す (出し分けと見た目は updatePiPButton)。
+        pipButton.addTarget(self, action: #selector(togglePiP), for: .touchUpInside)
+        updatePiPButton()
+
         seekSlider.addTarget(self, action: #selector(scrubBegan), for: .touchDown)
         seekSlider.addTarget(self, action: #selector(scrubChanged), for: .valueChanged)
         seekSlider.addTarget(self, action: #selector(scrubEnded), for: [.touchUpInside, .touchUpOutside, .touchCancel])
@@ -1008,8 +1061,8 @@ final class PlayerViewController: UIViewController {
         centerTransport.translatesAutoresizingMaskIntoConstraints = false
 
         // 下の帯の並び: [現在時刻] ... [全体の長さ・字幕切り替え・
-        // コメント切り替え・全画面]。
-        let rightGroup = UIStackView(arrangedSubviews: [durationLabel, captionButton, commentButton, fullscreenEnterButton])
+        // コメント切り替え・小窓再生・全画面]。
+        let rightGroup = UIStackView(arrangedSubviews: [durationLabel, captionButton, commentButton, pipButton, fullscreenEnterButton])
         rightGroup.axis = .horizontal
         rightGroup.spacing = 8
         rightGroup.alignment = .center
@@ -2252,6 +2305,15 @@ final class PlayerViewController: UIViewController {
     private func startPlayback(at seconds: Double, isSessionRecovery: Bool = false) {
         startPlaybackCount += 1
         let startCount = startPlaybackCount
+        // 小窓再生の最中に離れたまま残っている前の再生画面があったら、
+        // 先に片付ける (2つの再生が重ならないようにするため)。
+        // 片付け側の小窓再生の終了の合図が遅れて届いても、二重に
+        // 片付けないよう、印は先に消しておく。
+        if let retained = Self.retainedForPiP, retained !== self {
+            Self.retainedForPiP = nil
+            retained.leftScreenDuringPiP = false
+            retained.stopPlayback()
+        }
         // 新しい開始では、再生はまだ始まっていないものとして扱う
         // (開始前の移動の控えと、その反映の判定に使う)。
         playbackDidStart = false
@@ -2272,38 +2334,14 @@ final class PlayerViewController: UIViewController {
         // 新しい開始が来たら、前の開始待ちへの「止める」印は引き継がない
         // (この開始の後に来た止める操作だけが、この開始に効く)。
         pendingStartPause = false
-#if canImport(MobileVLCKit)
         if isHEVCQuality(quality, profile: profile) {
-            // H.265 / HEVC は VLCKit 経路で、中継経由が前提。用意を
-            // 非同期に待ってから始める。
-            startResolutionInFlight = true
-            showStartLoadingMessage()
-            StreamRelayServer.shared.relayURL(for: url) { [weak self] relayedURL in
-                guard let self, !self.didLeaveScreen,
-                      self.startPlaybackCount == startCount else { return }
-                self.startResolutionInFlight = false
-                self.clearStartLoadingMessage()
-                if relayedURL == nil, SettingsStore.shared.vlcPlaybackRequiresRelay {
-                    // 中継が必須の構成で用意ができなかった (失敗の扱いは
-                    // 上のコメントのとおり)。開始位置を控えておく。
-                    self.messageLabel.text = "中継の用意ができず、再生を開始できませんでした。再生ボタンでもう一度お試しください。"
-                    self.pendingStartPause = false
-                    self.pendingRelayRetryPosition = seconds
-                    return
-                }
-                self.startVLCPlayback(url: url, relayedURL: relayedURL, at: seconds)
-                self.pendingRelayRetryPosition = nil
-                self.finishStartPlayback(at: seconds)
-            }
+            // H.265 / HEVC は、fMP4 形式で出せるかどうかを確かめてから
+            // 再生の仕組みを決める (startHEVCPlayback)。
+            startHEVCPlayback(url: url, at: seconds, startCount: startCount)
             return
         }
+#if canImport(MobileVLCKit)
         teardownVLCPlayback()
-#else
-        if isHEVCQuality(quality, profile: profile) {
-            // VLCKit が組み込まれていないビルドでは HEVC を映像として
-            // 出せない (AVPlayer では音だけになる)。その旨だけ知らせる。
-            messageLabel.text = "このビルドには H.265 / HEVC 再生の部品が組み込まれていません。"
-        }
 #endif
         if SettingsStore.shared.avPlaybackRequiresRelay {
             // 中継が必須の方式では、中継の URL を非同期に解決してから
@@ -2330,6 +2368,114 @@ final class PlayerViewController: UIViewController {
         startAVPlayback(asset: APIClient.shared.playerAsset(url: url), at: seconds)
         pendingRelayRetryPosition = nil
         finishStartPlayback(at: seconds)
+    }
+
+    /// H.265 / HEVC の開始。まず、サーバーが fMP4 形式で出せるか
+    /// どうかを、合図 (segment_format=fmp4) つきでプレイリストを
+    /// 取りに行って確かめる。初期化ファイルの行 (EXT-X-MAP) が
+    /// あれば fMP4 で出せるということなので、標準の再生部品
+    /// (AVPlayer) で再生する。無ければ従来どおり VLCKit で再生する
+    /// (本家サーバー・10bit・映像構成が途中で変わる録画・録画中の
+    /// 追いかけ再生は、サーバー側が従来の出し方で返すため、この
+    /// 落ち方になる)。確かめる材料が取れなかったときも VLCKit に
+    /// 落とす (従来の動きを保つため)。
+    /// 確かめは非同期に行い、その間も画面は止めない。開始の用意を
+    /// 待っている扱い (startResolutionInFlight) は、振り分け先の
+    /// 開始が終わるまで続ける (待つ間に止める操作が来たら、開始の
+    /// 締めで再生を始めないようにするため)。
+    private func startHEVCPlayback(url: URL, at seconds: Double, startCount: Int) {
+        startResolutionInFlight = true
+        showStartLoadingMessage()
+        let videoID = program.id
+        let probeQuality = quality
+        let probeProfile = profile
+        let probeSessionID = sessionID
+        Task { [weak self] in
+            guard let self else { return }
+            let body = await APIClient.shared.fetchPlaylist(
+                videoID: videoID, quality: probeQuality, profile: probeProfile,
+                sessionID: probeSessionID, fmp4: true)
+            guard !self.didLeaveScreen, self.startPlaybackCount == startCount else { return }
+            if let body, body.contains("#EXT-X-MAP"),
+               let fmp4URL = APIClient.shared.playlistURL(
+                   videoID: videoID, quality: probeQuality, profile: probeProfile,
+                   sessionID: probeSessionID, fmp4: true) {
+                self.startFMP4Playback(url: fmp4URL, at: seconds, startCount: startCount)
+            } else {
+                self.startVLCPlaybackFlow(url: url, at: seconds, startCount: startCount)
+            }
+        }
+    }
+
+    /// H.265 / HEVC を fMP4 形式で、標準の再生部品 (AVPlayer) で
+    /// 再生する開始。通常画質の経路と同じ作りで、中継が必須の認証
+    /// 方式では中継の URL を非同期に解決してから始める (用意が
+    /// できなかった場合は、直接再生に落ちず失敗として知らせ、
+    /// 再生ボタンで始め直せるようにする)。字幕は、通常画質と同じく
+    /// 再生部品の受け取り口 (メタデータ) から受ける (fMP4 の中の
+    /// 字幕データは emsg の形で届く想定)。
+    private func startFMP4Playback(url: URL, at seconds: Double, startCount: Int) {
+#if canImport(MobileVLCKit)
+        teardownVLCPlayback()
+#endif
+        if SettingsStore.shared.avPlaybackRequiresRelay {
+            startResolutionInFlight = true
+            showStartLoadingMessage()
+            StreamRelayServer.shared.relayURL(for: url) { [weak self] relayedURL in
+                guard let self, !self.didLeaveScreen,
+                      self.startPlaybackCount == startCount else { return }
+                self.startResolutionInFlight = false
+                self.clearStartLoadingMessage()
+                guard let relayedURL else {
+                    self.messageLabel.text = "中継の用意ができず、再生を開始できませんでした。再生ボタンでもう一度お試しください。"
+                    self.pendingStartPause = false
+                    self.pendingRelayRetryPosition = seconds
+                    return
+                }
+                self.startAVPlayback(asset: AVURLAsset(url: relayedURL), at: seconds)
+                self.pendingRelayRetryPosition = nil
+                self.finishStartPlayback(at: seconds)
+            }
+            return
+        }
+        startResolutionInFlight = false
+        clearStartLoadingMessage()
+        startAVPlayback(asset: APIClient.shared.playerAsset(url: url), at: seconds)
+        pendingRelayRetryPosition = nil
+        finishStartPlayback(at: seconds)
+    }
+
+    /// H.265 / HEVC を VLCKit で再生する開始 (従来の経路)。
+    /// 中継経由が前提で、用意を非同期に待ってから始める。
+    private func startVLCPlaybackFlow(url: URL, at seconds: Double, startCount: Int) {
+#if canImport(MobileVLCKit)
+        startResolutionInFlight = true
+        showStartLoadingMessage()
+        StreamRelayServer.shared.relayURL(for: url) { [weak self] relayedURL in
+            guard let self, !self.didLeaveScreen,
+                  self.startPlaybackCount == startCount else { return }
+            self.startResolutionInFlight = false
+            self.clearStartLoadingMessage()
+            if relayedURL == nil, SettingsStore.shared.vlcPlaybackRequiresRelay {
+                // 中継が必須の構成で用意ができなかった場合は、直接再生に
+                // 落ちず失敗として知らせる。開始位置を控えておく。
+                self.messageLabel.text = "中継の用意ができず、再生を開始できませんでした。再生ボタンでもう一度お試しください。"
+                self.pendingStartPause = false
+                self.pendingRelayRetryPosition = seconds
+                return
+            }
+            self.startVLCPlayback(url: url, relayedURL: relayedURL, at: seconds)
+            self.pendingRelayRetryPosition = nil
+            self.finishStartPlayback(at: seconds)
+        }
+#else
+        // VLCKit が組み込まれていないビルドでは、fMP4 で出せない
+        // H.265 / HEVC を映像として出せない (標準の再生部品では
+        // 音だけになる)。その旨だけ知らせる。
+        startResolutionInFlight = false
+        clearStartLoadingMessage()
+        messageLabel.text = "このビルドには H.265 / HEVC 再生の部品が組み込まれていません。"
+#endif
     }
 
     /// 中継の用意を待つ間、知らせ欄が空いていれば読み込み中を出す
@@ -2448,6 +2594,9 @@ final class PlayerViewController: UIViewController {
             layer.isHidden = audioOnly
             surfaceView.layer.addSublayer(layer)
             playerLayer = layer
+            // 小窓再生の受け口は、映像の層と一緒に用意する
+            // (層が替わらない作り直しでは、受け口もそのまま使う)。
+            setupPictureInPictureIfPossible(layer: layer)
             // 字幕の重ね物は、後から足した映像の層より上に保つ。
             surfaceView.bringSubviewToFront(captionOverlayView)
             timeObserver = newPlayer.addPeriodicTimeObserver(
@@ -2656,6 +2805,15 @@ final class PlayerViewController: UIViewController {
 
     /// AVPlayer 経路の後片付け。
     private func teardownAVPlayback() {
+        // 小窓再生の受け口も外す。最中なら先に終える (映像の層が
+        // 無くなるため、そのままでは小窓だけ残ってしまう)。
+        if let pipController {
+            if pipController.isPictureInPictureActive {
+                pipController.stopPictureInPicture()
+            }
+            self.pipController = nil
+        }
+        updatePiPButton()
         if let itemEndObserver {
             NotificationCenter.default.removeObserver(itemEndObserver)
             self.itemEndObserver = nil
@@ -4277,6 +4435,60 @@ final class PlayerViewController: UIViewController {
         controlsHeightConstraint?.constant = height
     }
 
+    // MARK: - 小窓再生 (PiP)
+
+    /// 小窓再生の受け口を用意する。標準の再生部品の映像の層が
+    /// できたときに呼ぶ。対応していない端末では用意しない
+    /// (ボタンも出ない)。
+    private func setupPictureInPictureIfPossible(layer: AVPlayerLayer) {
+        guard AVPictureInPictureController.isPictureInPictureSupported(),
+              let controller = AVPictureInPictureController(playerLayer: layer) else { return }
+        controller.delegate = self
+        pipController = controller
+        updatePiPButton()
+    }
+
+    /// 小窓再生ボタンの出し分けと見た目を合わせる。
+    /// 受け口がある (標準の再生部品の経路で再生している) ときで、
+    /// 音声のみでないときだけ出す。最中は終えるアイコンに変える。
+    private func updatePiPButton() {
+        let available = pipController != nil && !audioOnly
+        pipButton.isHidden = !available
+        let config = UIImage.SymbolConfiguration(pointSize: 20, weight: .regular)
+        pipButton.setImage(
+            UIImage(systemName: pipInProgress ? "pip.exit" : "pip.enter", withConfiguration: config),
+            for: .normal)
+        pipButton.tintColor = .white
+        pipButton.accessibilityLabel = pipInProgress ? "小窓再生を終了する" : "小窓再生にする"
+    }
+
+    @objc private func togglePiP() {
+        guard let pipController else { return }
+        if pipController.isPictureInPictureActive {
+            pipController.stopPictureInPicture()
+        } else {
+            pipController.startPictureInPicture()
+        }
+        scheduleHideControls()
+    }
+
+    /// 小窓から画面へ戻すときに、この画面を押し込む先。
+    /// 表示中のタブの画面の積み重ねを使う。
+    private func topNavigationControllerForPiPRestore() -> UINavigationController? {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+        let window = scene?.windows.first { $0.isKeyWindow } ?? scene?.windows.first
+        guard let root = window?.rootViewController else { return nil }
+        if let tabBar = root as? MainTabBarController {
+            return tabBar.selectedTabViewController
+        }
+        if let navigation = root as? UINavigationController {
+            return navigation
+        }
+        return root.navigationController
+    }
+
     /// 音声のみ: 映像だけを隠し、最小画質に切り替えて通信量を抑える。切ると元の画質に戻す。
     /// 操作帯は映像の上に重なっているため、隠すのは映像の描画だけにする
     /// (帯ごと隠すと、止める操作もできなくなる)。
@@ -4299,6 +4511,79 @@ final class PlayerViewController: UIViewController {
         applyCommentDisplayState()
         // 字幕も同じく、音声のみの間は出さず、戻したら再開する。
         applyCaptionDisplayState()
+        // 小窓再生は映像の層を出す仕組みのため、音声のみの間は
+        // ボタンを出さない (出し分けは updatePiPButton)。
+        updatePiPButton()
+    }
+}
+
+// MARK: - 小窓再生の受け口
+
+extension PlayerViewController: AVPictureInPictureControllerDelegate {
+    func pictureInPictureControllerWillStartPictureInPicture(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) {
+        pipInProgress = true
+        updatePiPButton()
+    }
+
+    func pictureInPictureControllerDidStopPictureInPicture(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) {
+        pipInProgress = false
+        updatePiPButton()
+        // 小窓再生の最中に画面を離れていて、画面へ戻る形で終わら
+        // なかった場合は、遅らせていた後片付けをここで行う
+        // (位置の報告やセッションの終了は、この時点の位置で行う)。
+        // 画面へ戻っていた場合は、戻す側で印を消してあるため
+        // ここでは何もしない。
+        if leftScreenDuringPiP {
+            leftScreenDuringPiP = false
+            Self.retainedForPiP = nil
+            stopPlayback()
+        }
+    }
+
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        failedToStartPictureInPictureWithError error: Error
+    ) {
+        pipInProgress = false
+        updatePiPButton()
+        messageLabel.text = "小窓再生を開始できませんでした。"
+    }
+
+    /// 小窓から画面へ戻す操作があったときの受け口。
+    /// 画面がそのまま残っていればそのまま戻し、最中に離れて
+    /// 画面の積み重ねから外れていた場合は、表示中のタブへ
+    /// この画面を押し込んでから戻す。戻せたら、離れた扱いの
+    /// 印を消し、保持の控えも外す (再生はそのまま続く)。
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void
+    ) {
+        if let navigation = navigationController, view.window != nil {
+            // 別の画面に覆われていたら、この画面まで戻してから知らせる。
+            if navigation.topViewController !== self {
+                navigation.popToViewController(self, animated: false)
+            }
+            completionHandler(true)
+            return
+        }
+        guard let navigation = topNavigationControllerForPiPRestore() else {
+            completionHandler(false)
+            return
+        }
+        // 戻す先で別の再生画面が再生していたら、そちらを片付けて
+        // から戻す (2つの再生を重ねないため)。
+        if let top = navigation.topViewController as? PlayerViewController, top !== self {
+            top.stopPlayback()
+        }
+        didLeaveScreen = false
+        leftScreenDuringPiP = false
+        Self.retainedForPiP = nil
+        navigation.pushViewController(self, animated: false)
+        completionHandler(true)
     }
 }
 

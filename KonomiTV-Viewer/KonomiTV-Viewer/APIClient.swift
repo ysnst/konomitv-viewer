@@ -624,9 +624,36 @@ final class APIClient {
     // 区分 (profile) は再生を始めるときに決めたものを呼び出し側が渡す
     // (再生の途中で回線が変わっても画質は変えないため)。
 
-    func playlistURL(videoID: Int, quality: String, profile: PlaybackProfile, sessionID: String) -> URL? {
+    func playlistURL(videoID: Int, quality: String, profile: PlaybackProfile, sessionID: String, fmp4: Bool = false) -> URL? {
+        return url(forPath: playlistPath(videoID: videoID, quality: quality, profile: profile, sessionID: sessionID, fmp4: fmp4))
+    }
+
+    /// プレイリストの経路 (パス+クエリ) を組み立てる。
+    /// fmp4 が true のときは、サーバーへ「fMP4 形式で出してほしい」
+    /// という合図 (segment_format=fmp4) を付ける。対応できるサーバー・
+    /// 録画では、初期化ファイルの行 (EXT-X-MAP) を含む fMP4 形式の
+    /// プレイリストが返り、対応できない場合は従来のプレイリストが
+    /// そのまま返る (合図は無視される)。
+    private func playlistPath(videoID: Int, quality: String, profile: PlaybackProfile, sessionID: String, fmp4: Bool) -> String {
         let apiQuality = SettingsStore.shared.apiQuality(base: quality, media: .video, profile: profile)
-        return url(forPath: "/api/streams/video/\(videoID)/\(apiQuality)/playlist?session_id=\(Self.escapedURLComponent(sessionID))")
+        var path = "/api/streams/video/\(videoID)/\(apiQuality)/playlist?session_id=\(Self.escapedURLComponent(sessionID))"
+        if fmp4 {
+            path += "&segment_format=fmp4"
+        }
+        return path
+    }
+
+    /// プレイリストの中身を取りに行く (再生部品へ渡す前に、サーバーの
+    /// 出し方を確かめるために使う)。通信は通常の口を通すため、認証は
+    /// どの方式でも通常の通信と同じに付く。取れなかった場合や、応答が
+    /// 正常でない場合は nil を返す。
+    func fetchPlaylist(videoID: Int, quality: String, profile: PlaybackProfile, sessionID: String, fmp4: Bool) async -> String? {
+        let path = playlistPath(videoID: videoID, quality: quality, profile: profile, sessionID: sessionID, fmp4: fmp4)
+        guard let request = try? request(forPath: path) else { return nil }
+        guard let (data, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     /// 再生中、定期的に呼んでセッションを維持する (サーバー側の分割ファイル生成を止めないため)。
