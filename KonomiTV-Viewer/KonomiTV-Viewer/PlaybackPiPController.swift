@@ -1,6 +1,7 @@
-import AVKit
+// Objective-C の非Sendableオブジェクトは、以下の境界でメインキューへ集約して扱う。
+@preconcurrency import AVKit
 import UIKit
-import VLCKit
+@preconcurrency import VLCKit
 
 /// 同じ映像出力を標準 PiP へ渡す。再生・通信・履歴は元の画面が引き続き所有する。
 /// VLCKit 4.0.0a26 の公開 drawable プロトコルと AVPlayerLayer の両経路に対応する。
@@ -190,8 +191,9 @@ final class PlaybackPiPController: NSObject, VLCDrawable, VLCPictureInPictureDra
 
     nonisolated func mediaController() -> any VLCPictureInPictureMediaControlling { self }
 
-    nonisolated func pictureInPictureReady() -> (any VLCPictureInPictureWindowControlling) -> Void {
+    nonisolated func pictureInPictureReady() -> (((any VLCPictureInPictureWindowControlling)?) -> Void)? {
         { [weak self] window in
+            guard let window else { return }
             DispatchQueue.main.async {
                 guard let self, !self.disposed else { return }
                 self.vlcWindow?.stateChangeEventHandler = nil

@@ -3245,7 +3245,7 @@ final class PlayerViewController: UIViewController {
     private var isEngineMuted: Bool {
 #if canImport(VLCKit)
         if let vlcPlayer {
-            return vlcPlayer.audio.volume == 0
+            return (vlcPlayer.audio?.volume ?? 100) == 0
         }
 #endif
         return player?.isMuted ?? false
@@ -3258,10 +3258,10 @@ final class PlayerViewController: UIViewController {
 #if canImport(VLCKit)
         if let vlcPlayer {
             if muted {
-                savedVLCVolume = vlcPlayer.audio.volume
-                vlcPlayer.audio.volume = 0
+                savedVLCVolume = vlcPlayer.audio?.volume ?? 100
+                vlcPlayer.audio?.volume = 0
             } else {
-                vlcPlayer.audio.volume = savedVLCVolume ?? 100
+                vlcPlayer.audio?.volume = savedVLCVolume ?? 100
                 savedVLCVolume = nil
             }
             return
