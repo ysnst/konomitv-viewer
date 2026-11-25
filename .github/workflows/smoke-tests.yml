@@ -22,7 +22,11 @@ permissions:
 jobs:
   smoke-tests:
     name: Simulator smoke tests
-    runs-on: macos-latest
+    # macos-latest (iOS 26 世代のシミュレータ) では、再生の仕組み
+    # (AVPlayer) が材料を全部受け取っても時計が進まないことを実測で
+    # 確認したため (アプリを介さない直接再生でも再現)、1つ前の世代の
+    # 実行環境を使う。
+    runs-on: macos-15
     timeout-minutes: 45
     env:
       TZ: Asia/Tokyo
