@@ -15,11 +15,18 @@ private struct FailableElement<T: Decodable>: Decodable {
 
 private extension KeyedDecodingContainer {
     /// 指定したキーの配列を、読み解けなかった要素だけ飛ばして読む。
-    /// キー自体が無い・null の場合は空にする。
+    /// キー自体が無い・null の場合は空にする。項目そのものが配列
+    /// でない形 (文字列やオブジェクトなど) で来た場合も、その項目
+    /// だけを空として扱い、応答全体の読み解きは続ける (全体を
+    /// 失敗させると、正常な他の部分まで捨てられて画面が空になる)。
     func decodeLossyArray<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> [T] {
-        guard let elements = try decodeIfPresent([FailableElement<T>].self, forKey: key)
-        else { return [] }
-        return elements.compactMap(\.value)
+        let elements: [FailableElement<T>]?
+        do {
+            elements = try decodeIfPresent([FailableElement<T>].self, forKey: key)
+        } catch {
+            return []
+        }
+        return (elements ?? []).compactMap(\.value)
     }
 }
 

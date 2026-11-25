@@ -720,6 +720,9 @@ final class SyncedSettingsStore {
         /// 明示的な並び替えの対象と並び (以前の版の控えには無い
         /// ため、その場合は空として読む)。
         let pinnedOrderIntent: [String]
+        /// 控えを残した時点の同期の世代 (以前の版の控えには無い
+        /// ため、その場合は nil として読み、照合の対象にしない)。
+        let syncGeneration: Int?
     }
 
     /// 端末から読み出した控え。引き継ぐかどうかは、使う時点で
@@ -786,6 +789,7 @@ final class SyncedSettingsStore {
         }
         let record: [String: Any] = [
             "identity": store.unsentSettingsIdentity,
+            "syncGeneration": item.syncGeneration,
             "base": Self.clientSettingsDictionary(from: item.base),
             "desired": Self.clientSettingsDictionary(from: item.desired),
             "uncertainKeys": Array(item.uncertainKeys),
@@ -859,6 +863,15 @@ final class SyncedSettingsStore {
             store.unsentSyncedSettingsData = nil
             return
         }
+        // 控えを残した時点から同期のオン・オフが切り替わっていたら、
+        // その控えは無効にしたはずの変更なので破棄する (世代は端末に
+        // 残してあるため、再起動をまたいでも照合できる)。
+        if let recordGeneration = restored.syncGeneration,
+           recordGeneration != store.syncGeneration {
+            restoredUnsent = nil
+            store.unsentSyncedSettingsData = nil
+            return
+        }
         restoredUnsent = nil
         // すでに未送信分がある場合は、そちらの方が新しい状態なので
         // 控えは取り込まずに消す (通常は起きない)。
@@ -905,7 +918,8 @@ final class SyncedSettingsStore {
             desired: settings(fromClientSettings: desiredDict, fallback: .defaults),
             uncertainKeys: Set(record["uncertainKeys"] as? [String] ?? []),
             uncertain: uncertain,
-            pinnedOrderIntent: record["pinnedOrderIntent"] as? [String] ?? [])
+            pinnedOrderIntent: record["pinnedOrderIntent"] as? [String] ?? [],
+            syncGeneration: record["syncGeneration"] as? Int)
     }
 
     /// 設定一式を、サーバーの利用者設定と同じ形の辞書に写す

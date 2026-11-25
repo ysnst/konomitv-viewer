@@ -76,7 +76,11 @@ func computeCommentDensity(positions: [Double], duration: Double) -> CommentDens
         if duration > 0, position < 0 || position > effectiveDuration {
             continue
         }
-        let index = min(binCount - 1, max(0, Int(floor(position / commentBinSeconds))))
+        // ビン番号は、小数の段階で範囲内に収めてから整数へ直す。
+        // 尺が 0 以下の経路では位置に上限がかからず、極端に大きい
+        // 位置を先に整数へ直すと変換できる範囲を超えて落ちるため。
+        let scaled = floor(position / commentBinSeconds)
+        let index = Int(min(Double(binCount - 1), max(0, scaled)))
         counts[index] += 1
         total += 1
     }

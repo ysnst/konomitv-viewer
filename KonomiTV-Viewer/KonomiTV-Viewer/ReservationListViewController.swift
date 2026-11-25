@@ -27,6 +27,9 @@ final class ReservationListViewController: UIViewController, UITableViewDataSour
 
     private let logoCache = NSCache<NSString, UIImage>()
     private var failedLogoIDs = Set<String>()
+    /// ロゴを取得中の局。同じロゴを何度も取りに行かないための
+    /// 重ね防ぎ (録画一覧と同じ)。
+    private var logoLoadingIDs = Set<String>()
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -336,7 +339,13 @@ final class ReservationListViewController: UIViewController, UITableViewDataSour
                     self.tableView.reloadRows(at: [IndexPath(row: index, section: 0)], with: .none)
                 }
             } catch {
-                toggle.isOn = reservation.record_settings.is_enabled
+                // 通信中にその行がスクロールで別の予約に使い回されて
+                // いることがあるため、控えたスイッチを直接戻すと別の
+                // 予約の表示を書き換えてしまう。成功したときと同じく、
+                // 予約の ID で行を探して表示を直す。
+                if let index = self.reservations.firstIndex(where: { $0.id == reservation.id }) {
+                    self.tableView.reloadRows(at: [IndexPath(row: index, section: 0)], with: .none)
+                }
                 let message: String
                 if let apiError = error as? APIError, case .message(let text) = apiError {
                     message = text
@@ -392,11 +401,20 @@ final class ReservationListViewController: UIViewController, UITableViewDataSour
             return
         }
         if failedLogoIDs.contains(channelID) { return }
+        if logoLoadingIDs.contains(channelID) { return }
+        logoLoadingIDs.insert(channelID)
         Task { [weak self, weak cell] in
             guard let self else { return }
+            defer { self.logoLoadingIDs.remove(channelID) }
             do {
                 let data = try await APIClient.shared.fetchChannelLogo(channelID: channelID)
-                guard let image = UIImage(data: data) else { return }
+                // 画像として読めなかった場合も、他の一覧と同じく
+                // 失敗として記録する (記録しないと、表示のたびに
+                // 取り直し続けてしまうため)。
+                guard let image = UIImage(data: data) else {
+                    self.failedLogoIDs.insert(channelID)
+                    return
+                }
                 self.logoCache.setObject(image, forKey: channelID as NSString)
                 // 行がスクロールで別の予約に使い回されていたら入れない
                 // (生放送一覧側と同じ確かめ。次にその行が表示されるときに

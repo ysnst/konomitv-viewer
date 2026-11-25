@@ -1130,12 +1130,15 @@ final class SettingsViewController: UIViewController {
         }
         // キーチェーンへ書く値 (パスワード類) は、読み戻して一致するか
         // 確かめる。失敗していたら「保存しました」とは出さない。
+        // KonomiTV のパスワードは、この画面の保存では書き込まない
+        // (書き込むのはログインのときだけ) ため、確かめる対象に
+        // 含めない。含めると、欄を書き換えただけで保存値と食い違い、
+        // 何度保存しても失敗の表示になってしまう。
         let keychainValues: [(entered: String, stored: String)] = [
             (cfSecretField.text ?? "", store.cfClientSecret),
             (basicPasswordField.text ?? "", store.basicPassword),
             (digestPasswordField.text ?? "", store.digestPassword),
             (urlParameterValueField.text ?? "", store.urlParameterValue),
-            (passwordField.text ?? "", store.password),
         ]
         if keychainValues.contains(where: { !$0.entered.isEmpty && $0.entered != $0.stored }) {
             statusLabel.text = "一部の値を保存できませんでした。もう一度保存してください。"

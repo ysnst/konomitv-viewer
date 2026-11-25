@@ -91,6 +91,9 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
     /// 局ロゴのキャッシュと、ロゴが無かった局の控え (録画一覧と同じ方式)。
     private let logoCache = NSCache<NSString, UIImage>()
     private var failedLogoIDs: Set<String> = []
+    /// ロゴを取得中の局。同じロゴを何度も取りに行かないための
+    /// 重ね防ぎ (録画一覧と同じ)。
+    private var logoLoadingIDs: Set<String> = []
 
     init() {
         super.init(nibName: nil, bundle: nil)
@@ -472,9 +475,12 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
     /// 局ロゴを取ってきて、表示中の行がまだ同じ番組ならその場で反映する
     /// (録画一覧と同じ方式)。
     private func loadLogo(channelID: String, at indexPath: IndexPath) {
-        guard !failedLogoIDs.contains(channelID) else { return }
+        guard !failedLogoIDs.contains(channelID),
+              !logoLoadingIDs.contains(channelID) else { return }
+        logoLoadingIDs.insert(channelID)
         Task { [weak self] in
             guard let self else { return }
+            defer { self.logoLoadingIDs.remove(channelID) }
             guard let data = try? await APIClient.shared.fetchChannelLogo(channelID: channelID),
                   let image = UIImage(data: data) else {
                 self.failedLogoIDs.insert(channelID)

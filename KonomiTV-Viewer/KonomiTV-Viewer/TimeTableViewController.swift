@@ -192,6 +192,9 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
     /// 局ロゴのキャッシュと、ロゴが無かった局の控え (生放送一覧と同じ扱い)。
     private let logoCache = NSCache<NSString, UIImage>()
     private var failedLogoIDs: Set<String> = []
+    /// ロゴを取得中の局。同じロゴを何度も取りに行かないための
+    /// 重ね防ぎ (録画一覧と同じ)。
+    private var logoLoadingIDs: Set<String> = []
 
     init() {
         super.init(nibName: nil, bundle: nil)
@@ -499,6 +502,11 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
         if channels.isEmpty || current != loadedBaseURLString {
             loadInitial()
         }
+        // 表に出ていない間に起きた再読み込みの失敗は、戻ったときに知らせる。
+        if pendingReloadFailureNotice {
+            pendingReloadFailureNotice = false
+            presentReloadFailureAlert()
+        }
         // 表示設定は、同期が入っていればサーバー側の値が正になる
         // (Web 版で変えた幅や色が、次にこの画面を開いたときに効く)。
         // 取り込みは裏で行い、変わっていたときだけ組み直す。
@@ -672,6 +680,20 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
     /// 読み込み中に来た読み直しを覚えておく印。完了後に取り直す。
     private var pendingReloadAfterLoad = false
 
+    /// 再読み込みの失敗が、画面が表に出ていないときに起きた場合の
+    /// 控え。次に画面へ戻ったときに知らせる。
+    private var pendingReloadFailureNotice = false
+
+    /// 再読み込み失敗のお知らせを出す。
+    private func presentReloadFailureAlert() {
+        let alert = UIAlertController(
+            title: "再読み込みできませんでした",
+            message: "接続先とネットワークを確認してください。表示は前回の内容のままです。",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+
     private func load(scrollToNowAfter: Bool) {
         guard !isLoading else {
             // 読み込み中の読み直しは捨てず、完了後に取り直す
@@ -691,6 +713,10 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
         loadingIndicator.startAnimating()
         let dayStart = selectedDayStart
         let type = selectedType
+        // 読み込みを始めた時点の接続先を控える。終わった時点の接続先で
+        // 記録すると、読み込み中に接続先が変わった場合に、前の接続先の
+        // 番組表が新しい接続先のものとして扱われてしまうため。
+        let baseURLAtStart = SettingsStore.shared.baseURL?.absoluteString
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -703,7 +729,7 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
                     channelType: isPinned ? nil : type,
                     pinnedChannelIDs: isPinned
                         ? SyncedSettingsStore.shared.current.pinnedChannelIDs : nil)
-                self.loadedBaseURLString = SettingsStore.shared.baseURL?.absoluteString
+                self.loadedBaseURLString = baseURLAtStart
                 self.channels = response.channels
                 self.dateRange = response.date_range
                 // チューナーの使用帯は、番組表の表示設定の専用スイッチが
@@ -728,22 +754,24 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
             } catch {
                 if self.channels.isEmpty {
                     self.statusLabel.text = "読み込めませんでした。\n接続先とネットワークを確認してください。\n(\(error.localizedDescription))"
-                } else {
+                } else if self.view.window != nil {
                     // データがある状態での再読み込み失敗も知らせる。
-                    let alert = UIAlertController(
-                        title: "再読み込みできませんでした",
-                        message: "接続先とネットワークを確認してください。表示は前回の内容のままです。",
-                        preferredStyle: .alert)
-                    alert.addAction(UIAlertAction(title: "OK", style: .default))
-                    self.present(alert, animated: true)
+                    self.presentReloadFailureAlert()
+                } else {
+                    // 別のタブへ移っていて画面が表に出ていないときは、
+                    // 今出しても表示されず知らせる機会を失うため、
+                    // 次にこの画面へ戻ったときに知らせる。
+                    self.pendingReloadFailureNotice = true
                 }
             }
             self.isLoading = false
             self.loadingIndicator.stopAnimating()
             // 読み込み中に日付や種別が変わっていたら、古い条件の結果を
             // 出したままにせず、今の条件で取り直す。日付・種別が同じでも、
-            // 読み込み中に読み直しが来ていたら取り直す。
-            if self.pendingReloadAfterLoad || self.selectedDayStart != dayStart || self.selectedType != type {
+            // 読み込み中に読み直しが来ていたら取り直す。接続先が変わって
+            // いた場合も、今の表示は前の接続先のものなので取り直す。
+            if self.pendingReloadAfterLoad || self.selectedDayStart != dayStart || self.selectedType != type
+                || SettingsStore.shared.baseURL?.absoluteString != baseURLAtStart {
                 self.pendingReloadAfterLoad = false
                 self.load(scrollToNowAfter: Self.isToday(self.selectedDayStart))
             }
@@ -1010,9 +1038,12 @@ final class TimeTableViewController: UIViewController, UIScrollViewDelegate {
 
     /// 局ロゴを取ってきて、見出しがまだ同じ局ならその場で反映する。
     private func loadLogo(for channel: ChannelInfo, into headerCell: TimeTableChannelHeaderView) {
-        guard !failedLogoIDs.contains(channel.id) else { return }
+        guard !failedLogoIDs.contains(channel.id),
+              !logoLoadingIDs.contains(channel.id) else { return }
+        logoLoadingIDs.insert(channel.id)
         Task { [weak self, weak headerCell] in
             guard let self else { return }
+            defer { self.logoLoadingIDs.remove(channel.id) }
             guard let data = try? await APIClient.shared.fetchChannelLogo(channelID: channel.id),
                   let image = UIImage(data: data) else {
                 self.failedLogoIDs.insert(channel.id)

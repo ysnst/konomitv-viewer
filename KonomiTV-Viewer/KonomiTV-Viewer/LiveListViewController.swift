@@ -85,6 +85,9 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
     /// 局ロゴのキャッシュと、ロゴが無かった局の控え (再取得を避ける)。
     private let logoCache = NSCache<NSString, UIImage>()
     private var failedLogoIDs: Set<String> = []
+    /// ロゴを取得中の局。同じロゴを何度も取りに行かないための
+    /// 重ね防ぎ (録画一覧と同じ)。
+    private var logoLoadingIDs: Set<String> = []
 
     /// カテゴリ帯の高さ (Web 版の channels-tab と同じ 64px)。
     /// カテゴリが無い (読み込み前・0件) ときは 0 にして帯自体を出さない。
@@ -824,6 +827,10 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
             failedLogoIDs.removeAll()
         }
         isLoading = true
+        // 読み込みを始めた時点の接続先を控える。終わった時点の接続先で
+        // 記録すると、読み込み中に接続先が変わった場合に、前の接続先の
+        // 一覧が新しい接続先のものとして扱われてしまうため。
+        let baseURLAtStart = SettingsStore.shared.baseURL?.absoluteString
         Task { [weak self] in
             guard let self else { return }
             // 同期が入っていれば、利用者設定を先に取り込んでおく
@@ -832,7 +839,7 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
             _ = await SyncedSettingsStore.shared.refreshFromServer()
             do {
                 let response = try await APIClient.shared.fetchChannels()
-                self.loadedBaseURLString = SettingsStore.shared.baseURL?.absoluteString
+                self.loadedBaseURLString = baseURLAtStart
                 self.lastResponse = response
                 // 取得できたチャンネルに無いピン留めは取り除く
                 // (Web 版がチャンネル情報の更新時に行う掃除と同じ)。
@@ -854,6 +861,11 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
             }
             self.isLoading = false
             self.refreshControl.endRefreshing()
+            // 読み込み中に接続先が変わっていたら、今の一覧は前の
+            // 接続先のものなので、新しい接続先で取り直す。
+            if SettingsStore.shared.baseURL?.absoluteString != baseURLAtStart {
+                self.refresh()
+            }
         }
     }
 
@@ -1032,9 +1044,12 @@ final class LiveListViewController: UIViewController, UITableViewDataSource, UIT
     /// 局ロゴを取ってきて、表示中の行がまだ同じ局ならその場で反映する。
     /// 取れなかった局 (ロゴ無しなど) は文字だけの行のままにし、再取得もしない。
     private func loadLogo(for channel: LiveChannel, at indexPath: IndexPath, in tableView: UITableView) {
-        guard !failedLogoIDs.contains(channel.id) else { return }
+        guard !failedLogoIDs.contains(channel.id),
+              !logoLoadingIDs.contains(channel.id) else { return }
+        logoLoadingIDs.insert(channel.id)
         Task { [weak self] in
             guard let self else { return }
+            defer { self.logoLoadingIDs.remove(channel.id) }
             guard let data = try? await APIClient.shared.fetchChannelLogo(channelID: channel.id),
                   let image = UIImage(data: data) else {
                 self.failedLogoIDs.insert(channel.id)

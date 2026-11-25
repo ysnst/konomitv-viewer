@@ -117,6 +117,7 @@ final class LivePlayerViewController: UIViewController {
     private var channelResponse: LiveChannelsResponse?
     private var selectedChannelGroupIndex = 0
     private var channelPanelLoaded = false
+    private var channelPanelLoading = false
     /// 一覧の左右スワイプで分類を切り替えるためのしぐさ (生放送一覧と
     /// 同じ考え方で、横の動きだけを拾う)。
     private let channelGroupSwipePan = UIPanGestureRecognizer()
@@ -857,18 +858,24 @@ final class LivePlayerViewController: UIViewController {
     }
 
     /// チャンネルパネルを初めて開いたときに、一覧を取りに行く。
+    /// 取得済みの印は成功したときにだけ立てる。失敗しても取得済みに
+    /// してしまうと、この画面を開いている間は二度と取り直せず、
+    /// パネルが空のままになるため。取得中の重なりは別の印で防ぐ。
     private func loadChannelPanelIfNeeded() {
-        guard !channelPanelLoaded else { return }
-        channelPanelLoaded = true
+        guard !channelPanelLoaded, !channelPanelLoading else { return }
+        channelPanelLoading = true
         setChannelStatus("読み込み中…")
         Task { [weak self] in
             do {
                 let response = try await APIClient.shared.fetchChannels()
                 guard let self else { return }
+                self.channelPanelLoading = false
+                self.channelPanelLoaded = true
                 self.channelResponse = response
                 self.setChannelStatus(nil)
                 self.rebuildChannelGroups()
             } catch {
+                self?.channelPanelLoading = false
                 self?.setChannelStatus("チャンネルを取得できませんでした。")
             }
         }
@@ -2354,11 +2361,16 @@ final class LivePlayerViewController: UIViewController {
             return
         }
         let overlay = DataBroadcastOverlay()
-        overlay.onStatus = { [weak self] status in
-            self?.handleDataBroadcastStatus(status)
+        // 知らせが、どの重ね合わせからのものか照合してから扱う。
+        // 止めて間を置かずに始め直した場合、古い方の遅れた知らせが
+        // 新しい方に効いてしまわないようにするため。
+        overlay.onStatus = { [weak self, weak overlay] status in
+            guard let self, self.dataBroadcastOverlay === overlay else { return }
+            self.handleDataBroadcastStatus(status)
         }
-        overlay.onVideoRect = { [weak self] rect in
-            self?.applyDataBroadcastVideoRect(rect)
+        overlay.onVideoRect = { [weak self, weak overlay] rect in
+            guard let self, self.dataBroadcastOverlay === overlay else { return }
+            self.applyDataBroadcastVideoRect(rect)
         }
         dataBroadcastOverlay = overlay
         let webView = overlay.prepareWebView()
@@ -2486,10 +2498,17 @@ final class LivePlayerViewController: UIViewController {
         case "netidle":
             dataBroadcastNetworkBusy = false
         case "error":
-            messageLabel.text = "データ放送を開始できませんでした。"
-            showingDataBroadcastStatus = true
-            pendingDataKey = false
-            if !dataBroadcastLoaded {
+            if dataBroadcastLoaded {
+                // 読み込みが終わったあとに届いたエラーは、開始の失敗
+                // ではない (材料の受け取りが途中で切れた場合や、文書側
+                // から知らされる場合がある)。開始できているのに
+                // 「開始できませんでした」とは出さず、別の文面にする。
+                messageLabel.text = "データ放送でエラーが発生しました。"
+                showingDataBroadcastStatus = true
+            } else {
+                messageLabel.text = "データ放送を開始できませんでした。"
+                showingDataBroadcastStatus = true
+                pendingDataKey = false
                 dataBroadcastStartFailed = true
             }
         default:

@@ -254,7 +254,26 @@ final class APIClient {
     /// 応答が返るまでの間に別の試行が始まっていたら、古い試行の
     /// 応答は保存しない (遅れて届いた応答が、新しいログインを
     /// 上書きしてしまうため)。
+    /// 番号の加算と読み取りは鍵で守る。同時に2つのログインが
+    /// 走ると、守りがないと同じ番号を両方が掴んでしまい、古い
+    /// 応答まで「最新の試行」として通ってしまうため。
     private var latestLoginAttempt = 0
+    private let loginAttemptLock = NSLock()
+
+    /// 次のログイン試行の番号を取り、最新の試行として記録する。
+    private func nextLoginAttempt() -> Int {
+        loginAttemptLock.lock()
+        defer { loginAttemptLock.unlock() }
+        latestLoginAttempt += 1
+        return latestLoginAttempt
+    }
+
+    /// 渡された番号が、今も最新のログイン試行かどうか。
+    private func isLatestLoginAttempt(_ attempt: Int) -> Bool {
+        loginAttemptLock.lock()
+        defer { loginAttemptLock.unlock() }
+        return attempt == latestLoginAttempt
+    }
 
     /// ユーザー名とパスワードでアクセストークンを取り、ログイン情報として保存する。
     /// トークンの口は OAuth2 形式 (フォーム送信) で、応答は JSON。
@@ -267,8 +286,7 @@ final class APIClient {
         let store = SettingsStore.shared
         let baseURLAtStart = store.baseURL
         let generationAtStart = store.authGeneration
-        latestLoginAttempt += 1
-        let attempt = latestLoginAttempt
+        let attempt = nextLoginAttempt()
         var request = try request(forPath: "/api/users/token", method: "POST")
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         let body = "username=\(Self.formEncode(username))&password=\(Self.formEncode(password))"
@@ -276,7 +294,7 @@ final class APIClient {
         let (data, response) = try await session.data(for: request)
         try check(response)
         let token = try JSONDecoder().decode(TokenResponse.self, from: data)
-        guard attempt == latestLoginAttempt,
+        guard isLatestLoginAttempt(attempt),
               store.authGeneration == generationAtStart,
               store.baseURL == baseURLAtStart else {
             throw APIError.loginSuperseded

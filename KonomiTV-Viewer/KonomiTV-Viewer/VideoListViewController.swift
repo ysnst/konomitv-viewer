@@ -275,6 +275,10 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     /// 読み込み中に検索の言葉が変わったときの控え。読み込みが終わって
     /// から絞り直す。
     private var pendingSearchReload = false
+    /// 読み込み中に番組への操作が終わったときの控え。読み込みが
+    /// 終わってから読み直す (操作後の読み直しは、読み込み中に呼ぶと
+    /// 捨てられてしまい、操作の結果が一覧に反映されないため)。
+    private var pendingOperationReload = false
 
     private let thumbnailCache = NSCache<NSNumber, UIImage>()
     /// サムネイルを取得中の番組 ID と、失敗して取り直し待ちの番組 ID。
@@ -286,6 +290,9 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     /// 生放送一覧と同じ方式。
     private let logoCache = NSCache<NSString, UIImage>()
     private var failedLogoIDs: Set<String> = []
+    /// ロゴを取得中の局。控えに入るまでの間、同じロゴを何度も
+    /// 取りに行かないための重ね防ぎ (サムネイルと同じ)。
+    private var logoLoadingIDs: Set<String> = []
 
     init() {
         super.init(nibName: nil, bundle: nil)
@@ -947,8 +954,12 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         }
         isLoading = true
         updatePagination()
+        // 読み込みを始めた時点の接続先を控える。終わった時点の接続先で
+        // 記録すると、読み込み中に接続先が変わった場合に、前の接続先の
+        // 一覧が新しい接続先のものとして扱われてしまうため。
+        let baseURLAtStart = SettingsStore.shared.baseURL?.absoluteString
         if isFilterActive {
-            loadAllForFilter(targetPage: page)
+            loadAllForFilter(targetPage: page, baseURLAtStart: baseURLAtStart)
         } else {
             Task { [weak self] in
                 guard let self else { return }
@@ -963,7 +974,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                     } else {
                         self.currentPage = page
                     }
-                    self.loadedBaseURLString = SettingsStore.shared.baseURL?.absoluteString
+                    self.loadedBaseURLString = baseURLAtStart
                     self.total = response.total
                     self.programs = response.recorded_programs
                     // サーバー側のページ分けで読んだので、全件の控えは使えない。
@@ -981,6 +992,12 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                 self.refreshControl.endRefreshing()
                 self.updatePagination()
                 self.applyPendingSearchReloadIfNeeded()
+                self.applyPendingOperationReloadIfNeeded()
+                // 読み込み中に接続先が変わっていたら、今の一覧は前の
+                // 接続先のものなので、新しい接続先で取り直す。
+                if SettingsStore.shared.baseURL?.absoluteString != baseURLAtStart {
+                    self.refresh()
+                }
             }
         }
     }
@@ -988,7 +1005,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     /// フィルタ用に全ページ (Web 版と同じ最大50ページ) を、サーバーの並び順の
     /// まま取得して絞り込み、指定ページを表示する。
     /// 絞り込みは端末側で、並びはサーバーの並びをそのまま保つ (Web 版と同じ)。
-    private func loadAllForFilter(targetPage: Int) {
+    private func loadAllForFilter(targetPage: Int, baseURLAtStart: String?) {
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -997,12 +1014,12 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                 var allTotal = Int.max
                 while collected.count < allTotal, page <= 50 {
                     let response = try await APIClient.shared.fetchVideos(page: page, order: self.sortOrder)
-                    self.loadedBaseURLString = SettingsStore.shared.baseURL?.absoluteString
                     allTotal = response.total
                     collected += response.recorded_programs
                     if response.recorded_programs.isEmpty { break }
                     page += 1
                 }
+                self.loadedBaseURLString = baseURLAtStart
                 // 取得した全件は控えておき、検索の言葉が変わったときは
                 // 通信し直さず手元で絞り直せるようにする。
                 self.allCollectedPrograms = collected
@@ -1026,6 +1043,12 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             self.refreshControl.endRefreshing()
             self.updatePagination()
             self.applyPendingSearchReloadIfNeeded()
+            self.applyPendingOperationReloadIfNeeded()
+            // 読み込み中に接続先が変わっていたら、今の一覧は前の
+            // 接続先のものなので、新しい接続先で取り直す。
+            if SettingsStore.shared.baseURL?.absoluteString != baseURLAtStart {
+                self.refresh()
+            }
         }
     }
 
@@ -1276,6 +1299,28 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         applySearchChange()
     }
 
+    /// 番組への操作 (視聴済み・保護・ゴミ箱など) の完了後に一覧を
+    /// 読み直す。読み込み中なら、終わったあとに読み直すよう控えて
+    /// おく。通常の読み直しは読み込み中に呼ぶと捨てられてしまうため、
+    /// 操作後の読み直しはこの受け口を通す。
+    private func reloadAfterOperation() {
+        guard !isLoading else {
+            pendingOperationReload = true
+            return
+        }
+        refresh()
+    }
+
+    /// 読み込みが終わった時点で、読み込み中に終わった操作が残って
+    /// いたら読み直す (読み込みの完了側から呼ばれる)。この時点で
+    /// 別の読み込みが始まっていたら、控えを立て直してその完了時に
+    /// 回す。
+    private func applyPendingOperationReloadIfNeeded() {
+        guard pendingOperationReload else { return }
+        pendingOperationReload = false
+        reloadAfterOperation()
+    }
+
     /// 検索の判定。題名とシリーズ名への部分一致 (大文字と小文字は
     /// 区別しない)。シリーズ名は、題名とは別に持っている番組だけ。
     private func matchesSearch(_ program: RecordedProgram) -> Bool {
@@ -1461,9 +1506,12 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     /// 局ロゴを取ってきて、表示中の行がまだ同じ番組ならその場で反映する。
     /// 取れなかった局 (ロゴ無しなど) は文字だけのままにし、再取得もしない。
     private func loadLogo(channelID: String, at indexPath: IndexPath) {
-        guard !failedLogoIDs.contains(channelID) else { return }
+        guard !failedLogoIDs.contains(channelID),
+              !logoLoadingIDs.contains(channelID) else { return }
+        logoLoadingIDs.insert(channelID)
         Task { [weak self] in
             guard let self else { return }
+            defer { self.logoLoadingIDs.remove(channelID) }
             guard let data = try? await APIClient.shared.fetchChannelLogo(channelID: channelID),
                   let image = UIImage(data: data) else {
                 self.failedLogoIDs.insert(channelID)
@@ -1658,6 +1706,11 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
     ) -> Bool {
         false
+    }
+
+    /// 画面が破棄されるときも、自動スクロールの刻みを止め残さない。
+    deinit {
+        dragScrollLink?.invalidate()
     }
 
     /// 端での自動スクロールの刻みを始める。
@@ -1859,7 +1912,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             guard let self else { return }
             do {
                 try await APIClient.shared.markWatched(videoID: program.id, duration: program.duration)
-                self.refresh()
+                self.reloadAfterOperation()
             } catch {
                 self.showAlert(title: "視聴済みにできませんでした", message: nil)
             }
@@ -1914,7 +1967,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             guard let self else { return }
             do {
                 _ = try await APIClient.shared.toggleProtection(videoID: program.id)
-                self.refresh()
+                self.reloadAfterOperation()
             } catch let error as APIError {
                 self.showAlert(title: error.protectionFailureMessage, message: nil)
             } catch {
@@ -1946,7 +1999,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             do {
                 try await APIClient.shared.moveToTrash(videoID: program.id)
                 // ゴミ箱へ移した録画は一覧から消えるため、読み直す。
-                self.refresh()
+                self.reloadAfterOperation()
             } catch let error as APIError {
                 self.showAlert(title: error.moveToTrashFailureMessage, message: nil)
             } catch {
@@ -2091,7 +2144,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             }
             self.isBulkRunning = false
             self.exitSelectionMode()
-            self.refresh()
+            self.reloadAfterOperation()
             if !failed.isEmpty {
                 self.showAlert(
                     title: toProtected
@@ -2152,7 +2205,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             }
             self.isBulkRunning = false
             self.exitSelectionMode()
-            self.refresh()
+            self.reloadAfterOperation()
             let notMoved = failed + ineligible
             if !notMoved.isEmpty {
                 self.showAlert(
@@ -2204,6 +2257,11 @@ final class PaginationView: UIView {
 
     /// 表示を最新のページ状態に作り直す。
     func update(currentPage: Int, totalPages: Int, isEnabled: Bool) {
+        // 総ページ数が 0 未満、今のページが範囲外でも落ちないよう、
+        // 部品側でも範囲内に収めてから使う (呼び出し側でも総ページ数は
+        // 最低1にそろえているが、共用の部品なのでここでも守る)。
+        let totalPages = max(0, totalPages)
+        let currentPage = min(max(currentPage, 1), max(totalPages, 1))
         self.currentPage = currentPage
         self.totalPages = totalPages
         for arranged in stack.arrangedSubviews {

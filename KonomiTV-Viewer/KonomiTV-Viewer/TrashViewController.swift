@@ -223,6 +223,9 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
     /// 局ロゴのキャッシュと、ロゴが無かった局の控え (録画一覧と同じ方式)。
     private let logoCache = NSCache<NSString, UIImage>()
     private var failedLogoIDs: Set<String> = []
+    /// ロゴを取得中の局。同じロゴを何度も取りに行かないための
+    /// 重ね防ぎ (録画一覧と同じ)。
+    private var logoLoadingIDs: Set<String> = []
 
     init() {
         super.init(nibName: nil, bundle: nil)
@@ -393,6 +396,10 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
         sortButton.menu = UIMenu(children: SortKind.allCases.map { kind in
             UIAction(title: kind.title, state: kind == sortKind ? .on : .off) { [weak self] _ in
                 guard let self, kind != self.sortKind else { return }
+                // なぞり選択の最中に並びが変わると、選択の起点の行が
+                // ずれて意図しない範囲が選ばれるため、読み直しと同じく
+                // なぞり選択中は並び替えを受け付けない。
+                guard !self.isDragSelecting else { return }
                 self.sortKind = kind
                 self.updateSortButton()
                 self.applyItems()
@@ -525,6 +532,11 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         navigationController?.setNavigationBarHidden(false, animated: animated)
+        // なぞり選択中の自動スクロールの刻みが残らないよう、離れるときに
+        // 止める (指を離さずに画面遷移が重なった場合の守り。録画一覧と同じ)。
+        if dragScrollLink != nil {
+            finishDragSelection()
+        }
     }
 
     @objc private func refresh() {
@@ -575,9 +587,10 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
         Task { [weak self] in
             guard let self else { return }
             // 管理者かどうかも一緒に取り直す (操作ボタンの出し分け)。
-            if let user = try? await APIClient.shared.fetchCurrentUser() {
-                self.isAdminUser = user.is_admin
-            }
+            // 取れなかったときは前回の値を残さず、管理者ではない側に
+            // 倒す (実際の権限と違うボタンが出続けないように)。
+            let user = try? await APIClient.shared.fetchCurrentUser()
+            self.isAdminUser = user?.is_admin ?? false
             do {
                 let response = try await APIClient.shared.fetchTrashList()
                 self.items = response.items
@@ -808,6 +821,11 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
         false
     }
 
+    /// 画面が破棄されるときも、自動スクロールの刻みを止め残さない。
+    deinit {
+        dragScrollLink?.invalidate()
+    }
+
     /// 端での自動スクロールの刻みを始める。
     private func startDragAutoScroll() {
         dragScrollLink?.invalidate()
@@ -941,9 +959,12 @@ final class TrashViewController: UIViewController, UITableViewDataSource, UITabl
     /// 局ロゴを取ってきて、表示中の行がまだ同じ番組ならその場で反映する
     /// (録画一覧と同じ方式)。
     private func loadLogo(channelID: String, at indexPath: IndexPath) {
-        guard !failedLogoIDs.contains(channelID) else { return }
+        guard !failedLogoIDs.contains(channelID),
+              !logoLoadingIDs.contains(channelID) else { return }
+        logoLoadingIDs.insert(channelID)
         Task { [weak self] in
             guard let self else { return }
+            defer { self.logoLoadingIDs.remove(channelID) }
             guard let data = try? await APIClient.shared.fetchChannelLogo(channelID: channelID),
                   let image = UIImage(data: data) else {
                 self.failedLogoIDs.insert(channelID)

@@ -463,6 +463,9 @@ final class TimeTableSettingsStore {
         let desired: TimeTableDisplaySettings
         let uncertainKeys: Set<String>
         let uncertainGenres: Set<String>
+        /// 控えを残した時点の同期の世代 (以前の版の控えには無い
+        /// ため、その場合は nil として読み、照合の対象にしない)。
+        let syncGeneration: Int?
     }
 
     /// 端末から読み出した控え。引き継ぐかどうかは、使う時点で
@@ -518,6 +521,7 @@ final class TimeTableSettingsStore {
         }
         let record: [String: Any] = [
             "identity": store.unsentSettingsIdentity,
+            "syncGeneration": item.syncGeneration,
             "base": Self.displaySettingsDictionary(from: item.base),
             "desired": Self.displaySettingsDictionary(from: item.settings),
             "uncertainKeys": Array(item.uncertainKeys),
@@ -549,6 +553,15 @@ final class TimeTableSettingsStore {
             return
         }
         guard restored.identity == store.unsentSettingsIdentity else {
+            restoredUnsent = nil
+            store.unsentTimeTableSettingsData = nil
+            return
+        }
+        // 控えを残した時点から同期のオン・オフが切り替わっていたら、
+        // その控えは無効にしたはずの変更なので破棄する (共通設定の
+        // 同期と同じ扱い)。
+        if let recordGeneration = restored.syncGeneration,
+           recordGeneration != store.syncGeneration {
             restoredUnsent = nil
             store.unsentTimeTableSettingsData = nil
             return
@@ -595,7 +608,8 @@ final class TimeTableSettingsStore {
             base: base,
             desired: settings(fromClientSettings: desiredDict, fallback: .defaults),
             uncertainKeys: Set(record["uncertainKeys"] as? [String] ?? []),
-            uncertainGenres: uncertainGenres)
+            uncertainGenres: uncertainGenres,
+            syncGeneration: record["syncGeneration"] as? Int)
     }
 
     /// 表示設定一式を、サーバーの利用者設定と同じ形の辞書に写す

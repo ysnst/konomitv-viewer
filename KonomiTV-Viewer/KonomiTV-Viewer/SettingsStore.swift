@@ -181,6 +181,10 @@ final class SettingsStore {
         // (トークンやパスワード) は含めない。
         static let unsentSyncedSettings = "viewer_unsent_synced_settings"
         static let unsentTimeTableSettings = "viewer_unsent_timetable_settings"
+        // 同期の世代 (同期のオン・オフが切り替わるたびに進む通し番号)。
+        // 再起動しても戻らないよう端末に残す。未送信の控えにも一緒に
+        // 記録し、復元のときに世代が合わない控えは捨てる。
+        static let syncGeneration = "viewer_sync_generation"
         // 番組表の表示設定 (Web 版の利用者設定と同じ項目名に viewer_ を
         // 付けたもの)。端末内の控えで、サーバーとの同期が入っているときは
         // TimeTableSettingsStore がサーバー側の値をここへ写し、変更時は
@@ -677,6 +681,13 @@ final class SettingsStore {
             defaults.set(newValue, forKey: Key.syncSettings)
             if newValue != oldValue {
                 syncGeneration += 1
+                if !newValue {
+                    // 同期を切った時点で、端末に残っている未送信の
+                    // 控えもその場で消す (アプリがこのまま終了しても、
+                    // 切ったはずの変更が残らないようにするため)。
+                    unsentSyncedSettingsData = nil
+                    unsentTimeTableSettingsData = nil
+                }
             }
         }
     }
@@ -685,7 +696,12 @@ final class SettingsStore {
     /// 設定の保存は、変更が起きた時点の世代を控えて持ち、実行時に
     /// 世代が変わっていたら、その保存は打ち切る (同期を切った後に
     /// 待ち行列に残っていた変更が送られてしまうのを防ぐ)。
-    private(set) var syncGeneration = 0
+    /// 再起動で 0 に戻ると、端末に残した未送信の控えの世代と
+    /// 照合できなくなるため、世代そのものも端末に残す。
+    private(set) var syncGeneration: Int {
+        get { defaults.integer(forKey: Key.syncGeneration) }
+        set { defaults.set(newValue, forKey: Key.syncGeneration) }
+    }
 
     /// この端末が最後にサーバーと設定を同期した時刻 (UNIX 秒)。
     /// サーバーへ利用者設定を送れたときと、サーバーから取り込んだときに
