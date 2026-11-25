@@ -51,6 +51,13 @@ final class PlayerOverlayHeader: UIStackView {
 class ViewerNavigationController: UINavigationController {
     override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
     override var childForStatusBarStyle: UIViewController? { nil }
+    // 全画面を別VCで提示しないため、現在の再生所有元へシステムUIを委譲する。
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        topViewController?.supportedInterfaceOrientations ?? super.supportedInterfaceOrientations
+    }
+    override var shouldAutorotate: Bool { topViewController?.shouldAutorotate ?? true }
+    override var childForStatusBarHidden: UIViewController? { topViewController }
+    override var childForHomeIndicatorAutoHidden: UIViewController? { topViewController }
 }
 
 /// サブメニューから閉じた場合とスワイプ終了も、提示元へ一度だけ返す。
@@ -293,5 +300,20 @@ final class PlayerActionRow: UIStackView {
             if abs(actionWidth.constant - target) > 0.5 { actionWidth.constant = target }
         }
         super.layoutSubviews()
+    }
+}
+
+// 全画面専用VCに置かれていた向きの復元を、残る共通UIへ移す。
+extension UIViewController {
+    /// 退出後に窓が外れていても、所有元が控えたシーンへ端末の向きを戻す。
+    func restoreOrientation(on scene: UIWindowScene?) {
+        let mask: UIInterfaceOrientationMask
+        // 端末の向きと画面の向きは横向きで左右が逆になる。
+        switch UIDevice.current.orientation {
+        case .landscapeLeft: mask = .landscapeRight
+        case .landscapeRight: mask = .landscapeLeft
+        default: mask = .portrait
+        }
+        scene?.requestGeometryUpdate(.iOS(interfaceOrientations: mask))
     }
 }

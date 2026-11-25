@@ -23,6 +23,14 @@ import UIKit
 /// (滑らせる動きは付けない)。
 final class MainTabBarController: UIViewController {
     override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
+    // 選択中のナビゲーションから、そのまま再生画面の全画面状態を参照する。
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        selectedTabViewController?.supportedInterfaceOrientations ?? super.supportedInterfaceOrientations
+    }
+    override var shouldAutorotate: Bool { selectedTabViewController?.shouldAutorotate ?? true }
+    override var childForStatusBarHidden: UIViewController? { selectedTabViewController }
+    override var childForHomeIndicatorAutoHidden: UIViewController? { selectedTabViewController }
+
 
     /// バーの中身の高さ。Vuetify の v-bottom-navigation の標準高さ 56px を
     /// そのまま使う。バーの実高さは、これに下端のセーフエリア

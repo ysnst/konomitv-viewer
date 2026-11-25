@@ -30,7 +30,6 @@
 		200000000000000000000038 /* LivePlayerViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000018 /* LivePlayerViewController.swift */; };
 		200000000000000000000039 /* SettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000019 /* SettingsViewController.swift */; };
 		200000000000000000000043 /* CMSectionBandView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000025 /* CMSectionBandView.swift */; };
-		200000000000000000000044 /* FullscreenPlayerViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000026 /* FullscreenPlayerViewController.swift */; };
 		200000000000000000000045 /* NowPlayingManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000027 /* NowPlayingManager.swift */; };
 		200000000000000000000046 /* MainTabBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000028 /* MainTabBarController.swift */; };
 		200000000000000000000047 /* SPHeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000029 /* SPHeaderView.swift */; };
@@ -113,7 +112,6 @@
 		200000000000000000000018 /* LivePlayerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LivePlayerViewController.swift; sourceTree = "<group>"; };
 		200000000000000000000019 /* SettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewController.swift; sourceTree = "<group>"; };
 		200000000000000000000025 /* CMSectionBandView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CMSectionBandView.swift; sourceTree = "<group>"; };
-		200000000000000000000026 /* FullscreenPlayerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullscreenPlayerViewController.swift; sourceTree = "<group>"; };
 		200000000000000000000027 /* NowPlayingManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingManager.swift; sourceTree = "<group>"; };
 		200000000000000000000028 /* MainTabBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabBarController.swift; sourceTree = "<group>"; };
 		200000000000000000000029 /* SPHeaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SPHeaderView.swift; sourceTree = "<group>"; };
@@ -240,7 +238,6 @@
 				200000000000000000000018 /* LivePlayerViewController.swift */,
 				200000000000000000000019 /* SettingsViewController.swift */,
 				200000000000000000000025 /* CMSectionBandView.swift */,
-				200000000000000000000026 /* FullscreenPlayerViewController.swift */,
 				200000000000000000000027 /* NowPlayingManager.swift */,
 				200000000000000000000028 /* MainTabBarController.swift */,
 				200000000000000000000029 /* SPHeaderView.swift */,
@@ -395,7 +392,6 @@
 				200000000000000000000038 /* LivePlayerViewController.swift in Sources */,
 				200000000000000000000039 /* SettingsViewController.swift in Sources */,
 				200000000000000000000043 /* CMSectionBandView.swift in Sources */,
-				200000000000000000000044 /* FullscreenPlayerViewController.swift in Sources */,
 				200000000000000000000045 /* NowPlayingManager.swift in Sources */,
 				200000000000000000000046 /* MainTabBarController.swift in Sources */,
 				200000000000000000000047 /* SPHeaderView.swift in Sources */,
