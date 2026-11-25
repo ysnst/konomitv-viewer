@@ -123,6 +123,11 @@ final class FullscreenPlayerViewController: UIViewController {
     var pipAvailable: (() -> Bool)?
     var pipActive: (() -> Bool)?
     var pipPending: (() -> Bool)?
+    private let captureButton = RippleButton()
+    private let commentCaptureButton = RippleButton()
+    var captureAvailable: (() -> Bool)?
+    var commentCaptureAvailable: (() -> Bool)?
+    var onCapture: ((Bool, UIViewController) -> Void)?
     var onTogglePiP: (() -> Void)?
     private let fullscreenButton = RippleButton()
     private let commentButton = RippleButton()
@@ -437,9 +442,9 @@ final class FullscreenPlayerViewController: UIViewController {
         centerControls.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(centerControls)
 
-        styleVideoOverlayButton(captionButton, symbol: "captions.bubble", title: "字幕の表示を切り替え")
-        styleVideoOverlayButton(settingsButton, symbol: "gearshape.fill", title: "プレイヤー設定")
-        styleVideoOverlayButton(fullscreenButton, symbol: "arrow.down.right.and.arrow.up.left", title: "全画面を解除")
+        styleVideoOverlayButton(captionButton, symbol: "captions.bubble", title: "字幕の表示を切り替え", adaptive: true)
+        styleVideoOverlayButton(settingsButton, symbol: "gearshape.fill", title: "プレイヤー設定", adaptive: true)
+        styleVideoOverlayButton(fullscreenButton, symbol: "arrow.down.right.and.arrow.up.left", title: "全画面を解除", adaptive: true)
         captionButton.addAction(UIAction { [weak self] _ in
             self?.onToggleCaptions?()
             self?.updateCaptionControl()
@@ -451,17 +456,19 @@ final class FullscreenPlayerViewController: UIViewController {
             self.onShowSettings?(self)
         }, for: .touchUpInside)
         fullscreenButton.addTarget(self, action: #selector(exitFullscreen), for: .touchUpInside)
-        styleVideoOverlayButton(commentButton, symbol: "text.bubble", title: "実況コメントの表示を切り替え")
+        styleVideoOverlayButton(commentButton, symbol: "text.bubble", title: "実況コメントの表示を切り替え", adaptive: true)
         commentButton.addAction(UIAction { [weak self] _ in
             self?.onToggleComments?()
             self?.updateCaptionControl()
             self?.scheduleHideControls()
         }, for: .touchUpInside)
-        styleVideoOverlayButton(pipButton, symbol: "pip.enter", title: "ピクチャ・イン・ピクチャ")
+        styleVideoOverlayButton(pipButton, symbol: "pip.enter", title: "ピクチャ・イン・ピクチャ", adaptive: true)
         pipButton.addAction(UIAction { [weak self] _ in self?.onTogglePiP?() }, for: .touchUpInside)
-        let optionsRow = UIStackView(arrangedSubviews: [timeRow, UIView(), commentButton, captionButton, settingsButton, pipButton, fullscreenButton])
-        optionsRow.spacing = 0
-        optionsRow.axis = .horizontal
+        styleVideoOverlayButton(captureButton, symbol: "camera", title: "キャプチャ", adaptive: true)
+        styleVideoOverlayButton(commentCaptureButton, symbol: "camera.badge.ellipsis", title: "コメント付きキャプチャ", adaptive: true)
+        captureButton.addAction(UIAction { [weak self] _ in guard let self else { return }; self.onCapture?(false, self) }, for: .touchUpInside)
+        commentCaptureButton.addAction(UIAction { [weak self] _ in guard let self else { return }; self.onCapture?(true, self) }, for: .touchUpInside)
+        let optionsRow = PlayerActionRow(time: timeRow, buttons: [captureButton, commentCaptureButton, commentButton, captionButton, settingsButton, pipButton, fullscreenButton])
 
         let panelStack = UIStackView(arrangedSubviews: [optionsRow])
         panelStack.axis = .vertical
@@ -499,7 +506,7 @@ final class FullscreenPlayerViewController: UIViewController {
             panelStack.bottomAnchor.constraint(equalTo: seekContainer.topAnchor),
             panelStack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 8),
             panelStack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -4),
-            seekContainer.heightAnchor.constraint(equalToConstant: 32),
+            seekContainer.heightAnchor.constraint(equalToConstant: 24),
             seekContainer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             seekContainer.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
             // 全画面だけはホームインジケーターを避ける。映像外の専用領域は追加しない。
@@ -589,7 +596,7 @@ final class FullscreenPlayerViewController: UIViewController {
     private func scheduleHideControls() {
         hideTimer?.invalidate()
         hideTimer = nil
-        guard isPlayingNow, !isScrubbing, presentedViewController == nil else { return }
+        guard isPlayingNow, !isScrubbing, presentedViewController == nil, playerSettingsPanel == nil else { return }
         hideTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in
             self?.setControlsVisible(false)
         }
@@ -637,7 +644,15 @@ final class FullscreenPlayerViewController: UIViewController {
         return program.duration
     }
 
+    func refreshCaptureControls() {
+        captureButton.isEnabled = captureAvailable?() ?? false
+        commentCaptureButton.isEnabled = commentCaptureAvailable?() ?? false
+        captureButton.alpha = captureButton.isEnabled ? 1 : 0.35
+        commentCaptureButton.alpha = commentCaptureButton.isEnabled ? 1 : 0.35
+    }
+
     private func updateCaptionControl() {
+        refreshCaptureControls()
         let commentsOn = commentsEnabled?() ?? false
         commentButton.isEnabled = commentAvailable?() ?? false
         commentButton.setImage(UIImage(systemName: commentsOn ? "text.bubble.fill" : "text.bubble"), for: .normal)

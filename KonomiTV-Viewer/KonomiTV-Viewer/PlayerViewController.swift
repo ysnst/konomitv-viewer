@@ -383,6 +383,7 @@ final class PlayerViewController: UIViewController {
     // MARK: 情報欄のタブとコメント一覧 (Web 版パネルの下部ナビと同じ考え方)
     /// 情報欄のタブ (番組情報 / コメント)。Web 版パネル下部のナビにあたる。
     private let infoTabBar = UIView()
+    private var commentTabHasBeenShown = false
     private let infoTabButton = RippleButton()
     private let commentTabButton = RippleButton()
     /// タブの中の絵と文字。選択状態に合わせて色を変えるため控えを持つ。
@@ -439,8 +440,9 @@ final class PlayerViewController: UIViewController {
     private let fullscreenButton = RippleButton()
     private let settingsButton = RippleButton()
     private let pipButton = RippleButton()
+    private let captureButton = RippleButton()
+    private let commentCaptureButton = RippleButton()
     private let captureController = VideoCaptureController()
-    private var captureMenuState: [Bool] = []
     private var pipController: PlaybackPiPController?
     private var vlcStateObserver: VLCStateObserver?
     private weak var playbackNavigation: UINavigationController?
@@ -911,31 +913,27 @@ final class PlayerViewController: UIViewController {
         centerTransport.translatesAutoresizingMaskIntoConstraints = false
 
         // 下の帯の並び: [現在時刻] ... [全体の長さ・字幕切り替え・コメント切り替え]。
-        styleVideoOverlayButton(commentButton, symbol: "text.bubble", title: "実況コメントの表示を切り替え")
+        styleVideoOverlayButton(commentButton, symbol: "text.bubble", title: "実況コメントの表示を切り替え", adaptive: true)
         updateCommentButton()
-        styleVideoOverlayButton(captionButton, symbol: "captions.bubble", title: "字幕の表示を切り替え")
+        styleVideoOverlayButton(captionButton, symbol: "captions.bubble", title: "字幕の表示を切り替え", adaptive: true)
         updateCaptionButton()
-        styleVideoOverlayButton(settingsButton, symbol: "gearshape.fill", title: "プレイヤー設定")
-        styleVideoOverlayButton(fullscreenButton, symbol: "arrow.up.left.and.arrow.down.right", title: "全画面")
+        styleVideoOverlayButton(settingsButton, symbol: "gearshape.fill", title: "プレイヤー設定", adaptive: true)
+        styleVideoOverlayButton(fullscreenButton, symbol: "arrow.up.left.and.arrow.down.right", title: "全画面", adaptive: true)
         settingsButton.addTarget(self, action: #selector(openPlayerSettings), for: .touchUpInside)
-        styleVideoOverlayButton(pipButton, symbol: "pip.enter", title: "ピクチャ・イン・ピクチャ")
+        styleVideoOverlayButton(pipButton, symbol: "pip.enter", title: "ピクチャ・イン・ピクチャ", adaptive: true)
         pipButton.isHidden = true
         pipButton.addTarget(self, action: #selector(togglePiP), for: .touchUpInside)
-        let rightGroup = UIStackView(arrangedSubviews: [commentButton, captionButton, settingsButton, pipButton, fullscreenButton])
-        rightGroup.axis = .horizontal
-        rightGroup.spacing = 0
-        rightGroup.alignment = .center
-
+        styleVideoOverlayButton(captureButton, symbol: "camera", title: "キャプチャ", adaptive: true)
+        styleVideoOverlayButton(commentCaptureButton, symbol: "camera.badge.ellipsis", title: "コメント付きキャプチャ", adaptive: true)
+        captureButton.addAction(UIAction { [weak self] _ in guard let self else { return }; self.captureVideo(comments: false, presenter: self) }, for: .touchUpInside)
+        commentCaptureButton.addAction(UIAction { [weak self] _ in guard let self else { return }; self.captureVideo(comments: true, presenter: self) }, for: .touchUpInside)
         let separator = UILabel()
         separator.text = "/"
         separator.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         separator.textColor = .white
         let timeGroup = UIStackView(arrangedSubviews: [currentTimeLabel, separator, durationLabel])
         timeGroup.spacing = 2
-        let transportRow = UIStackView(arrangedSubviews: [timeGroup, UIView(), rightGroup])
-        transportRow.axis = .horizontal
-        transportRow.alignment = .center
-        transportRow.spacing = 0
+        let transportRow = PlayerActionRow(time: timeGroup, buttons: [captureButton, commentCaptureButton, commentButton, captionButton, settingsButton, pipButton, fullscreenButton])
 
         // 操作帯: グラデーションの上に、操作の並びとシークバーを載せる。
         // シークバーは Web 版スマホ縦と同じく、映像の下辺いっぱいに置く。
@@ -1018,7 +1016,7 @@ final class PlayerViewController: UIViewController {
         excitementStrip.isUserInteractionEnabled = false
         excitementStrip.backgroundColor = .clear
         excitementStrip.isHidden = true
-        controlsContainer.insertSubview(excitementStrip, belowSubview: seekContainer)
+        controlsContainer.insertSubview(excitementStrip, belowSubview: controlsStackView)
         NSLayoutConstraint.activate([
             excitementStrip.heightAnchor.constraint(equalToConstant: 26),
             excitementStrip.leadingAnchor.constraint(equalTo: seekContainer.leadingAnchor),
@@ -1488,22 +1486,22 @@ final class PlayerViewController: UIViewController {
             controlsStackView.leadingAnchor.constraint(equalTo: videoContainer.safeAreaLayoutGuide.leadingAnchor, constant: 8),
             controlsStackView.trailingAnchor.constraint(equalTo: videoContainer.safeAreaLayoutGuide.trailingAnchor, constant: -4),
             controlsStackView.bottomAnchor.constraint(equalTo: seekContainer.topAnchor),
-            seekContainer.heightAnchor.constraint(equalToConstant: 32),
+            seekContainer.heightAnchor.constraint(equalToConstant: 24),
             seekContainer.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
             seekContainer.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
             seekContainer.bottomAnchor.constraint(equalTo: videoContainer.bottomAnchor),
-            infoTabBar.topAnchor.constraint(equalTo: videoContainer.bottomAnchor),
+            infoTabBar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
             infoTabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             infoTabBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             infoTabBar.heightAnchor.constraint(equalToConstant: 50),
-            scrollView.topAnchor.constraint(equalTo: infoTabBar.bottomAnchor),
+            scrollView.topAnchor.constraint(equalTo: videoContainer.bottomAnchor),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            commentTableView.topAnchor.constraint(equalTo: infoTabBar.bottomAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: infoTabBar.topAnchor),
+            commentTableView.topAnchor.constraint(equalTo: videoContainer.bottomAnchor),
             commentTableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             commentTableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            commentTableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            commentTableView.bottomAnchor.constraint(equalTo: infoTabBar.topAnchor),
             infoStack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
             infoStack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
             infoStack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
@@ -1961,7 +1959,9 @@ final class PlayerViewController: UIViewController {
         scrollView.isHidden = tab != .info
         commentTableView.isHidden = tab != .comment
         updateInfoTabButtons()
-        if tab == .comment {
+        if tab == .comment, !commentTabHasBeenShown {
+            // 初回だけ現在位置へ追随する。再訪時は保持した位置と既存の追随ルールを使う。
+            commentTabHasBeenShown = true
             commentFollowIndex = -1
             commentListManualScrollAt = nil
             // 表のレイアウトが確定してから追随させる (確定前だと位置が合わない)。
@@ -2929,7 +2929,7 @@ final class PlayerViewController: UIViewController {
     private func scheduleHideControls() {
         hideTimer?.invalidate()
         hideTimer = nil
-        guard isCurrentlyPlaying(), !isScrubbing, presentedViewController == nil else { return }
+        guard isCurrentlyPlaying(), !isScrubbing, presentedViewController == nil, playerSettingsPanel == nil else { return }
         hideTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in
             self?.setControlsVisible(false)
         }
@@ -3940,6 +3940,7 @@ final class PlayerViewController: UIViewController {
     /// VLCKit 経路は、映像の枠ごと全画面側へ貸し出す
     /// (生放送の全画面と同じ作り) ので、こちらも受信は止まらない。
     @objc private func showFullscreen() {
+        playerSettingsPanel?.closePanel()
 #if canImport(VLCKit)
         if vlcPlayer != nil {
             let fullscreen = FullscreenPlayerViewController(
@@ -4001,11 +4002,11 @@ final class PlayerViewController: UIViewController {
     }
 
     private func updateCaptureControls() {
-        let state = [canCaptureVideo, SettingsStore.shared.showComments]
-        guard state != captureMenuState else { return }
-        captureMenuState = state
-        let navigation = (activeFullscreenPlayer?.presentedViewController ?? presentedViewController) as? PlayerSettingsNavigationController
-        (navigation?.topViewController as? PlayerSettingsViewController)?.refreshRows()
+        captureButton.isEnabled = canCaptureVideo
+        commentCaptureButton.isEnabled = canCaptureVideo && SettingsStore.shared.showComments
+        captureButton.alpha = captureButton.isEnabled ? 1 : 0.35
+        commentCaptureButton.alpha = commentCaptureButton.isEnabled ? 1 : 0.35
+        activeFullscreenPlayer?.refreshCaptureControls()
     }
 
     private func captureVideo(comments: Bool, presenter: UIViewController) {
@@ -4127,6 +4128,8 @@ final class PlayerViewController: UIViewController {
     }
 
     @objc private func togglePiP() {
+        playerSettingsPanel?.closePanel()
+        activeFullscreenPlayer?.playerSettingsPanel?.closePanel()
         captureController.cancel()
         guard let pip = pipController, !audioOnly else { return }
         if pip.isActive || pip.isPending { pip.stop() } else { pip.start(owner: self) }
@@ -4144,13 +4147,17 @@ final class PlayerViewController: UIViewController {
         fullscreen.onShowSettings = { [weak self] presenter in self?.showPlayerSettings(from: presenter) }
         fullscreen.pipAvailable = { [weak self] in self?.pipController?.isReady == true && self?.audioOnly == false }
         fullscreen.onTogglePiP = { [weak self] in self?.togglePiP() }
+        fullscreen.captureAvailable = { [weak self] in self?.canCaptureVideo == true }
+        fullscreen.commentCaptureAvailable = { [weak self] in self?.canCaptureVideo == true && SettingsStore.shared.showComments }
+        fullscreen.onCapture = { [weak self] comments, presenter in self?.captureVideo(comments: comments, presenter: presenter) }
         fullscreen.pipActive = { [weak self] in self?.pipController?.isActive == true }
         fullscreen.pipPending = { [weak self] in self?.pipController?.isPending == true }
     }
 
     private func showPlayerSettings(from presenter: UIViewController) {
+        if let panel = presenter.playerSettingsPanel { panel.closePanel(); return }
         hideTimer?.invalidate()
-        let menu = PlayerSettingsViewController { [weak self, weak presenter] in
+        let menu = PlayerSettingsViewController { [weak self] in
             guard let self else { return [] }
             let store = SettingsStore.shared
             let saver = store.dataSaverMode(media: .video, profile: self.profile)
@@ -4195,16 +4202,6 @@ final class PlayerViewController: UIViewController {
             if !self.digestButton.isHidden {
                 rows.append(.init(title: "ダイジェスト再生", toggle: self.digestPlaybackEnabled, change: { [weak self] _ in self?.toggleDigestPlayback() }))
             }
-            rows.insert(contentsOf: [
-                .init(title: "キャプチャ", action: { [weak self, weak presenter] in
-                    guard let self, let presenter else { return }
-                    presenter.dismiss(animated: true) { self.captureVideo(comments: false, presenter: presenter) }
-                }, isEnabled: self.canCaptureVideo),
-                .init(title: "コメント付きキャプチャ", action: { [weak self, weak presenter] in
-                    guard let self, let presenter else { return }
-                    presenter.dismiss(animated: true) { self.captureVideo(comments: true, presenter: presenter) }
-                }, isEnabled: self.canCaptureVideo && store.showComments),
-            ], at: rows.count)
             if self.pipController?.isActive != true, self.pipController?.isPending != true {
                 rows.append(.init(title: "プレイヤーを再起動", action: { [weak self] in self?.restartPlayer() }))
             }
@@ -4221,10 +4218,9 @@ final class PlayerViewController: UIViewController {
             (presenter as? FullscreenPlayerViewController)?.resumeControlAutoHide()
             self?.scheduleHideControls()
         }
-        navigation.modalPresentationStyle = .pageSheet
-        navigation.sheetPresentationController?.detents = [.medium(), .large()]
-        navigation.sheetPresentationController?.prefersGrabberVisible = true
-        presenter.present(navigation, animated: true)
+        if presenter === self {
+            navigation.mount(in: self, below: videoContainer, hiding: infoTabBar)
+        } else { navigation.mount(in: presenter) }
     }
 
     /// 同じコメントビューを貸し出し、時刻の供給元・表示設定・ミュート済みの材料を保つ。

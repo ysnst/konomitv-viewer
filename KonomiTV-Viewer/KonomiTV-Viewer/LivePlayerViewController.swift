@@ -46,8 +46,9 @@ final class LivePlayerViewController: UIViewController {
     private let fullscreenButton = RippleButton()
     private let settingsButton = RippleButton()
     private let pipButton = RippleButton()
+    private let captureButton = RippleButton()
+    private let commentCaptureButton = RippleButton()
     private let captureController = VideoCaptureController()
-    private var captureMenuState: [Bool] = []
     private var pipController: PlaybackPiPController?
     private var vlcStateObserver: VLCStateObserver?
     private weak var playbackNavigation: UINavigationController?
@@ -156,6 +157,7 @@ final class LivePlayerViewController: UIViewController {
     private var commentInitFailure: String?
     /// 一覧が新しいコメントへ追随するかどうか (手で遡っている間は切る)。
     private var commentFollow = true
+    private var commentTabHasBeenShown = false
     /// 実況コメントの土台 (2本の窓口の管理)。
     private var commentSession: LiveCommentSession?
     /// コメントを映像の上に流す重ね物 (録画と同じ描き手)。
@@ -393,26 +395,24 @@ final class LivePlayerViewController: UIViewController {
         updateCaptionButton()
         commentButton.addTarget(self, action: #selector(toggleComments), for: .touchUpInside)
         updateCommentButton()
-        styleVideoOverlayButton(commentButton, symbol: "text.bubble", title: "実況コメントの表示を切り替え")
+        styleVideoOverlayButton(commentButton, symbol: "text.bubble", title: "実況コメントの表示を切り替え", adaptive: true)
         updateCommentButton()
-        styleVideoOverlayButton(captionButton, symbol: "captions.bubble", title: "字幕の表示を切り替え")
+        styleVideoOverlayButton(captionButton, symbol: "captions.bubble", title: "字幕の表示を切り替え", adaptive: true)
         updateCaptionButton()
-        styleVideoOverlayButton(settingsButton, symbol: "gearshape.fill", title: "プレイヤー設定")
-        styleVideoOverlayButton(fullscreenButton, symbol: "arrow.up.left.and.arrow.down.right", title: "全画面")
+        styleVideoOverlayButton(settingsButton, symbol: "gearshape.fill", title: "プレイヤー設定", adaptive: true)
+        styleVideoOverlayButton(fullscreenButton, symbol: "arrow.up.left.and.arrow.down.right", title: "全画面", adaptive: true)
         settingsButton.addTarget(self, action: #selector(openPlayerSettings), for: .touchUpInside)
-        styleVideoOverlayButton(pipButton, symbol: "pip.enter", title: "ピクチャ・イン・ピクチャ")
+        styleVideoOverlayButton(pipButton, symbol: "pip.enter", title: "ピクチャ・イン・ピクチャ", adaptive: true)
         pipButton.isHidden = true
         pipButton.addTarget(self, action: #selector(togglePiP), for: .touchUpInside)
-        let actions = UIStackView(arrangedSubviews: [commentButton, captionButton, settingsButton, pipButton, fullscreenButton])
-        actions.axis = .horizontal
-        actions.spacing = 0
+        styleVideoOverlayButton(captureButton, symbol: "camera", title: "キャプチャ", adaptive: true)
+        styleVideoOverlayButton(commentCaptureButton, symbol: "camera.badge.ellipsis", title: "コメント付きキャプチャ", adaptive: true)
+        captureButton.addAction(UIAction { [weak self] _ in guard let self else { return }; self.captureVideo(comments: false, presenter: self) }, for: .touchUpInside)
+        commentCaptureButton.addAction(UIAction { [weak self] _ in guard let self else { return }; self.captureVideo(comments: true, presenter: self) }, for: .touchUpInside)
         liveTimeLabel.adjustsFontSizeToFitWidth = true
         liveTimeLabel.minimumScaleFactor = 0.65
         liveTimeLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let controlsRow = UIStackView(arrangedSubviews: [liveTimeLabel, UIView(), actions])
-        controlsRow.axis = .horizontal
-        controlsRow.spacing = 0
-        controlsRow.alignment = .center
+        let controlsRow = PlayerActionRow(time: liveTimeLabel, buttons: [captureButton, commentCaptureButton, commentButton, captionButton, settingsButton, pipButton, fullscreenButton])
         controlsRow.translatesAutoresizingMaskIntoConstraints = false
 
         bottomGradient.translatesAutoresizingMaskIntoConstraints = false
@@ -649,22 +649,22 @@ final class LivePlayerViewController: UIViewController {
             playPauseButton.centerYAnchor.constraint(equalTo: videoArea.centerYAnchor),
             playPauseButton.widthAnchor.constraint(equalToConstant: 64),
             playPauseButton.heightAnchor.constraint(equalToConstant: 64),
-            panelTabBar.topAnchor.constraint(equalTo: videoArea.bottomAnchor),
+            panelTabBar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
             panelTabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             panelTabBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             panelTabBar.heightAnchor.constraint(equalToConstant: 50),
-            scrollView.topAnchor.constraint(equalTo: panelTabBar.bottomAnchor),
+            scrollView.topAnchor.constraint(equalTo: videoArea.bottomAnchor),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            channelPanel.topAnchor.constraint(equalTo: panelTabBar.bottomAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: panelTabBar.topAnchor),
+            channelPanel.topAnchor.constraint(equalTo: videoArea.bottomAnchor),
             channelPanel.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             channelPanel.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            channelPanel.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            commentPanel.topAnchor.constraint(equalTo: panelTabBar.bottomAnchor),
+            channelPanel.bottomAnchor.constraint(equalTo: panelTabBar.topAnchor),
+            commentPanel.topAnchor.constraint(equalTo: videoArea.bottomAnchor),
             commentPanel.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             commentPanel.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            commentPanel.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            commentPanel.bottomAnchor.constraint(equalTo: panelTabBar.topAnchor),
             infoStack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
             infoStack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
             infoStack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
@@ -806,7 +806,9 @@ final class LivePlayerViewController: UIViewController {
         if tab == .channel {
             loadChannelPanelIfNeeded()
         }
-        if tab == .comment {
+        if tab == .comment, !commentTabHasBeenShown {
+            // 初回だけ末尾へ合わせ、再訪時は手動で遡った位置と追随状態を保つ。
+            commentTabHasBeenShown = true
             commentFollow = true
             commentJumpButton.isHidden = true
             scrollCommentListToBottom(animated: false)
@@ -1591,7 +1593,7 @@ final class LivePlayerViewController: UIViewController {
         hideTimer?.invalidate()
         hideTimer = nil
 #if canImport(VLCKit)
-        guard vlcPlayer?.isPlaying ?? false, presentedViewController == nil else { return }
+        guard vlcPlayer?.isPlaying ?? false, presentedViewController == nil, playerSettingsPanel == nil else { return }
         hideTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in
             self?.setControlsVisible(false)
         }
@@ -2610,11 +2612,11 @@ final class LivePlayerViewController: UIViewController {
     }
 
     private func updateCaptureControls() {
-        let state = [canCaptureVideo, SettingsStore.shared.showComments]
-        guard state != captureMenuState else { return }
-        captureMenuState = state
-        let navigation = (activeFullscreen?.presentedViewController ?? presentedViewController) as? PlayerSettingsNavigationController
-        (navigation?.topViewController as? PlayerSettingsViewController)?.refreshRows()
+        captureButton.isEnabled = canCaptureVideo
+        commentCaptureButton.isEnabled = canCaptureVideo && SettingsStore.shared.showComments
+        captureButton.alpha = captureButton.isEnabled ? 1 : 0.35
+        commentCaptureButton.alpha = commentCaptureButton.isEnabled ? 1 : 0.35
+        activeFullscreen?.refreshCaptureControls()
     }
 
     private func captureVideo(comments: Bool, presenter: UIViewController) {
@@ -2707,6 +2709,8 @@ final class LivePlayerViewController: UIViewController {
     }
 
     @objc private func togglePiP() {
+        playerSettingsPanel?.closePanel()
+        activeFullscreen?.playerSettingsPanel?.closePanel()
         captureController.cancel()
         guard let pip = pipController, !audioOnly else { return }
         if pip.isActive || pip.isPending { pip.stop() } else { pip.start(owner: self) }
@@ -2715,8 +2719,9 @@ final class LivePlayerViewController: UIViewController {
     @objc private func openPlayerSettings() { showPlayerSettings(from: self) }
 
     private func showPlayerSettings(from presenter: UIViewController) {
+        if let panel = presenter.playerSettingsPanel { panel.closePanel(); return }
         hideTimer?.invalidate()
-        let menu = PlayerSettingsViewController { [weak self, weak presenter] in
+        let menu = PlayerSettingsViewController { [weak self] in
             guard let self else { return [] }
             let store = SettingsStore.shared
             let saver = store.dataSaverMode(media: .tv, profile: self.profile)
@@ -2742,16 +2747,6 @@ final class LivePlayerViewController: UIViewController {
                 }),
                 .init(title: "音声のみ再生", toggle: self.audioOnly, change: { [weak self] _ in self?.toggleAudioOnly() }),
             ]
-            rows.insert(contentsOf: [
-                .init(title: "キャプチャ", action: { [weak self, weak presenter] in
-                    guard let self, let presenter else { return }
-                    presenter.dismiss(animated: true) { self.captureVideo(comments: false, presenter: presenter) }
-                }, isEnabled: self.canCaptureVideo),
-                .init(title: "コメント付きキャプチャ", action: { [weak self, weak presenter] in
-                    guard let self, let presenter else { return }
-                    presenter.dismiss(animated: true) { self.captureVideo(comments: true, presenter: presenter) }
-                }, isEnabled: self.canCaptureVideo && store.showComments),
-            ], at: rows.count)
             if self.pipController?.isActive == true || self.pipController?.isPending == true {
                 for index in rows.indices where ["画質", "モバイル回線向け画質", "音声のみ再生"].contains(rows[index].title) {
                     rows[index].isEnabled = false
@@ -2767,19 +2762,22 @@ final class LivePlayerViewController: UIViewController {
             (presenter as? LiveFullscreenViewController)?.resumeControlAutoHide()
 #endif
         }
-        navigation.modalPresentationStyle = .pageSheet
-        navigation.sheetPresentationController?.detents = [.medium(), .large()]
-        navigation.sheetPresentationController?.prefersGrabberVisible = true
-        presenter.present(navigation, animated: true)
+        if presenter === self {
+            navigation.mount(in: self, below: videoArea, hiding: panelTabBar)
+        } else { navigation.mount(in: presenter) }
     }
 
     @objc private func showFullscreen() {
+        playerSettingsPanel?.closePanel()
 #if canImport(VLCKit)
         guard vlcPlayer != nil else { return }
         let fullscreen = LiveFullscreenViewController(channelName: channel.name)
         activeFullscreen = fullscreen
         fullscreen.pipAvailable = { [weak self] in self?.pipController?.isReady == true && self?.audioOnly == false }
         fullscreen.onTogglePiP = { [weak self] in self?.togglePiP() }
+        fullscreen.captureAvailable = { [weak self] in self?.canCaptureVideo == true }
+        fullscreen.commentCaptureAvailable = { [weak self] in self?.canCaptureVideo == true && SettingsStore.shared.showComments }
+        fullscreen.onCapture = { [weak self] comments, presenter in self?.captureVideo(comments: comments, presenter: presenter) }
         fullscreen.pipActive = { [weak self] in self?.pipController?.isActive == true }
         fullscreen.pipPending = { [weak self] in self?.pipController?.isPending == true }
         fullscreen.commentsEnabled = { SettingsStore.shared.showComments }
@@ -3012,12 +3010,17 @@ final class LiveFullscreenViewController: UIViewController {
     /// リモコンの浮きボタン (通常画面と同じ顔ぶれ: 48x48 の円)。
     /// 操作類と一緒に現れて、一緒に消える。
     private let remoteButton = RippleButton()
-    private let optionsRow = UIStackView()
+    private var optionsRow: PlayerActionRow!
     private let captionButton = RippleButton()
     private let pipButton = RippleButton()
     var pipAvailable: (() -> Bool)?
     var pipActive: (() -> Bool)?
     var pipPending: (() -> Bool)?
+    private let captureButton = RippleButton()
+    private let commentCaptureButton = RippleButton()
+    var captureAvailable: (() -> Bool)?
+    var commentCaptureAvailable: (() -> Bool)?
+    var onCapture: ((Bool, UIViewController) -> Void)?
     var onTogglePiP: (() -> Void)?
     private let commentButton = RippleButton()
     var commentsEnabled: (() -> Bool)?
@@ -3145,9 +3148,9 @@ final class LiveFullscreenViewController: UIViewController {
         view.addSubview(remoteButton)
         let settings = RippleButton()
         let fullscreen = RippleButton()
-        styleVideoOverlayButton(captionButton, symbol: "captions.bubble", title: "字幕の表示を切り替え")
-        styleVideoOverlayButton(settings, symbol: "gearshape.fill", title: "プレイヤー設定")
-        styleVideoOverlayButton(fullscreen, symbol: "arrow.down.right.and.arrow.up.left", title: "全画面を解除")
+        styleVideoOverlayButton(captionButton, symbol: "captions.bubble", title: "字幕の表示を切り替え", adaptive: true)
+        styleVideoOverlayButton(settings, symbol: "gearshape.fill", title: "プレイヤー設定", adaptive: true)
+        styleVideoOverlayButton(fullscreen, symbol: "arrow.down.right.and.arrow.up.left", title: "全画面を解除", adaptive: true)
         captionButton.addAction(UIAction { [weak self] _ in
             self?.onToggleCaptions?()
             self?.updateCaptionControl()
@@ -3160,17 +3163,20 @@ final class LiveFullscreenViewController: UIViewController {
             self.onShowSettings?(self)
         }, for: .touchUpInside)
         fullscreen.addTarget(self, action: #selector(exitFullscreen), for: .touchUpInside)
-        optionsRow.axis = .horizontal
-        styleVideoOverlayButton(commentButton, symbol: "text.bubble", title: "実況コメントの表示を切り替え")
+        styleVideoOverlayButton(commentButton, symbol: "text.bubble", title: "実況コメントの表示を切り替え", adaptive: true)
         commentButton.addAction(UIAction { [weak self] _ in
             self?.onToggleComments?()
             self?.updateCaptionControl()
             self?.scheduleHideControls()
         }, for: .touchUpInside)
-        styleVideoOverlayButton(pipButton, symbol: "pip.enter", title: "ピクチャ・イン・ピクチャ")
+        styleVideoOverlayButton(pipButton, symbol: "pip.enter", title: "ピクチャ・イン・ピクチャ", adaptive: true)
         pipButton.addAction(UIAction { [weak self] _ in self?.onTogglePiP?() }, for: .touchUpInside)
         refreshPiPControl()
-        for button in [commentButton, captionButton, settings, pipButton, fullscreen] { optionsRow.addArrangedSubview(button) }
+        styleVideoOverlayButton(captureButton, symbol: "camera", title: "キャプチャ", adaptive: true)
+        styleVideoOverlayButton(commentCaptureButton, symbol: "camera.badge.ellipsis", title: "コメント付きキャプチャ", adaptive: true)
+        captureButton.addAction(UIAction { [weak self] _ in guard let self else { return }; self.onCapture?(false, self) }, for: .touchUpInside)
+        commentCaptureButton.addAction(UIAction { [weak self] _ in guard let self else { return }; self.onCapture?(true, self) }, for: .touchUpInside)
+        optionsRow = PlayerActionRow(time: UIView(), buttons: [captureButton, commentCaptureButton, commentButton, captionButton, settings, pipButton, fullscreen])
         optionsRow.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(optionsRow)
 
@@ -3194,7 +3200,8 @@ final class LiveFullscreenViewController: UIViewController {
             playPauseButton.heightAnchor.constraint(equalToConstant: 60),
             remoteButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
             remoteButton.bottomAnchor.constraint(equalTo: optionsRow.topAnchor, constant: -8),
-            optionsRow.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+            optionsRow.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 8),
+            optionsRow.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -4),
             optionsRow.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
             remoteButton.widthAnchor.constraint(equalToConstant: 48),
             remoteButton.heightAnchor.constraint(equalToConstant: 48),
@@ -3232,7 +3239,15 @@ final class LiveFullscreenViewController: UIViewController {
         }
     }
 
+    func refreshCaptureControls() {
+        captureButton.isEnabled = captureAvailable?() ?? false
+        commentCaptureButton.isEnabled = commentCaptureAvailable?() ?? false
+        captureButton.alpha = captureButton.isEnabled ? 1 : 0.35
+        commentCaptureButton.alpha = commentCaptureButton.isEnabled ? 1 : 0.35
+    }
+
     private func updateCaptionControl() {
+        refreshCaptureControls()
         let commentsOn = commentsEnabled?() ?? false
         commentButton.isEnabled = commentAvailable?() ?? false
         commentButton.setImage(UIImage(systemName: commentsOn ? "text.bubble.fill" : "text.bubble"), for: .normal)
@@ -3260,7 +3275,7 @@ final class LiveFullscreenViewController: UIViewController {
     private func scheduleHideControls() {
         hideTimer?.invalidate()
         hideTimer = nil
-        guard isPlayingProvider?() ?? false, presentedViewController == nil else { return }
+        guard isPlayingProvider?() ?? false, presentedViewController == nil, playerSettingsPanel == nil else { return }
         hideTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in
             self?.setControlsVisible(false)
         }

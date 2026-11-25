@@ -1,18 +1,28 @@
 import UIKit
 
 /// 映像に重ねる操作。iOS 26 の標準ボタンの大きな塗りを避け、44pt の当たりを持たせる。
-func styleVideoOverlayButton(_ button: UIButton, symbol: String, title: String) {
+func styleVideoOverlayButton(_ button: UIButton, symbol: String, title: String, adaptive: Bool = false) {
     button.configuration = nil
     button.setTitle(nil, for: .normal)
     let configuration = UIImage.SymbolConfiguration(pointSize: 20)
     button.setPreferredSymbolConfiguration(configuration, forImageIn: .normal)
-    let icon = UIImage(systemName: symbol, withConfiguration: configuration)
+    var icon = UIImage(systemName: symbol, withConfiguration: configuration)
+    if symbol == "camera.badge.ellipsis" {
+        icon = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24)).image { _ in
+            UIImage(systemName: "camera", withConfiguration: configuration)?.withTintColor(.white).draw(in: CGRect(x: 0, y: 0, width: 21, height: 19))
+            UIImage(systemName: "text.bubble.fill")?.withTintColor(.white).draw(in: CGRect(x: 13, y: 13, width: 11, height: 11))
+        }.withRenderingMode(.alwaysTemplate)
+    }
     button.setImage(icon, for: .normal)
     button.tintColor = .white
     button.backgroundColor = .clear
     button.accessibilityLabel = title
     if symbol == "captions.bubble" { button.accessibilityHint = "字幕データのある番組で表示します" }
-    button.widthAnchor.constraint(equalToConstant: 44).isActive = true
+    if !adaptive { button.widthAnchor.constraint(equalToConstant: 44).isActive = true }
+    if adaptive {
+        // 描画を下へ寄せ、シークの操作領域を侵さず視覚的な空白を減らす。
+        button.contentVerticalAlignment = .bottom
+    }
     button.heightAnchor.constraint(equalToConstant: 44).isActive = true
 }
 
@@ -55,6 +65,7 @@ final class PlayerSettingsNavigationController: ViewerNavigationController {
     private var notified = false
     override func viewDidLoad() {
         super.viewDidLoad()
+        overrideUserInterfaceStyle = .dark
         let appearance = UINavigationBarAppearance()
         appearance.configureWithOpaqueBackground()
         appearance.backgroundColor = AppPalette.panel
@@ -64,13 +75,58 @@ final class PlayerSettingsNavigationController: ViewerNavigationController {
         navigationBar.compactAppearance = appearance
         navigationBar.tintColor = AppPalette.accent
     }
+    private weak var hiddenTabs: UIView?
+    private var tabsWereHidden = false
+
+    /// sheetの拡張ではなく、実際の映像下端から利用可能な領域へ固定する。
+    func mount(in owner: UIViewController, below video: UIView? = nil, hiding tabs: UIView? = nil) {
+        hiddenTabs = tabs
+        tabsWereHidden = tabs?.isHidden ?? false
+        tabs?.isHidden = true
+        owner.addChild(self)
+        view.translatesAutoresizingMaskIntoConstraints = false
+        owner.view.addSubview(view)
+        if let video {
+            NSLayoutConstraint.activate([
+                view.topAnchor.constraint(equalTo: video.bottomAnchor),
+                view.bottomAnchor.constraint(equalTo: owner.view.safeAreaLayoutGuide.bottomAnchor),
+                view.leadingAnchor.constraint(equalTo: owner.view.leadingAnchor),
+                view.trailingAnchor.constraint(equalTo: owner.view.trailingAnchor),
+            ])
+        } else {
+            // PWAの右側パネルを基準に、iOSの文字/トグルの幅を確保する。
+            let width = view.widthAnchor.constraint(equalToConstant: 320)
+            width.priority = .defaultHigh
+            NSLayoutConstraint.activate([
+                view.topAnchor.constraint(equalTo: owner.view.safeAreaLayoutGuide.topAnchor, constant: 8),
+                view.bottomAnchor.constraint(equalTo: owner.view.safeAreaLayoutGuide.bottomAnchor, constant: -64),
+                view.trailingAnchor.constraint(equalTo: owner.view.safeAreaLayoutGuide.trailingAnchor),
+                view.widthAnchor.constraint(lessThanOrEqualTo: owner.view.safeAreaLayoutGuide.widthAnchor, multiplier: 0.5),
+                width,
+            ])
+        }
+        didMove(toParent: owner)
+    }
+
+    func closePanel() {
+        if parent != nil {
+            willMove(toParent: nil)
+            view.removeFromSuperview()
+            removeFromParent()
+            finishClosing()
+        } else { dismiss(animated: true) { [weak self] in self?.finishClosing() } }
+    }
+    private func finishClosing() {
+        guard !notified else { return }
+        notified = true
+        hiddenTabs?.isHidden = tabsWereHidden
+        onClose?()
+    }
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        if (isBeingDismissed || presentingViewController == nil), !notified {
-            notified = true
-            onClose?()
-        }
+        if parent == nil && (isBeingDismissed || presentingViewController == nil) { finishClosing() }
     }
+
 }
 
 /// プレイヤーの実処理は所有元に残す。通常・全画面で同じ設定と操作を使う。
@@ -93,14 +149,16 @@ final class PlayerSettingsViewController: UITableViewController {
     private var rows: [Row] = []
     init(title: String = "プレイヤー設定", rows: @escaping () -> [Row]) {
         rowsProvider = rows
-        super.init(style: .insetGrouped)
+        super.init(style: .plain)
         self.title = title
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
     override func viewDidLoad() {
         super.viewDidLoad()
+        overrideUserInterfaceStyle = .dark
         view.backgroundColor = AppPalette.background
+        tableView.backgroundColor = AppPalette.background
         tableView.separatorColor = AppPalette.pressed
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 52
@@ -116,7 +174,7 @@ final class PlayerSettingsViewController: UITableViewController {
         rows = rowsProvider()
         tableView.reloadData()
     }
-    @objc private func close() { dismiss(animated: true) }
+    @objc private func close() { (navigationController as? PlayerSettingsNavigationController)?.closePanel() }
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { rows.count }
     override func tableView(_ tableView: UITableView, cellForRowAt path: IndexPath) -> UITableViewCell {
         let row = rows[path.row]
@@ -170,7 +228,7 @@ final class PlayerSettingsViewController: UITableViewController {
     }
 }
 
-/// 見た目はDPlayerの4pt/11pt、操作は映像内の32pt領域で受ける。
+/// 見た目はDPlayerの4pt/11pt、操作は映像内の24pt領域で受ける。
 /// 下端基準なので、波形表示や操作行の高さにトラック位置が影響されない。
 final class PlayerSeekSlider: UISlider {
     override init(frame: CGRect) {
@@ -200,5 +258,42 @@ final class PlayerSeekSlider: UISlider {
         let tracking = super.beginTracking(touch, with: event)
         sendActions(for: .valueChanged)
         return tracking
+    }
+}
+
+// プレイヤー所有元から、子パネルの有無・終了を共有する。再生状態は所有しない。
+extension UIViewController {
+    var playerSettingsPanel: PlayerSettingsNavigationController? {
+        children.compactMap { $0 as? PlayerSettingsNavigationController }.first
+    }
+}
+
+/// PWAの40px幅を基準に、時間と7操作を同じ高さへ収める。
+/// 狭幅では横だけ調整し、文字とボタンを重ねたり行数を増やしたりしない。
+final class PlayerActionRow: UIStackView {
+    private let actions: UIStackView
+    private let actionWidth: NSLayoutConstraint
+    init(time: UIView, buttons: [UIButton]) {
+        let group = UIStackView(arrangedSubviews: buttons)
+        actions = group
+        actionWidth = group.widthAnchor.constraint(equalToConstant: CGFloat(buttons.count) * 40)
+        super.init(frame: .zero)
+        group.distribution = .fillEqually
+        axis = .horizontal
+        alignment = .bottom
+        spacing = 4
+        addArrangedSubview(time)
+        addArrangedSubview(actions)
+        actionWidth.isActive = true
+    }
+    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func layoutSubviews() {
+        let count = actions.arrangedSubviews.filter { !$0.isHidden }.count
+        if count > 0, bounds.width > 0 {
+            let timeWidth = min(80, bounds.width * 0.23)
+            let target = CGFloat(count) * min(40, max(0, bounds.width - timeWidth - spacing) / CGFloat(count))
+            if abs(actionWidth.constant - target) > 0.5 { actionWidth.constant = target }
+        }
+        super.layoutSubviews()
     }
 }
