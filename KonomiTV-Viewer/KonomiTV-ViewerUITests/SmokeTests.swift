@@ -9,6 +9,14 @@ import XCTest
 /// 接続先は起動時の引数で仮サーバーへ向ける (設定の保存キー viewer_url と
 /// 同じ仕組み。通常の起動には影響しない)。
 ///
+/// 再生は H.265 の経路 (VLCKit) を使う。通信節約の設定
+/// (viewer_video_data_saver_mode) を起動時の引数でオンにして、アプリに
+/// H.265 の画質を選ばせる。理由: GitHub Actions のシミュレータでは、
+/// 通常画質の再生の仕組み (AVPlayer) が、材料を全部受け取っても再生の
+/// 時計が進まないことを実測で確認した (アプリを介さない直接再生でも
+/// 再現する、実行環境側の限界)。VLCKit は時計の仕組みが別なので、
+/// そちらで「再生が始まること」を確かめる。
+///
 /// 注意: 再生画面の操作帯は、再生中に数秒で自動的に隠れる。隠れている間、
 /// その中身 (再生位置の表示や全画面ボタン) は画面操作テストの要素として
 /// 見つからなくなるため、見つからないときは映像をタップして操作帯を
@@ -23,7 +31,12 @@ final class SmokeTests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
-        app.launchArguments += ["-viewer_url", stubBaseURL]
+        app.launchArguments += [
+            "-viewer_url", stubBaseURL,
+            // 通信節約 (H.265) をオンにして、再生を VLCKit の経路にする
+            // (上の説明参照)。
+            "-viewer_video_data_saver_mode", "YES",
+        ]
         app.launch()
     }
 
