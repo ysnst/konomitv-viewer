@@ -597,10 +597,28 @@ enum DateParser {
 }
 
 enum TimeFormat {
+    /// 秒として扱える上限 (1週間)。録画の長さや再生位置として
+    /// あり得ない大きさは、異常値として扱う。
+    private static let maxValidSeconds: Double = 7 * 24 * 60 * 60
+
+    /// 秒を整数の秒へ安全に直す (四捨五入)。有限でない・負・上限を
+    /// 超える値は 0。サーバーから来た値には、有限だが Int に収まらない
+    /// 巨大なものがあり得て、そのまま Int へ変換すると落ちるため、
+    /// 変換の前に確かめる。
+    static func safeSeconds(_ seconds: Double) -> Int {
+        guard seconds.isFinite, seconds >= 0, seconds <= maxValidSeconds else { return 0 }
+        return Int(seconds.rounded())
+    }
+
+    /// 秒を整数の秒へ安全に直す (切り捨て)。扱いは safeSeconds と同じ。
+    static func safeSecondsTruncated(_ seconds: Double) -> Int {
+        guard seconds.isFinite, seconds >= 0, seconds <= maxValidSeconds else { return 0 }
+        return Int(seconds)
+    }
+
     /// 秒を "1:23:45" / "23:45" の形にする。
     static func hms(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
-        let total = Int(seconds.rounded())
+        let total = safeSeconds(seconds)
         let h = total / 3600
         let m = (total % 3600) / 60
         let s = total % 60

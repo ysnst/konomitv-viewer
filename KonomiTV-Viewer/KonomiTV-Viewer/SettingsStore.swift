@@ -1609,6 +1609,28 @@ final class SettingsStore {
             return [:]
         }
     }
+
+    /// 再生にアプリ内の中継が必須かどうか (VLCKit の経路)。
+    /// VLCKit には認証の合言葉を確実に届ける入口が無く、Digest・
+    /// クライアント証明書・合言葉つき URL も扱えないため、認証方式が
+    /// 「なし」以外のときは中継が必須になる。中継の用意ができていない
+    /// ときに直接再生へ落ちると、認証で弾かれて再生が始まらない。
+    var vlcPlaybackRequiresRelay: Bool {
+        authMethod != .none
+    }
+
+    /// 再生にアプリ内の中継が必須かどうか (AVPlayer の経路)。
+    /// ヘッダーで渡せる方式は AVPlayer 単独でも通せるが、Digest・
+    /// クライアント証明書・合言葉つき URL は中継でしか扱えない
+    /// (APIClient.playerAsset の出し分けと同じ条件)。
+    var avPlaybackRequiresRelay: Bool {
+        switch authMethod {
+        case .digest, .clientCertificate, .urlParameter:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 /// サーバーからの認証の求め (401 の応答) への応答をまとめたもの。

@@ -16,6 +16,10 @@ final class SceneListViewController: UIViewController {
 
     /// サーバーから取ったしおり (再生位置の昇順)。
     private var bookmarks: [VideoBookmark] = []
+    /// しおりの取得の世代 (取得のたびに進める)。返ってきた結果は
+    /// 最新の取得のものだけを反映する。遅れて届いた古い取得結果で、
+    /// 削除したしおりが表示に戻らないようにするため。
+    private var bookmarkFetchGeneration = 0
     /// 読み込んだタイル画像 (切り出しの材料)。寸法が合わなければ nil のまま。
     private var spriteCGImage: CGImage?
     /// 場面の並び (タイル番号と時刻)。タイル情報が無ければ空。
@@ -145,7 +149,7 @@ final class SceneListViewController: UIViewController {
                     symbol: "megaphone.fill",
                     iconColor: UIColor(red: 0x6C / 255, green: 0xB2 / 255, blue: 0xF5 / 255, alpha: 1),
                     timeText: "\(TimeFormat.hms(section.start_time)) 〜 \(TimeFormat.hms(section.end_time))",
-                    subText: "\(Int((section.end_time - section.start_time).rounded())) 秒")
+                    subText: "\(TimeFormat.safeSeconds(section.end_time - section.start_time)) 秒")
                 attachSeek(to: row, time: section.start_time)
                 contentStack.addArrangedSubview(row)
             }
@@ -358,9 +362,16 @@ final class SceneListViewController: UIViewController {
     /// しおりを取り直す (開くたびに最新にする。Web 版と同じ)。
     private func loadBookmarks() {
         let videoID = program.id
+        bookmarkFetchGeneration += 1
+        let generation = bookmarkFetchGeneration
         Task { [weak self] in
             guard let self else { return }
-            self.bookmarks = await APIClient.shared.fetchBookmarks(videoID: videoID)
+            let fetched = await APIClient.shared.fetchBookmarks(videoID: videoID)
+            // 取得の間に新しい取得が始まっていたら、この結果は古い
+            // ため反映しない (削除後の取り直しより前の結果が遅れて
+            // 届き、消したしおりが表示に戻るのを防ぐ)。
+            guard generation == self.bookmarkFetchGeneration else { return }
+            self.bookmarks = fetched
             self.rebuildContent()
         }
     }
@@ -369,11 +380,18 @@ final class SceneListViewController: UIViewController {
     /// 削除後は一覧を取り直す)。
     private func deleteBookmark(id: String) {
         let videoID = program.id
+        bookmarkFetchGeneration += 1
+        let generation = bookmarkFetchGeneration
         Task { [weak self] in
             guard let self else { return }
             let deleted = await APIClient.shared.deleteBookmark(videoID: videoID, bookmarkID: id)
-            self.bookmarks = await APIClient.shared.fetchBookmarks(videoID: videoID)
-            self.rebuildContent()
+            let fetched = await APIClient.shared.fetchBookmarks(videoID: videoID)
+            // 取得の間に新しい取得が始まっていたら、この結果は古い
+            // ため反映しない (loadBookmarks と同じ)。
+            if generation == self.bookmarkFetchGeneration {
+                self.bookmarks = fetched
+                self.rebuildContent()
+            }
             if !deleted {
                 // 失敗が分からないと「押したのに消えない」ままになるため知らせる。
                 let alert = UIAlertController(

@@ -361,7 +361,9 @@ private final class RecordingResultCell: UITableViewCell {
     /// 秒数を "m:ss" / "h:mm:ss" の形にする (Web 版 formatPlaybackTime と
     /// 同じく、秒は切り捨て)。
     private static func playbackTime(_ seconds: Double) -> String {
-        let total = max(0, Int(seconds))
+        // サーバーから来た巨大な値で Int への変換が落ちないよう、
+        // 安全な変換を使う (TimeFormat.hms と同じ備え)。
+        let total = TimeFormat.safeSecondsTruncated(seconds)
         let hours = total / 3600
         let minutes = (total % 3600) / 60
         let secs = total % 60

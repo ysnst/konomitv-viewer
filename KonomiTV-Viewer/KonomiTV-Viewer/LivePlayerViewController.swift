@@ -1549,6 +1549,16 @@ final class LivePlayerViewController: UIViewController {
             return
         }
         stopStream()
+        // 中継が必須の構成 (認証方式が「なし」以外) では、中継の用意が
+        // できていないときに直接再生へ落ちない (合言葉が届かず、どうせ
+        // 弾かれるため)。失敗として知らせ、再生ボタンでやり直せる
+        // ようにする (この場合は再生部品を作らないため、再生ボタンが
+        // 始め直しの受け口になる)。
+        let relayedURL = StreamRelayServer.shared.relayURL(for: url)
+        if relayedURL == nil && SettingsStore.shared.vlcPlaybackRequiresRelay {
+            messageLabel.text = "中継の用意ができず、再生を開始できませんでした。再生ボタンでもう一度お試しください。"
+            return
+        }
         let player = VLCMediaPlayer()
         player.delegate = self
         player.drawable = videoView
@@ -1557,10 +1567,10 @@ final class LivePlayerViewController: UIViewController {
         // 入口が無く、Cloudflare Access の合言葉が届かないため、外回線
         // では開始すらできない (0.25 で実機確認済み。録画の H.265 と
         // 同じ弱点で、直し方も同じ)。中継が合言葉付きで取りに行き、
-        // 届いた分からそのまま流す。中継が使えないときは元の URL に
-        // 落ちる。録画側の扱いに揃え、接続先が内・外どちらでも中継を
-        // 通す (合言葉が未設定なら、中継は素通しになる)。
-        let media = VLCMedia(url: StreamRelayServer.shared.relayURL(for: url) ?? url)
+        // 届いた分からそのまま流す。中継が必須でない構成で中継が
+        // 使えないときは元の URL に落ちる。録画側の扱いに揃え、接続先が
+        // 内・外どちらでも中継を通す (合言葉が未設定なら、中継は素通しになる)。
+        let media = VLCMedia(url: relayedURL ?? url)
         // 受け取りの溜め (ネットワークキャッシュ) の量で、低遅延の設定を
         // 近づける。Web 版の低遅延は再生バッファを 0.9 秒 / 通常 4.0 秒に
         // 切り替える仕組みで、VLCKit には同じ仕組みが無いため、受け取りの
@@ -1787,7 +1797,12 @@ final class LivePlayerViewController: UIViewController {
 
     @objc private func togglePlayPause() {
 #if canImport(MobileVLCKit)
-        guard let player = vlcPlayer else { return }
+        guard let player = vlcPlayer else {
+            // 再生部品が無い (中継の用意ができずに始められなかった等)
+            // 場合は、再生ボタンで始め直す。
+            startStream()
+            return
+        }
         if player.isPlaying {
             pauseStream()
         } else {

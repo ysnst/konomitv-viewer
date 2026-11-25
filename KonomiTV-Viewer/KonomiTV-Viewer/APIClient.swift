@@ -937,19 +937,21 @@ final class APIClient {
     // MARK: - AVPlayer 用
 
     /// 認証のヘッダーを付けた AVURLAsset を作る (プレイリストと分割ファイルの両方に同じヘッダーが付く)。
-    func playerAsset(url: URL) -> AVURLAsset {
+    /// 中継が必須の方式で中継の用意ができていない場合は nil を返す
+    /// (中継なしで始めても認証を通せないため。呼び出し側で失敗として
+    /// 知らせ、やり直せるようにする)。
+    func playerAsset(url: URL) -> AVURLAsset? {
         // Digest認証とクライアント証明書は、サーバーからの求めへの
         // 応答が要るため、AVPlayer 単独では通せない。アプリ内の
         // 中継経由にすると、中継側の通信が求めに応答する
         // (中継側の relayURL は、用意ができるまで少し待つ。起動直後の
         // 最初の再生で中継なしに始めて認証が通らず失敗するのを避ける
-        // ため。それでも中継が使えないときは元の URL)。
+        // ため)。
         // URLパラメータ (合言葉) も同じく中継経由にする。プレイリストの
         // URL に付けても、中の分割ファイルの URL には付かないため、
         // 中継側で取り分ごとに付け直す必要がある。
-        let method = SettingsStore.shared.authMethod
-        if method == .digest || method == .clientCertificate || method == .urlParameter,
-           let relayed = StreamRelayServer.shared.relayURL(for: url) {
+        if SettingsStore.shared.avPlaybackRequiresRelay {
+            guard let relayed = StreamRelayServer.shared.relayURL(for: url) else { return nil }
             return AVURLAsset(url: relayed)
         }
         return AVURLAsset(url: url, options: [

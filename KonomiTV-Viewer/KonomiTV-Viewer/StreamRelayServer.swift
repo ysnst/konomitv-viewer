@@ -21,7 +21,9 @@ import Network
 /// 生放送 (MPEG-TS の流しっぱなし) はプレイリストではないので書き換えは
 /// せず、届いた分からそのまま流し続ける。
 /// 中継が立ち上がっていないときは nil を返し、呼び出し側は元の URL で
-/// 再生する (従来の動きに落ちる)。
+/// 再生する (従来の動きに落ちる)。ただし、中継が必須の認証構成では
+/// 呼び出し側は元の URL へ落ちず、失敗として知らせる
+/// (SettingsStore の vlcPlaybackRequiresRelay / avPlaybackRequiresRelay)。
 final class StreamRelayServer {
     static let shared = StreamRelayServer()
 
