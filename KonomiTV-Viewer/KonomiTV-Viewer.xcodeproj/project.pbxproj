@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		A10000000000000000000016 /* CaptionPlaybackTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000015 /* CaptionPlaybackTimeline.swift */; };
+		A10000000000000000000018 /* PlaybackStartState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* PlaybackStartState.swift */; };
 		A10000000000000000000014 /* PaginationGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000013 /* PaginationGeometry.swift */; };
 		A10000000000000000000012 /* CaptureSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000011 /* CaptureSettingsViewController.swift */; };
 		A10000000000000000000010 /* CaptureMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000F /* CaptureMetadata.swift */; };
@@ -87,6 +88,7 @@
 
 /* Begin PBXFileReference section */
 		A10000000000000000000015 /* CaptionPlaybackTimeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptionPlaybackTimeline.swift; sourceTree = "<group>"; };
+		A10000000000000000000017 /* PlaybackStartState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackStartState.swift; sourceTree = "<group>"; };
 		A10000000000000000000013 /* PaginationGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaginationGeometry.swift; sourceTree = "<group>"; };
 		A10000000000000000000011 /* CaptureSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureSettingsViewController.swift; sourceTree = "<group>"; };
 		A1000000000000000000000F /* CaptureMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureMetadata.swift; sourceTree = "<group>"; };
@@ -229,6 +231,7 @@
 				A1000000000000000000000F /* CaptureMetadata.swift */,
 				A10000000000000000000013 /* PaginationGeometry.swift */,
 				A10000000000000000000015 /* CaptionPlaybackTimeline.swift */,
+				A10000000000000000000017 /* PlaybackStartState.swift */,
 				200000000000000000000016 /* PlayerViewController.swift */,
 				200000000000000000000017 /* LiveListViewController.swift */,
 				200000000000000000000018 /* LivePlayerViewController.swift */,
@@ -382,6 +385,7 @@
 				A10000000000000000000010 /* CaptureMetadata.swift in Sources */,
 				A10000000000000000000014 /* PaginationGeometry.swift in Sources */,
 				A10000000000000000000016 /* CaptionPlaybackTimeline.swift in Sources */,
+				A10000000000000000000018 /* PlaybackStartState.swift in Sources */,
 				200000000000000000000036 /* PlayerViewController.swift in Sources */,
 				200000000000000000000037 /* LiveListViewController.swift in Sources */,
 				200000000000000000000038 /* LivePlayerViewController.swift in Sources */,

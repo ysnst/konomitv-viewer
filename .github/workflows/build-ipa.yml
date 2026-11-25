@@ -59,6 +59,14 @@ jobs:
             scripts/CaptionTimelineTests.swift -o artifacts/tests/caption-timeline-tests
           artifacts/tests/caption-timeline-tests
 
+      - name: Test asynchronous playback start generations and pause intent
+        run: |
+          mkdir -p artifacts/tests
+          swiftc -parse-as-library \
+            KonomiTV-Viewer/KonomiTV-Viewer/PlaybackStartState.swift \
+            scripts/PlaybackStartTests.swift -o artifacts/tests/playback-start-tests
+          artifacts/tests/playback-start-tests
+
       - name: Test capture JPEG metadata compatibility
         run: |
           mkdir -p artifacts/tests artifacts/ipa
