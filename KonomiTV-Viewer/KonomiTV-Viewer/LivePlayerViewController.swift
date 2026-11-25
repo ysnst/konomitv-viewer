@@ -2630,6 +2630,13 @@ final class LivePlayerViewController: UIViewController {
         presenter.present(alert, animated: true)
     }
 
+    private func restartPlayer() {
+        guard pipController?.isActive != true, pipController?.isPending != true else { return }
+        let playing = vlcPlayer?.isPlaying ?? false
+        startStream()
+        if !playing { pauseStream() }
+    }
+
     private func makePiPController() -> PlaybackPiPController {
         let pip = PlaybackPiPController(videoView: videoView, isLive: true,
             currentTime: { 0 }, duration: { 0 },
@@ -2716,6 +2723,7 @@ final class LivePlayerViewController: UIViewController {
                     })
                 }),
                 .init(title: "音声のみ再生", toggle: self.audioOnly, change: { [weak self] _ in self?.toggleAudioOnly() }),
+                .init(title: "プレイヤーを再起動", action: { [weak self] in self?.restartPlayer() }),
             ]
         }
         let navigation = PlayerSettingsNavigationController(rootViewController: menu)

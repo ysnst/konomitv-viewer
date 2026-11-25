@@ -4016,6 +4016,15 @@ final class PlayerViewController: UIViewController {
 #endif
     }
 
+    private func restartPlayer() {
+        guard pipController?.isActive != true, pipController?.isPending != true else { return }
+        let position = currentPosition()
+        let playing = isCurrentlyPlaying()
+        sessionID = UUID().uuidString
+        startPlayback(at: position.isFinite ? position : 0)
+        if !playing { pauseEngine() }
+    }
+
     private func makePiPController() -> PlaybackPiPController {
         let pip = PlaybackPiPController(videoView: surfaceView, isLive: false,
             currentTime: { [weak self] in self?.currentPosition() ?? 0 },
@@ -4142,6 +4151,9 @@ final class PlayerViewController: UIViewController {
             }), at: 3)
             if !self.digestButton.isHidden {
                 rows.append(.init(title: "ダイジェスト再生", toggle: self.digestPlaybackEnabled, change: { [weak self] _ in self?.toggleDigestPlayback() }))
+            }
+            if self.pipController?.isActive != true, self.pipController?.isPending != true {
+                rows.append(.init(title: "プレイヤーを再起動", action: { [weak self] in self?.restartPlayer() }))
             }
             return rows
         }
