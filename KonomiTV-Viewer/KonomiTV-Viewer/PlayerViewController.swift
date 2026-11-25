@@ -4143,7 +4143,15 @@ final class PlayerViewController: UIViewController {
                     })
                 }),
                 .init(title: "音声のみ再生", toggle: self.audioOnly, change: { [weak self] _ in self?.toggleAudioOnly() }),
-                .init(title: "おやすみタイマー", value: self.sleepTimerButton.title(for: .normal) ?? "オフ", action: { [weak self] in self?.cycleSleepTimer() }),
+                .init(title: "おやすみタイマー", value: self.sleepTimerMode == .off ? "オフ" : (self.sleepTimerButton.title(for: .normal) ?? ""),
+                      choices: ["オフ", "15分", "30分", "60分", "番組の終わりで停止"].enumerated().map { index, title in
+                    .init(title: title, selected: self.sleepTimerModeIndex == index, select: { [weak self] in
+                        guard let self else { return }
+                        // 既存のタイマー開始・停止・通知処理を、選択したモードから使う。
+                        self.sleepTimerModeIndex = (index + 4) % 5
+                        self.cycleSleepTimer()
+                    })
+                }),
             ]
             rows.insert(.init(title: "リピート再生", toggle: store.repeatVideoPlayback, change: { [weak self] on in
                 store.repeatVideoPlayback = on

@@ -18,6 +18,7 @@ func styleVideoOverlayButton(_ button: UIButton, symbol: String, title: String) 
     button.tintColor = .white
     button.backgroundColor = .clear
     button.accessibilityLabel = title
+    if symbol == "captions.bubble" { button.accessibilityHint = "字幕データのある番組で表示します" }
     button.widthAnchor.constraint(equalToConstant: 44).isActive = true
     button.heightAnchor.constraint(equalToConstant: 44).isActive = true
 }
