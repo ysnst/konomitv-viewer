@@ -298,6 +298,16 @@ final class PlayerViewController: UIViewController {
     /// 中継の用意ができずに開始できなかったときの開始位置の控え。
     /// 再生ボタンで始め直すときに使う (開始できたら消す)。
     private var pendingRelayRetryPosition: Double?
+    /// 中継の URL の解決 (非同期) を待っている間かどうか。
+    private var startResolutionInFlight = false
+    /// 開始の用意を待つ間に、止める操作があったかどうか。画質の
+    /// 切り替えなどは「開始してから止める」順で書かれているため、
+    /// 開始が非同期になると、止める操作が仕組みの用意より先に来る
+    /// ことがある。その場合は印を残し、開始の締めで再生を始めず、
+    /// 止めたままにするために使う。
+    private var pendingStartPause = false
+    /// 開始の用意を待っている間の知らせ文。
+    private static let startLoadingMessage = "読み込んでいます…"
     /// 開始の後に、利用者が自分で位置を動かしたかどうか。動かして
     /// いたら、遅れて返ってきた続きの位置の確認では移らない。
     private var userSeekedSinceStart = false
@@ -1653,6 +1663,9 @@ final class PlayerViewController: UIViewController {
     /// AVPlayer の play() は速度が 1倍に戻るため、再生の開始はここへ集約する
     /// (VLCKit 経路でも、再生を始めてから速度を合わせる順番は同じにする)。
     private func playAtCurrentRate() {
+        // 明示的に再生する操作が来たら、開始待ちへの「止める」印は消す
+        // (開始の用意ができたときに、そのまま再生が始まるように)。
+        pendingStartPause = false
         // 再生が再開されたら、次の話の自動再生の数え下げは取り消す
         // (Web 版も、再生が再開されたら数え下げを取り消す)。
         // 数え下げ前の「次の話の取り込み」がまだ終わっていない場合も、
@@ -1681,6 +1694,12 @@ final class PlayerViewController: UIViewController {
 
     /// 再生を止める (再生の仕組みによらない)。
     private func pauseEngine() {
+        // 開始の用意 (中継の URL の解決) を待っている間に止める操作が
+        // 来たら、印を残す。仕組みがまだ無いのでここで止める対象は
+        // まだ無く、開始の締め側で再生を始めないようにするために使う。
+        if startResolutionInFlight {
+            pendingStartPause = true
+        }
 #if canImport(MobileVLCKit)
         if let vlcPlayer {
             vlcPlayer.pause()
@@ -2063,22 +2082,42 @@ final class PlayerViewController: UIViewController {
     /// 再生を始める (作り直す)。いま効いている画質が H.265 / HEVC かどうかで
     /// 再生の仕組みを出し分ける。画質の切り替えで H.264 ⇄ HEVC が切り替わったら、
     /// 仕組みごと作り直す (呼び出し側が位置を引き継いで渡す)。
+    /// 中継の URL が要る経路では、解決を非同期に行い、画面を止めずに
+    /// 待つ (用意ができたら開始する)。中継が必須の構成で用意が
+    /// できなかった場合は、直接再生に落ちず失敗として知らせ、
+    /// 再生ボタンで始め直せるようにする。
     private func startPlayback(at seconds: Double) {
         startPlaybackCount += 1
+        let startCount = startPlaybackCount
         guard let url = APIClient.shared.playlistURL(videoID: program.id, quality: quality, profile: profile, sessionID: sessionID) else {
             messageLabel.text = "接続先が設定されていません。"
             return
         }
+        // 新しい開始が来たら、前の開始待ちへの「止める」印は引き継がない
+        // (この開始の後に来た止める操作だけが、この開始に効く)。
+        pendingStartPause = false
 #if canImport(MobileVLCKit)
         if isHEVCQuality(quality, profile: profile) {
-            if startVLCPlayback(url: url, at: seconds) {
-                pendingRelayRetryPosition = nil
-                finishStartPlayback(at: seconds)
-            } else {
-                // 中継の用意ができずに始められなかった (失敗の知らせは
-                // 開始側で出している)。再生ボタンで始め直せるよう、
-                // 開始位置を控えておく。
-                pendingRelayRetryPosition = seconds
+            // H.265 / HEVC は VLCKit 経路で、中継経由が前提。用意を
+            // 非同期に待ってから始める。
+            startResolutionInFlight = true
+            showStartLoadingMessage()
+            StreamRelayServer.shared.relayURL(for: url) { [weak self] relayedURL in
+                guard let self, !self.didLeaveScreen,
+                      self.startPlaybackCount == startCount else { return }
+                self.startResolutionInFlight = false
+                self.clearStartLoadingMessage()
+                if relayedURL == nil, SettingsStore.shared.vlcPlaybackRequiresRelay {
+                    // 中継が必須の構成で用意ができなかった (失敗の扱いは
+                    // 上のコメントのとおり)。開始位置を控えておく。
+                    self.messageLabel.text = "中継の用意ができず、再生を開始できませんでした。再生ボタンでもう一度お試しください。"
+                    self.pendingStartPause = false
+                    self.pendingRelayRetryPosition = seconds
+                    return
+                }
+                self.startVLCPlayback(url: url, relayedURL: relayedURL, at: seconds)
+                self.pendingRelayRetryPosition = nil
+                self.finishStartPlayback(at: seconds)
             }
             return
         }
@@ -2090,11 +2129,46 @@ final class PlayerViewController: UIViewController {
             messageLabel.text = "このビルドには H.265 / HEVC 再生の部品が組み込まれていません。"
         }
 #endif
-        if startAVPlayback(url: url, at: seconds) {
-            pendingRelayRetryPosition = nil
-            finishStartPlayback(at: seconds)
-        } else {
-            pendingRelayRetryPosition = seconds
+        if SettingsStore.shared.avPlaybackRequiresRelay {
+            // 中継が必須の方式では、中継の URL を非同期に解決してから
+            // 始める。用意できなかった場合は失敗として知らせる。
+            startResolutionInFlight = true
+            showStartLoadingMessage()
+            StreamRelayServer.shared.relayURL(for: url) { [weak self] relayedURL in
+                guard let self, !self.didLeaveScreen,
+                      self.startPlaybackCount == startCount else { return }
+                self.startResolutionInFlight = false
+                self.clearStartLoadingMessage()
+                guard let relayedURL else {
+                    self.messageLabel.text = "中継の用意ができず、再生を開始できませんでした。再生ボタンでもう一度お試しください。"
+                    self.pendingStartPause = false
+                    self.pendingRelayRetryPosition = seconds
+                    return
+                }
+                self.startAVPlayback(asset: AVURLAsset(url: relayedURL), at: seconds)
+                self.pendingRelayRetryPosition = nil
+                self.finishStartPlayback(at: seconds)
+            }
+            return
+        }
+        startAVPlayback(asset: APIClient.shared.playerAsset(url: url), at: seconds)
+        pendingRelayRetryPosition = nil
+        finishStartPlayback(at: seconds)
+    }
+
+    /// 中継の用意を待つ間、知らせ欄が空いていれば読み込み中を出す
+    /// (続きから再生する等の知らせが出ているときは、そちらを優先する)。
+    private func showStartLoadingMessage() {
+        if (messageLabel.text ?? "").isEmpty {
+            messageLabel.text = Self.startLoadingMessage
+        }
+    }
+
+    /// 読み込み中の知らせを出していたら消す
+    /// (他の知らせに替わっていたら触らない)。
+    private func clearStartLoadingMessage() {
+        if messageLabel.text == Self.startLoadingMessage {
+            messageLabel.text = nil
         }
     }
 
@@ -2111,7 +2185,14 @@ final class PlayerViewController: UIViewController {
         playbackOpenedAt = now
         lastHistorySyncAt = now
         scheduleHistoryRegistration()
-        playAtCurrentRate()
+        // 開始の用意を待つ間に止める操作があった場合は、再生を始めず
+        // 止めたままにする (画質の切り替えなどで、止めていたものを
+        // 作り直したときの扱いを、開始が非同期になっても保つため)。
+        if pendingStartPause {
+            pendingStartPause = false
+        } else {
+            playAtCurrentRate()
+        }
         updatePlayPauseIcon()
         updateNowPlaying()
         startKeepAlive()
@@ -2162,15 +2243,11 @@ final class PlayerViewController: UIViewController {
         }
     }
 
-    /// AVPlayer 経路の開始 (従来どおり)。開始できたら true。
-    /// 中継が必須の方式で中継の用意ができていない場合は、直接再生に
-    /// 落ちず false を返す (呼び出し側で失敗として知らせ、再生ボタンで
-    /// やり直せるようにする)。
-    private func startAVPlayback(url: URL, at seconds: Double) -> Bool {
-        guard let asset = APIClient.shared.playerAsset(url: url) else {
-            messageLabel.text = "中継の用意ができず、再生を開始できませんでした。再生ボタンでもう一度お試しください。"
-            return false
-        }
+    /// AVPlayer 経路の開始 (従来どおり)。
+    /// 渡す材料 (asset) は呼び出し側で用意する。中継が必須の方式では、
+    /// 中継の URL を非同期に解決してから材料を作って渡す (用意が
+    /// できなかった場合は、呼び出し側が失敗として知らせる)。
+    private func startAVPlayback(asset: AVURLAsset, at seconds: Double) {
         let item = AVPlayerItem(asset: asset)
         // 字幕データの受け取り口を、この再生項目へ付ける。
         attachCaptionMetadataOutput(to: item)
@@ -2201,6 +2278,11 @@ final class PlayerViewController: UIViewController {
             player.replaceCurrentItem(with: item)
         } else {
             let newPlayer = AVPlayer(playerItem: item)
+            // 既定の動きでは、止まりにくくなるまで映像がたまるのを
+            // 待ってから再生が始まるため、出だしが遅くなる。届いた
+            // 分から再生を始め、貯めは再生と同時に進める形にする
+            // (貯めの量そのものは変えていない)。
+            newPlayer.automaticallyWaitsToMinimizeStalling = false
             newPlayer.actionAtItemEnd = .pause
             player = newPlayer
             let layer = AVPlayerLayer(player: newPlayer)
@@ -2239,7 +2321,6 @@ final class PlayerViewController: UIViewController {
         if seconds > 0 {
             player?.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
         }
-        return true
     }
 
 #if canImport(MobileVLCKit)
@@ -2253,26 +2334,20 @@ final class PlayerViewController: UIViewController {
     /// 入口が無く、Cloudflare Access の合言葉が HLS の分割ファイルに
     /// 付かないため、外回線では開始すらできない (0.24 で実機確認済み)。
     /// 中継が合言葉付きで取りに行き、プレイリスト内の URL も中継経由に
-    /// 書き換える。中継が必須でない構成では、中継が使えないときは
-    /// 元の URL に落ちる。中継が必須の構成 (認証方式が「なし」以外)
-    /// では、中継の用意ができていないときに直接再生へ落ちず、失敗と
-    /// して false を返す (合言葉が届かず、どうせ弾かれるため。
-    /// 呼び出し側で知らせ、再生ボタンでやり直せるようにする)。
+    /// 書き換える。中継の URL の解決は、呼び出し側 (startPlayback) が
+    /// 非同期に行ってから渡す。中継が必須でない構成で中継が使えない
+    /// ときは元の URL (url) に落ち、中継が必須の構成で用意ができて
+    /// いないときは、呼び出し側が失敗として知らせる (ここへは来ない)。
     /// メディアオプションの ":http-header" は、中継を使わない場合の
     /// 補いとして残す (効くかどうかは libVLC 側の実装次第で、単独では
     /// 分割ファイルまで届かないことが分かっている)。
-    private func startVLCPlayback(url: URL, at seconds: Double) -> Bool {
+    private func startVLCPlayback(url: URL, relayedURL: URL?, at seconds: Double) {
         teardownAVPlayback()
         vlcPlayer?.stop()
         vlcTimeTimer?.invalidate()
         vlcStartWatchdog?.invalidate()
         vlcStartWatchdog = nil
         vlcDidStartPlaying = false
-        let relayedURL = StreamRelayServer.shared.relayURL(for: url)
-        if relayedURL == nil && SettingsStore.shared.vlcPlaybackRequiresRelay {
-            messageLabel.text = "中継の用意ができず、再生を開始できませんでした。再生ボタンでもう一度お試しください。"
-            return false
-        }
         let vlc = VLCMediaPlayer()
         vlc.delegate = self
         // 描き先は常に surfaceView。全画面表示中は surfaceView ごと
@@ -2343,7 +2418,6 @@ final class PlayerViewController: UIViewController {
         vlcTimeTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             self?.updateProgress()
         }
-        return true
     }
 
     /// VLCKit 経路の後片付け。

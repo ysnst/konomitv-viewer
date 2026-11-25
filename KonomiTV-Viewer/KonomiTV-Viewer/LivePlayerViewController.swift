@@ -65,6 +65,20 @@ final class LivePlayerViewController: UIViewController {
     /// 開始の見張り (録画側と同じ作り)。再生が始まったら止める。
     private var startWatchdog: Timer?
     private var didStartPlaying = false
+    /// 配信の開始の世代。開始の用意 (中継の URL の解決) が非同期の
+    /// ため、遅れて届いた用意が、新しい開始や停止より後から効かない
+    /// ようにするために使う。
+    private var streamStartGeneration = 0
+    /// 開始の用意 (中継の URL の解決) を待っている間かどうか。
+    private var streamStartInFlight = false
+    /// 開始の用意を待つ間に、止める操作があったかどうか。画質の
+    /// 切り替えなどは「開始してから止める」順で書かれているため、
+    /// 開始が非同期になると、止める操作が再生部品の用意より先に
+    /// 来ることがある。その場合は印を残し、開始のときに再生を
+    /// 始めず、止めたままにするために使う。
+    private var pendingStreamStartPause = false
+    /// 開始の用意を待っている間の知らせ文。
+    private static let startLoadingMessage = "読み込んでいます…"
 
     // MARK: - 字幕 (生放送)
     /// 字幕の本体 (録画と同じ部品)。生放送では、流れの中の時刻印の差を
@@ -1556,16 +1570,56 @@ final class LivePlayerViewController: UIViewController {
             return
         }
         stopStream()
-        // 中継が必須の構成 (認証方式が「なし」以外) では、中継の用意が
-        // できていないときに直接再生へ落ちない (合言葉が届かず、どうせ
-        // 弾かれるため)。失敗として知らせ、再生ボタンでやり直せる
-        // ようにする (この場合は再生部品を作らないため、再生ボタンが
-        // 始め直しの受け口になる)。
-        let relayedURL = StreamRelayServer.shared.relayURL(for: url)
-        if relayedURL == nil && SettingsStore.shared.vlcPlaybackRequiresRelay {
-            messageLabel.text = "中継の用意ができず、再生を開始できませんでした。再生ボタンでもう一度お試しください。"
-            return
+        streamStartGeneration += 1
+        let generation = streamStartGeneration
+        // 新しい開始が来たら、前の開始待ちへの「止める」印は引き継がない
+        // (この開始の後に来た止める操作だけが、この開始に効く)。
+        pendingStreamStartPause = false
+        streamStartInFlight = true
+        showStartLoadingMessage()
+        // 中継の URL の解決は非同期に行い、画面を止めずに待つ
+        // (用意ができたら再生を始める)。
+        StreamRelayServer.shared.relayURL(for: url) { [weak self] relayedURL in
+            guard let self, self.streamStartGeneration == generation else { return }
+            self.streamStartInFlight = false
+            self.clearStartLoadingMessage()
+            // 中継が必須の構成 (認証方式が「なし」以外) では、中継の用意が
+            // できていないときに直接再生へ落ちない (合言葉が届かず、どうせ
+            // 弾かれるため)。失敗として知らせ、再生ボタンでやり直せる
+            // ようにする (この場合は再生部品を作らないため、再生ボタンが
+            // 始め直しの受け口になる)。
+            if relayedURL == nil && SettingsStore.shared.vlcPlaybackRequiresRelay {
+                self.pendingStreamStartPause = false
+                self.messageLabel.text = "中継の用意ができず、再生を開始できませんでした。再生ボタンでもう一度お試しください。"
+                return
+            }
+            self.beginStreamPlayback(originURL: url, relayedURL: relayedURL)
         }
+#else
+        messageLabel.text = "このビルドには生放送の再生部品 (VLCKit) が組み込まれていません。"
+#endif
+    }
+
+    /// 中継の用意を待つ間、知らせ欄が空いていれば読み込み中を出す
+    /// (実況コメントの知らせ等が出ているときは、そちらを優先する)。
+    private func showStartLoadingMessage() {
+        if (messageLabel.text ?? "").isEmpty {
+            messageLabel.text = Self.startLoadingMessage
+        }
+    }
+
+    /// 読み込み中の知らせを出していたら消す
+    /// (他の知らせに替わっていたら触らない)。
+    private func clearStartLoadingMessage() {
+        if messageLabel.text == Self.startLoadingMessage {
+            messageLabel.text = nil
+        }
+    }
+
+#if canImport(MobileVLCKit)
+    /// 中継の URL が決まった後の、再生部品の用意と再生の開始
+    /// (startStream から呼ばれる)。
+    private func beginStreamPlayback(originURL url: URL, relayedURL: URL?) {
         let player = VLCMediaPlayer()
         player.delegate = self
         player.drawable = videoView
@@ -1610,15 +1664,28 @@ final class LivePlayerViewController: UIViewController {
                 self.messageLabel.text = "再生を開始できませんでした。"
             }
         }
-        player.play()
+        // 開始の用意を待つ間に止める操作があった場合は、再生を始めず
+        // 止めたままにする (画質の切り替えなどで、止めていたものを
+        // つなぎ直したときの扱いを保つため)。
+        let startPaused = pendingStreamStartPause
+        pendingStreamStartPause = false
+        if !startPaused {
+            player.play()
+        }
         beginNowPlaying()
         startLiveCaptions()
-#else
-        messageLabel.text = "このビルドには生放送の再生部品 (VLCKit) が組み込まれていません。"
-#endif
+        if startPaused {
+            pauseStream()
+        }
     }
+#endif
 
     private func stopStream() {
+        // 開始の用意を待っている最中なら、その用意は無効にする
+        // (遅れて届いても、止めた後に再生が始まらないように)。
+        streamStartGeneration += 1
+        streamStartInFlight = false
+        pendingStreamStartPause = false
         startWatchdog?.invalidate()
         startWatchdog = nil
         // 字幕の抜き取り口と更新タイマーも止める (中継は他の再生と共用の
@@ -1776,6 +1843,9 @@ final class LivePlayerViewController: UIViewController {
 
     private func playStream() {
 #if canImport(MobileVLCKit)
+        // 明示的に再生する操作が来たら、開始待ちへの「止める」印は消す
+        // (開始の用意ができたときに、そのまま再生が始まるように)。
+        pendingStreamStartPause = false
         vlcPlayer?.play()
         playPauseButton.setImage(
             UIImage(systemName: "pause.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 36)),
@@ -1790,6 +1860,12 @@ final class LivePlayerViewController: UIViewController {
 
     private func pauseStream() {
 #if canImport(MobileVLCKit)
+        // 開始の用意 (中継の URL の解決) を待っている間に止める操作が
+        // 来たら、印を残す。再生部品がまだ無いのでここで止める対象は
+        // まだ無く、開始のときに再生を始めないようにするために使う。
+        if streamStartInFlight {
+            pendingStreamStartPause = true
+        }
         vlcPlayer?.pause()
         playPauseButton.setImage(
             UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 36)),
@@ -2382,31 +2458,40 @@ final class LivePlayerViewController: UIViewController {
             webView.trailingAnchor.constraint(equalTo: videoArea.trailingAnchor),
         ]
         NSLayoutConstraint.activate(bmlHomeConstraints)
-        // 材料の口は映像と同じくアプリ内の中継を通す (外回線の合言葉が付く)。
-        // 中継が使えないときは元の URL に落ちる (映像と同じ扱い)。
-        let psiURL = StreamRelayServer.shared.relayURL(for: originURL) ?? originURL
-        // 双方向の通信先は、中継の向き先 (サーバー本体ではなく中継) を
-        // 渡す。中継が使えず元の URL に落ちた場合は向き先を渡さない
-        // (その場合は通信は失敗の形になる)。
-        var proxyBase: String? = nil
-        if psiURL != originURL,
-           let components = URLComponents(url: psiURL, resolvingAgainstBaseURL: false),
-           let host = components.host, let port = components.port {
-            proxyBase = "\(components.scheme ?? "http")://\(host):\(port)"
-        }
-        let store = SettingsStore.shared
-        let config = DataBroadcastOverlay.StartConfig(
-            internetEnabled: store.dataBroadcastingInternetEnabled,
-            zipCode: store.dataBroadcastingZipCode,
-            prefecture: store.dataBroadcastingPrefecture,
-            proxyBase: proxyBase,
-            nvram: store.dataBroadcastingNvram
-        )
         isDataBroadcastActive = true
         dataBroadcastLoaded = false
         dataBroadcastStartFailed = false
-        overlay.start(psiURL: psiURL, serviceID: channel.service_id, config: config)
+        // 開始の用意を待つ間も、リモコンの読み込み中の表示を出す。
         updateRemotePanelState()
+        // 材料の口は映像と同じくアプリ内の中継を通す (外回線の合言葉が付く)。
+        // 中継の URL の解決は非同期に行い、画面を止めずに待つ
+        // (用意ができたら材料の受け取りを始める)。
+        // 中継が使えないときは元の URL に落ちる (映像と同じ扱い)。
+        StreamRelayServer.shared.relayURL(for: originURL) { [weak self, weak overlay] relayedURL in
+            // 止める・始め直すが先に起きていたら、この開始は古いもの
+            // として扱い、何もしない。
+            guard let self, let overlay, self.dataBroadcastOverlay === overlay else { return }
+            let psiURL = relayedURL ?? originURL
+            // 双方向の通信先は、中継の向き先 (サーバー本体ではなく中継) を
+            // 渡す。中継が使えず元の URL に落ちた場合は向き先を渡さない
+            // (その場合は通信は失敗の形になる)。
+            var proxyBase: String? = nil
+            if psiURL != originURL,
+               let components = URLComponents(url: psiURL, resolvingAgainstBaseURL: false),
+               let host = components.host, let port = components.port {
+                proxyBase = "\(components.scheme ?? "http")://\(host):\(port)"
+            }
+            let store = SettingsStore.shared
+            let config = DataBroadcastOverlay.StartConfig(
+                internetEnabled: store.dataBroadcastingInternetEnabled,
+                zipCode: store.dataBroadcastingZipCode,
+                prefecture: store.dataBroadcastingPrefecture,
+                proxyBase: proxyBase,
+                nvram: store.dataBroadcastingNvram
+            )
+            overlay.start(psiURL: psiURL, serviceID: self.channel.service_id, config: config)
+            self.updateRemotePanelState()
+        }
     }
 
     /// データ放送を止める。止めるのは、チャンネルを離れるときと、

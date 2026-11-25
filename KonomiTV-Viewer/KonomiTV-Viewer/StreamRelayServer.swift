@@ -33,10 +33,16 @@ final class StreamRelayServer {
     private var listener: NWListener?
     private var port: NWEndpoint.Port?
     private var connections: [ObjectIdentifier: RelayConnection] = [:]
-    /// 待ち受けの用意ができるのを待っている側 (relayURL の待ち)。
-    /// 中継のキューとは別に、鍵つきで守る (待つ側はキューの外にいるため)。
+    /// 待ち受けの用意ができるのを待っている側 (relayURL の非同期版の待ち)。
+    /// 中継のキューとは別に、鍵つきで守る (知らせる側・待つ側がキューの
+    /// 内外に分かれるため)。
+    private struct ReadyWaiter {
+        let id: UUID
+        let fire: () -> Void
+    }
+
     private let readyWaitersLock = NSLock()
-    private var readyWaiters: [DispatchSemaphore] = []
+    private var readyWaiters: [ReadyWaiter] = []
 
     /// 字幕の抜き取り口 (録画の H.265 / HEVC 再生中だけ、再生画面が登録する)。
     /// 中継を通るプレイリストと区切りファイルから、字幕表示に必要な材料
@@ -138,40 +144,73 @@ final class StreamRelayServer {
         readyWaiters = []
         readyWaitersLock.unlock()
         for waiter in waiters {
-            waiter.signal()
+            waiter.fire()
         }
     }
 
-    /// 元の URL に対応する中継の URL。経路 (パスとクエリ) は元のまま、
-    /// 向き先だけ 127.0.0.1 の中継に替えたもの。
-    /// 立ち上げの最中なら、用意ができるまで少しだけ待つ (起動直後の
-    /// 最初の再生で、番号が決まる前に中継なしで始めてしまい、認証が
-    /// 通らず失敗するのを避けるため)。待っても用意できなかった・
-    /// 元の URL が http(s) でない場合は nil。
+    /// 待っている側を1つだけ起こす (制限時間が来たときに使う)。
+    /// すでに知らせ済みで残っていない場合は何もしない。
+    private func fireReadyWaiter(id: UUID) {
+        readyWaitersLock.lock()
+        guard let index = readyWaiters.firstIndex(where: { $0.id == id }) else {
+            readyWaitersLock.unlock()
+            return
+        }
+        let waiter = readyWaiters.remove(at: index)
+        readyWaitersLock.unlock()
+        waiter.fire()
+    }
+
+    /// 元の URL に対応する中継の URL を、非同期に返す。経路 (パスと
+    /// クエリ) は元のまま、向き先だけ 127.0.0.1 の中継に替えたもの。
+    /// 呼び出し側の処理は止めない。用意ができていればすぐ返し、
+    /// 立ち上げの最中なら、用意ができた (または失敗が確定した) 時点で
+    /// 返す (起動直後の最初の再生で、番号が決まる前に中継なしで
+    /// 始めてしまい、認証が通らず失敗するのを避けるため)。
+    /// 約2秒待っても用意できなかった・元の URL が http(s) でない
+    /// 場合は nil を返す。完了の知らせはメイン側で届く。
     /// 中継のキューの外から呼ぶこと (キュー内からは relayURLOnQueue を使う)。
-    func relayURL(for originURL: URL) -> URL? {
+    func relayURL(for originURL: URL, completion: @escaping (URL?) -> Void) {
         startIfNeeded()
-        // port は中継のキューで書かれるため、同期して読む。
-        if let url = queue.sync(execute: { relayURLOnQueue(for: originURL) }) {
-            return url
-        }
-        // 番号がまだ決まっていない間は、用意ができるまで待ってから
-        // 作り直す (待ちは最大2秒。それでも駄目ならこの回は nil)。
-        let waiter = DispatchSemaphore(value: 0)
-        readyWaitersLock.lock()
-        readyWaiters.append(waiter)
-        readyWaitersLock.unlock()
-        // 待ち始める直前に用意ができていた場合は、知らせが行き違いに
-        // なるため、キュー側から改めて起こしてもらう。
         queue.async { [weak self] in
-            guard let self, self.port != nil else { return }
-            self.signalReadyWaiters()
+            guard let self else {
+                DispatchQueue.main.async { completion(nil) }
+                return
+            }
+            if let url = self.relayURLOnQueue(for: originURL) {
+                DispatchQueue.main.async { completion(url) }
+                return
+            }
+            // 番号がまだ決まっていない間は、用意ができるのを待つ側に
+            // 登録する。待ち受け自体が無い (立ち上げが失敗して片付いた)
+            // ときは、待っても用意されないため、その場で nil を返す。
+            // この確認は中継のキューの上で行うため、立ち上げ側の処理
+            // (この確認より前に並んでいる) が終わった後の状態で判定できる。
+            guard self.listener != nil else {
+                DispatchQueue.main.async { completion(nil) }
+                return
+            }
+            let id = UUID()
+            self.readyWaitersLock.lock()
+            self.readyWaiters.append(ReadyWaiter(id: id) { [weak self] in
+                guard let self else {
+                    DispatchQueue.main.async { completion(nil) }
+                    return
+                }
+                // 用意ができた (または失敗が確定した・制限時間が来た)
+                // ので、キュー側で作り直してから返す。
+                self.queue.async {
+                    let url = self.relayURLOnQueue(for: originURL)
+                    DispatchQueue.main.async { completion(url) }
+                }
+            })
+            self.readyWaitersLock.unlock()
+            // 制限時間 (約2秒) が来ても知らせる
+            // (用意できていなければ nil になる)。
+            self.queue.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.fireReadyWaiter(id: id)
+            }
         }
-        _ = waiter.wait(timeout: .now() + 2)
-        readyWaitersLock.lock()
-        readyWaiters.removeAll { $0 === waiter }
-        readyWaitersLock.unlock()
-        return queue.sync { relayURLOnQueue(for: originURL) }
     }
 
     /// 2つの URL が同じ向き先 (スキーム・ホスト・ポート) かどうか。
@@ -889,7 +928,7 @@ private final class RelayConnection: NSObject {
 
     private func relayMappedURL(_ uri: String, base: URL) -> String {
         // この処理は中継のキューの上で動いているため、キューの外向けの
-        // relayURL (同期読み) ではなくキュー内向けを使う。
+        // relayURL (非同期版) ではなくキュー内向けを使う。
         // 接続先と向き先が違う絶対 URL は中継に載せず、元のまま残す
         // (接続先の同じ経路へ誤って向けたり、接続先の合言葉を別の
         // ホストへ送ったりしないため)。
