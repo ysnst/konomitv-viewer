@@ -34,3 +34,7 @@ AribCaption.currentImageは字幕と文字スーパーの合成画像だった�
 - [CaptureManager.ts](https://github.com/tsukumijima/KonomiTV/blob/af98b172eb7a0e9df7683435c706c84bedd9231e/client/src/services/player/managers/CaptureManager.ts): 367〜404行の表示層分離と映像取得。
 - [CaptureCompositor.ts](https://github.com/tsukumijima/KonomiTV/blob/af98b172eb7a0e9df7683435c706c84bedd9231e/client/src/workers/CaptureCompositor.ts): 239〜252/280〜296行の合成順序とフラグ。
 - [CapturesRouter.py](https://github.com/tsukumijima/KonomiTV/blob/af98b172eb7a0e9df7683435c706c84bedd9231e/server/app/routers/CapturesRouter.py): 945〜953行の受信データ保存。
+
+## IPA 0.19での追加実機確認
+
+フェーズG開始時のユーザー報告で、0.19のキャプチャ内容とサーバー保存は成功した。写真/両方保存は未確認。過去の失敗症状を推測せず、最新版の確認として[device-0.19.md](testing/device-0.19.md)へ保存した。フェーズGではシーク開始時に表示用と撮影用の字幕/スーパー画像を一緒に無効化し、旧字幕が撮影へ混入しないようにする。保存先/API/JPEG/EXIF自体は変更しない。新版の撮影結果は実機未確認。
