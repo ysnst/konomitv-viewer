@@ -365,14 +365,33 @@ final class PlayerViewController: UIViewController {
     private let videoContainer = UIView()
     /// 映像の描画先。操作類の重ね物と兄弟にし、タップの受け口を映像だけに分ける。
     private let surfaceView = UIView()
-    /// 映像の枠を通常画面に固定する決まり (制約) の控え。全画面へ貸し出す
-    /// ときに外し、戻すときに付け直すために持っておく。
-    private var surfaceViewHomeConstraints: [NSLayoutConstraint] = []
-    /// 全画面へ貸し出し中に、映像の枠を全画面側へ固定する決まり (制約)。
-    private var surfaceViewBorrowConstraints: [NSLayoutConstraint] = []
-    /// 映像タップの受け口。貸し出し中は止める (全画面側のタップと二重に
-    /// 効かないようにするため)。
-    private weak var surfaceTapRecognizer: UITapGestureRecognizer?
+    // MARK: 全画面 (再生画面の中の状態)
+    /// 全画面表示中かどうか。全画面は別の画面へ移らず、この画面のまま
+    /// 向きとレイアウトを切り替えて行う (映像の枠も、コメント・字幕・
+    /// 波形の重ね物も、置き場所を変えない)。
+    private var isFullscreen = false
+    /// 通常表示で映像の入れ物を画面の上端 (安全領域) へ固定する決まり。
+    /// 全画面へ移るときに外し、画面いっぱいの決まりへ切り替える。
+    private var videoContainerTopConstraint: NSLayoutConstraint?
+    /// 全画面で映像の入れ物を画面いっぱいに広げる決まり (通常は無効)。
+    private var videoContainerFullscreenConstraints: [NSLayoutConstraint] = []
+    /// 全画面の上部帯 (グラデーション + 終了ボタン + 番組名)。
+    /// 全画面のときだけ出す。
+    private let fsTopGradient = GradientView(direction: .top)
+    private let fsTopBar = UIStackView()
+    private let fsTitleLabel = UILabel()
+    private let fsExitButton = RippleButton()
+    /// 全画面の操作帯に足す画質・プロファイルのボタン。情報欄にある
+    /// 同じ名前のボタンと同じ動きで、表示はこちらにも合わせる。
+    private let fsQualityButton = RippleButton()
+    private let fsProfileButton = RippleButton()
+    private let fsOptionsRow = UIStackView()
+    /// 映像の右下に重ねる全画面ボタン (Web 版と同じ置き場所のアイコン)。
+    /// 全画面の間は、元へ戻すアイコンに変える。
+    private let fullscreenEnterButton = RippleButton()
+    /// 全画面のまま画面を離れたとき (全画面では戻るボタンが出ないため
+    /// スワイプで戻る場合がある) に、向きを戻す要求を出す先の控え。
+    private weak var fullscreenWindowScene: UIWindowScene?
     /// 映像の下辺に重ねる操作帯 (グラデーション + 操作類)。
     private let bottomGradient = GradientView(direction: .bottom)
     /// 操作類の入れ物。グラデーションと一緒に透明度で出し入れする。
@@ -390,13 +409,9 @@ final class PlayerViewController: UIViewController {
     private let seekSlider = UISlider()
     private let bandView = CMSectionBandView()
     /// コメント (ニコニコ実況の過去ログ) を映像の上に流す重ね物。
+    /// 映像の入れ物の中に置いたまま動かさず、全画面でも同じ場所で
+    /// 流れ続ける。
     private let commentOverlay = JikkyoCommentOverlayView()
-    /// コメントの重ね物を通常画面へ固定する決まり (制約) の控え。
-    /// 全画面へ貸し出すときに外し、戻すときに付け直すために持っておく。
-    private var commentHomeConstraints: [NSLayoutConstraint] = []
-    /// 全画面 (VLCKit 経路) へ貸し出し中に、コメントの重ね物を全画面側へ
-    /// 固定する決まり (制約)。
-    private var commentBorrowConstraints: [NSLayoutConstraint] = []
     /// コメント表示のオン/オフ (操作帯の中。Web 版プレイヤーの操作帯にある
     /// コメント表示の切り替えと同じ置き場所)。
     private let commentButton = RippleButton()
@@ -408,17 +423,8 @@ final class PlayerViewController: UIViewController {
     /// 違うが、蓄えた後の扱いは共通 (AribCaption.swift)。
     private let captionEngine = CaptionDisplayEngine()
     /// 字幕の重ね物。映像の枠 (surfaceView) の中に入れる。
-    /// 全画面では、どちらの経路でもコメントの上へ貸し出す
-    /// (VLCKit 経路は映像の枠の貸し出しと一緒に付け替え、
-    /// AVPlayer 経路は映像の層と一緒に貸し出す)。
+    /// 全画面でも置き場所は変えず、枠が広がるのに合わせて広がる。
     private let captionOverlayView = CaptionOverlayView()
-    /// 字幕の重ね物を映像の枠へ固定する決まり (制約) の控え。
-    /// 全画面へ貸し出すときに外し、戻すときに付け直すために持っておく。
-    private var captionHomeConstraints: [NSLayoutConstraint] = []
-    /// 全画面 (VLCKit 経路) へ貸し出し中に、字幕の重ね物を全画面側へ
-    /// 固定する決まり (制約)。AVPlayer 経路では全画面の画面側が
-    /// 決まりを持つため、こちらは VLCKit 経路だけで使う。
-    private var captionBorrowConstraints: [NSLayoutConstraint] = []
     /// 字幕表示のオン/オフ (操作帯の中。Web 版プレイヤーの操作帯にある
     /// 字幕の切り替えと同じ置き場所で、コメント切り替えの隣に置く)。
     private let captionButton = RippleButton()
@@ -500,7 +506,6 @@ final class PlayerViewController: UIViewController {
     private let profileButton = RippleButton()
     private let rateButton = RippleButton()
     private let audioOnlyButton = RippleButton()
-    private let fullscreenButton = RippleButton()
     private let protectButton = RippleButton()
     /// マイリストへの追加・削除ボタン (両版)。状態で文面と印を変える。
     private let mylistButton = RippleButton()
@@ -568,9 +573,6 @@ final class PlayerViewController: UIViewController {
     /// シークバーの上に重ねる盛り上がりの波形の帯。
     /// 材料が揃った時点で操作帯の並びへ差し込む。
     private let excitementStrip = ExcitementStripView()
-    /// 表示中の全画面 (録画再生)。盛り上がりの材料が全画面を開いた
-    /// あとに用意できたとき、渡し直すために控える。
-    private weak var activeFullscreenPlayer: FullscreenPlayerViewController?
     /// ダイジェスト再生 (見どころ区間だけを続けて再生) が入っているか。
     private var digestPlaybackEnabled = false
     /// ダイジェスト再生の見張りの間引き用 (Web 版と同じ 300ミリ秒間隔)。
@@ -781,6 +783,22 @@ final class PlayerViewController: UIViewController {
         return target
     }
 
+    // 全画面の間だけ横向きに寄せる (別の画面へ移らないため、この画面
+    // 自身が向きを申告する)。全画面でないときは今までどおり制限しない。
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        isFullscreen ? .landscape : super.supportedInterfaceOrientations
+    }
+
+    // 全画面の間は、操作類が消えているときだけステータスバーも隠す
+    // (以前の全画面の画面と同じ扱い)。
+    override var prefersStatusBarHidden: Bool {
+        isFullscreen ? !controlsVisible : super.prefersStatusBarHidden
+    }
+
+    override var prefersHomeIndicatorAutoHidden: Bool {
+        isFullscreen || super.prefersHomeIndicatorAutoHidden
+    }
+
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         // 題名の出し方だけ Web 版ヘッダー (14px 太字・テーマの文字色) に合わせる。
@@ -792,7 +810,7 @@ final class PlayerViewController: UIViewController {
             .font: UIFont.scaledSystemFont(ofSize: 14, weight: .bold),
             .foregroundColor: AppPalette.text,
         ]
-        // フルスクリーンから戻ってきたとき用に、消えるタイマーを仕掛け直す。
+        // 別の画面から戻ってきたとき用に、消えるタイマーを仕掛け直す。
         if hasActiveEngine {
             scheduleHideControls()
         }
@@ -823,8 +841,8 @@ final class PlayerViewController: UIViewController {
         updateHeaderClock()
         // 次の話など別の画面へ進んで戻ってきたときは、離れるときに
         // 片付けた再生を作り直す (この画面が閉じられた場合はここへは
-        // 来ない)。全画面で覆われて戻った場合は片付けていないため、
-        // 仕組みが残っているかどうかで対象外になる。
+        // 来ない)。全画面はこの画面の中の状態で、離れる扱いには
+        // ならないため、ここには関わらない。
         if didLeaveScreen, !hasActiveEngine {
             didLeaveScreen = false
             resumePlaybackAfterReturn()
@@ -841,6 +859,11 @@ final class PlayerViewController: UIViewController {
         hideTimer = nil
         headerClockTimer?.invalidate()
         headerClockTimer = nil
+        // 全画面のまま離れる場合は、向きを戻す要求の出し先を控えておく
+        // (離れた後はこの画面の窓が無くなるため)。
+        if isFullscreen {
+            fullscreenWindowScene = view.window?.windowScene
+        }
         // 再生の後片付けは、離れることが確定してから viewDidDisappear で
         // 行う (下のコメント参照)。ここでは切り替わりの先頭で固まらない
         // よう、軽い片付けだけ行う。
@@ -848,10 +871,14 @@ final class PlayerViewController: UIViewController {
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        // フルスクリーン表示で覆われただけのときは再生を止めない
-        // (全画面を閉じれば、こちらの画面がそのまま戻る)。
-        if presentedViewController is FullscreenPlayerViewController {
-            return
+        // 全画面のまま画面を離れたときは、全画面へ入るときに出した
+        // 横向きへの要求が残り続けるため、端末の向きへ戻す要求を出す
+        // (全画面を閉じて離れる場合は、閉じる側ですでに済んでいる)。
+        if isFullscreen {
+            isFullscreen = false
+            navigationController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+            restoreOrientation(on: fullscreenWindowScene)
+            fullscreenWindowScene = nil
         }
         // 離れることが確定してから後片付けする。以前は viewWillDisappear
         // (切り替わりの先頭) で行っていて、VLC を止める呼び出し (終わる
@@ -875,7 +902,7 @@ final class PlayerViewController: UIViewController {
         surfaceView.translatesAutoresizingMaskIntoConstraints = false
         videoContainer.addSubview(surfaceView)
         // 字幕の重ね物は映像の枠の中に入れる (映像の上・コメントより下)。
-        // 全画面 (VLCKit 経路) では枠ごと貸し出されるため、そのまま付いて行く。
+        // 全画面でも枠の中のままで、枠が広がるのに合わせて広がる。
         captionOverlayView.translatesAutoresizingMaskIntoConstraints = false
         surfaceView.addSubview(captionOverlayView)
         // コメントの重ね物は映像の上・操作帯の下に置く (操作は受けない)。
@@ -884,7 +911,6 @@ final class PlayerViewController: UIViewController {
         // 映像をタップしたら操作帯を出し入れする (Web 版と同じ作り)。
         let tap = UITapGestureRecognizer(target: self, action: #selector(toggleControls))
         surfaceView.addGestureRecognizer(tap)
-        surfaceTapRecognizer = tap
 
         // 真ん中の並びの絵の大きさは本家の比率に寄せる (再生/一時停止が
         // 一番大きく、少し戻る/少し進む、場面移動の順に小さく)。
@@ -917,6 +943,12 @@ final class PlayerViewController: UIViewController {
         // 同じ置き場所で、コメント切り替えの隣に置く)。
         captionButton.addTarget(self, action: #selector(toggleCaptions), for: .touchUpInside)
         updateCaptionButton()
+
+        // 全画面ボタンは、Web 版と同じく映像の右下 (操作帯の右端) に
+        // 重ねるアイコンボタンにする。全画面の間は元へ戻すアイコンに
+        // 変える (updateFullscreenEnterButton)。
+        fullscreenEnterButton.addTarget(self, action: #selector(toggleFullscreen), for: .touchUpInside)
+        updateFullscreenEnterButton()
 
         seekSlider.addTarget(self, action: #selector(scrubBegan), for: .touchDown)
         seekSlider.addTarget(self, action: #selector(scrubChanged), for: .valueChanged)
@@ -965,8 +997,9 @@ final class PlayerViewController: UIViewController {
         centerTransport.alignment = .center
         centerTransport.translatesAutoresizingMaskIntoConstraints = false
 
-        // 下の帯の並び: [現在時刻] ... [全体の長さ・字幕切り替え・コメント切り替え]。
-        let rightGroup = UIStackView(arrangedSubviews: [durationLabel, captionButton, commentButton])
+        // 下の帯の並び: [現在時刻] ... [全体の長さ・字幕切り替え・
+        // コメント切り替え・全画面]。
+        let rightGroup = UIStackView(arrangedSubviews: [durationLabel, captionButton, commentButton, fullscreenEnterButton])
         rightGroup.axis = .horizontal
         rightGroup.spacing = 8
         rightGroup.alignment = .center
@@ -982,6 +1015,22 @@ final class PlayerViewController: UIViewController {
         videoContainer.addSubview(bottomGradient)
         controlsStackView.addArrangedSubview(transportRow)
         controlsStackView.addArrangedSubview(seekContainer)
+        // 全画面のときだけ出す、画質・プロファイルの並び (操作帯の一番下)。
+        // 情報欄にある同じ名前のボタンと同じ動き・同じ表示にそろえる
+        // (表示の同期は updateQualityButtons / updateProfileButtonTitle)。
+        fsQualityButton.showsMenuAsPrimaryAction = true
+        fsProfileButton.addTarget(self, action: #selector(toggleProfile), for: .touchUpInside)
+        for button in [fsQualityButton, fsProfileButton] {
+            button.setTitleColor(AppPalette.text, for: .normal)
+            button.titleLabel?.font = .scaledSystemFont(ofSize: 13)
+        }
+        fsOptionsRow.addArrangedSubview(fsQualityButton)
+        fsOptionsRow.addArrangedSubview(fsProfileButton)
+        fsOptionsRow.addArrangedSubview(UIView())
+        fsOptionsRow.axis = .horizontal
+        fsOptionsRow.spacing = 16
+        fsOptionsRow.isHidden = true
+        controlsStackView.addArrangedSubview(fsOptionsRow)
         controlsStackView.axis = .vertical
         controlsStackView.spacing = 2
         controlsStackView.translatesAutoresizingMaskIntoConstraints = false
@@ -1165,6 +1214,48 @@ final class PlayerViewController: UIViewController {
             reelCloseButton.heightAnchor.constraint(equalToConstant: 28),
         ])
 
+        // 全画面の上部帯 (終了ボタン + 番組名)。全画面のときだけ出し、
+        // 操作帯と一緒に透明度で出し入れする (setControlsVisible)。
+        // 映像の入れ物の中で一番上に置く。
+        fsExitButton.setImage(
+            UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold)),
+            for: .normal
+        )
+        fsExitButton.tintColor = .white
+        fsExitButton.addTarget(self, action: #selector(exitFullscreen), for: .touchUpInside)
+        fsExitButton.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            fsExitButton.widthAnchor.constraint(equalToConstant: 44),
+            fsExitButton.heightAnchor.constraint(equalToConstant: 44),
+        ])
+        fsTitleLabel.text = program.title
+        fsTitleLabel.textColor = .white
+        fsTitleLabel.font = .scaledSystemFont(ofSize: 16, weight: .bold)
+        fsTitleLabel.numberOfLines = 1
+        fsTitleLabel.lineBreakMode = .byTruncatingTail
+        fsTitleLabel.shadowColor = UIColor.black.withAlphaComponent(0.6)
+        fsTitleLabel.shadowOffset = CGSize(width: 0, height: 1)
+        fsTopGradient.translatesAutoresizingMaskIntoConstraints = false
+        fsTopGradient.isHidden = true
+        videoContainer.addSubview(fsTopGradient)
+        fsTopBar.axis = .horizontal
+        fsTopBar.spacing = 12
+        fsTopBar.alignment = .center
+        fsTopBar.addArrangedSubview(fsExitButton)
+        fsTopBar.addArrangedSubview(fsTitleLabel)
+        fsTopBar.translatesAutoresizingMaskIntoConstraints = false
+        fsTopBar.isHidden = true
+        videoContainer.addSubview(fsTopBar)
+        NSLayoutConstraint.activate([
+            fsTopGradient.topAnchor.constraint(equalTo: videoContainer.topAnchor),
+            fsTopGradient.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
+            fsTopGradient.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
+            fsTopGradient.heightAnchor.constraint(equalToConstant: 66),
+            fsTopBar.topAnchor.constraint(equalTo: videoContainer.safeAreaLayoutGuide.topAnchor, constant: 8),
+            fsTopBar.leadingAnchor.constraint(equalTo: videoContainer.safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            fsTopBar.trailingAnchor.constraint(equalTo: videoContainer.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+        ])
+
         // MARK: 映像の下の情報欄 (Web 版パネル)
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.backgroundColor = AppPalette.background
@@ -1336,9 +1427,8 @@ final class PlayerViewController: UIViewController {
         detailStack.isHidden = detailStack.arrangedSubviews.isEmpty
 
         // 操作の小さなボタン群 (旧「その他」メニューの中身も、ここへ直接並べる)。
-        qualityButton.setTitle("画質: \(quality)", for: .normal)
         qualityButton.showsMenuAsPrimaryAction = true
-        qualityButton.menu = makeQualityMenu()
+        updateQualityButtons()
         // 画質プロファイルの手動切り替え (Web 版プレイヤーの設定パネルにある
         // 「モバイル回線向け画質」のトグルにあたる)。オン = モバイル回線向け。
         profileButton.addTarget(self, action: #selector(toggleProfile), for: .touchUpInside)
@@ -1348,8 +1438,6 @@ final class PlayerViewController: UIViewController {
         rateButton.menu = makePlaybackRateMenu()
         audioOnlyButton.setTitle("音声のみ: OFF", for: .normal)
         audioOnlyButton.addTarget(self, action: #selector(toggleAudioOnly), for: .touchUpInside)
-        fullscreenButton.setTitle("全画面", for: .normal)
-        fullscreenButton.addTarget(self, action: #selector(showFullscreen), for: .touchUpInside)
         protectButton.setTitle(currentProtected ? "保護を外す" : "保護する", for: .normal)
         protectButton.addTarget(self, action: #selector(toggleProtection), for: .touchUpInside)
         mylistButton.addTarget(self, action: #selector(toggleMylist), for: .touchUpInside)
@@ -1389,7 +1477,7 @@ final class PlayerViewController: UIViewController {
         nextReserveButton.addTarget(self, action: #selector(reserveNextBroadcast), for: .touchUpInside)
         seriesReserveButton.setTitle("シリーズ予約", for: .normal)
         seriesReserveButton.addTarget(self, action: #selector(createSeriesReservation), for: .touchUpInside)
-        for button in [qualityButton, profileButton, rateButton, audioOnlyButton, fullscreenButton, protectButton, mylistButton, watchedButton, sleepTimerButton,
+        for button in [qualityButton, profileButton, rateButton, audioOnlyButton, protectButton, mylistButton, watchedButton, sleepTimerButton,
                        prevEpisodeButton, nextEpisodeButton, sceneListButton, addBookmarkButton, digestButton, commentSearchButton,
                        nextReserveButton, seriesReserveButton] {
             stylePlayerChip(button)
@@ -1406,7 +1494,7 @@ final class PlayerViewController: UIViewController {
         // シリーズ予約は予約機能と同じ条件 (後ろ側が EDCB のとき) に
         // 寄せ、常時出す (EDCB でないときは、実行時に予約機能と同じ
         // 知らせ文が出る)。並び順は見直し前と変えない。
-        var infoButtons: [UIButton] = [qualityButton, audioOnlyButton, fullscreenButton, rateButton]
+        var infoButtons: [UIButton] = [qualityButton, audioOnlyButton, rateButton]
         if AppEdition.episodeNavigationEnabled {
             infoButtons += [prevEpisodeButton, nextEpisodeButton]
         }
@@ -1447,39 +1535,38 @@ final class PlayerViewController: UIViewController {
         let heightConstraint = videoContainer.heightAnchor.constraint(equalToConstant: 200)
         videoHeightConstraint = heightConstraint
 
-        // 映像の枠の固定は、貸し出し・返却で付け外しできるよう別に持つ。
-        surfaceViewHomeConstraints = [
+        // 映像の枠・字幕・コメントは置き場所を変えないため、決まりは
+        // 最初から有効にするだけ (全画面では入れ物が広がるのに合わせ、
+        // 中身もそのまま広がる)。
+        NSLayoutConstraint.activate([
             surfaceView.topAnchor.constraint(equalTo: videoContainer.topAnchor),
             surfaceView.bottomAnchor.constraint(equalTo: videoContainer.bottomAnchor),
             surfaceView.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
             surfaceView.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
-        ]
-        NSLayoutConstraint.activate(surfaceViewHomeConstraints)
-
-        // 字幕の重ね物は映像の枠いっぱいに広げる (貸し出し・返却で
-        // 付け外しできるよう、決まりは別に持つ)。
-        captionHomeConstraints = [
+            // 字幕の重ね物は映像の枠いっぱいに広げる。
             captionOverlayView.topAnchor.constraint(equalTo: surfaceView.topAnchor),
             captionOverlayView.bottomAnchor.constraint(equalTo: surfaceView.bottomAnchor),
             captionOverlayView.leadingAnchor.constraint(equalTo: surfaceView.leadingAnchor),
             captionOverlayView.trailingAnchor.constraint(equalTo: surfaceView.trailingAnchor),
-        ]
-        NSLayoutConstraint.activate(captionHomeConstraints)
-
-        // コメントの重ね物も、貸し出し・返却で付け外しできるよう
-        // 決まりは別に持つ (映像の枠の外側、操作帯の下いっぱいに広げる)。
-        commentHomeConstraints = [
+            // コメントの重ね物は、映像の枠の外側 (操作帯の下) いっぱいに広げる。
             commentOverlay.topAnchor.constraint(equalTo: videoContainer.topAnchor),
             commentOverlay.bottomAnchor.constraint(equalTo: videoContainer.bottomAnchor),
             commentOverlay.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
             commentOverlay.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
-        ]
-        NSLayoutConstraint.activate(commentHomeConstraints)
+        ])
 
         // 操作帯の高さは控えに持ち、盛り上がりの帯を差し込むときに広げる。
         controlsHeightConstraint = controlsContainer.heightAnchor.constraint(equalToConstant: 88)
+        // 映像の入れ物の上端の決まりは控えに持ち、全画面へ移るときに
+        // 画面いっぱいの決まり (下) へ切り替える。
+        let containerTop = videoContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor)
+        videoContainerTopConstraint = containerTop
+        videoContainerFullscreenConstraints = [
+            videoContainer.topAnchor.constraint(equalTo: view.topAnchor),
+            videoContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ]
         NSLayoutConstraint.activate([
-            videoContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            containerTop,
             videoContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             videoContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             heightConstraint,
@@ -1598,6 +1685,15 @@ final class PlayerViewController: UIViewController {
         button.addTarget(self, action: action, for: .touchUpInside)
     }
 
+    /// 画質ボタンの表示 (題名と選択肢) を、情報欄と全画面の操作帯の
+    /// 両方へ合わせる。
+    private func updateQualityButtons() {
+        qualityButton.setTitle("画質: \(quality)", for: .normal)
+        qualityButton.menu = makeQualityMenu()
+        fsQualityButton.setTitle("画質: \(quality)", for: .normal)
+        fsQualityButton.menu = makeQualityMenu()
+    }
+
     private func makeQualityMenu() -> UIMenu {
         // 選択肢の表示は設定画面と同じく、データ量と平均ビットレート付き。
         // 数値は現在の区分の通信節約モードの有無で切り替わる。
@@ -1621,16 +1717,15 @@ final class PlayerViewController: UIViewController {
         guard newQuality != quality else { return }
         SettingsStore.shared.setStreamingQuality(newQuality, media: .video, profile: profile)
         pendingQualityWriteBack = newQuality
-        // 全画面表示中に仕組みが切り替わる場合は、全画面を閉じてから作り直す。
-        dismissFullscreenIfEngineWillChange(toBaseQuality: newQuality, profile: profile)
         switchQuality(newQuality)
     }
 
-    /// 画質プロファイルの手動切り替えボタンの表示を、現在の区分に合わせる。
+    /// 画質プロファイルの手動切り替えボタンの表示を、現在の区分に
+    /// 合わせる (情報欄と全画面の操作帯の両方)。
     private func updateProfileButtonTitle() {
-        profileButton.setTitle(
-            profile == .cellular ? "モバイル回線向け画質: ON" : "モバイル回線向け画質: OFF",
-            for: .normal)
+        let title = profile == .cellular ? "モバイル回線向け画質: ON" : "モバイル回線向け画質: OFF"
+        profileButton.setTitle(title, for: .normal)
+        fsProfileButton.setTitle(title, for: .normal)
         buttonsFlowView.setNeedsLayout()
     }
 
@@ -1644,18 +1739,12 @@ final class PlayerViewController: UIViewController {
     /// 再生は、切り替え後の区分の既定画質で作り直す (再生中の画質は
     /// 引き継がない。Web 版の should_resume_quality: false と同じ)。
     /// 録画の位置は引き継ぐ。
-    /// 戻り値は切り替え後に実際に使う画質 (全画面側の表示を合わせるため)。
+    /// 戻り値は切り替え後に実際に使う画質。
     @discardableResult
     private func switchProfile(to newProfile: PlaybackProfile) -> String {
         guard newProfile != profile else { return quality }
         // 画質の切り替えと同じく、止めていた場合は作り直した後も止めたままにする。
         let wasPlaying = isCurrentlyPlaying()
-        // 全画面表示中に仕組みが切り替わる場合は、全画面を閉じてから作り直す
-        // (切り替え後に実際に使う画質で判定する)。
-        let effectiveBase = audioOnly
-            ? SettingsStore.audioOnlyQuality
-            : SettingsStore.shared.streamingQuality(media: .video, profile: newProfile)
-        dismissFullscreenIfEngineWillChange(toBaseQuality: effectiveBase, profile: newProfile)
         profile = newProfile
         SettingsStore.shared.lastQualityProfileType = newProfile
         updateProfileButtonTitle()
@@ -1670,8 +1759,7 @@ final class PlayerViewController: UIViewController {
         } else {
             quality = SettingsStore.shared.streamingQuality(media: .video, profile: newProfile)
         }
-        qualityButton.setTitle("画質: \(quality)", for: .normal)
-        qualityButton.menu = makeQualityMenu()
+        updateQualityButtons()
         buttonsFlowView.setNeedsLayout()
         // 画質が変わるのでセッションも作り直す (画質切り替えと同じ)。
         sessionID = UUID().uuidString
@@ -2300,27 +2388,6 @@ final class PlayerViewController: UIViewController {
             .contains("-hevc")
     }
 
-    /// 指定した画質・区分で作り直すと、再生の仕組み (AVPlayer / VLCKit) が
-    /// 切り替わるかどうか。
-    private func engineWillChange(toBaseQuality base: String, profile newProfile: PlaybackProfile) -> Bool {
-#if canImport(MobileVLCKit)
-        return isHEVCQuality(base, profile: newProfile) != (vlcPlayer != nil)
-#else
-        return false
-#endif
-    }
-
-    /// 全画面表示中に再生の仕組みが切り替わる作り直しをすると、全画面側は
-    /// 追随できない (映像の描き先も操作の向き先も、仕組みにひも付いている
-    /// ため)。その場合は全画面を閉じ、通常画面で作り直す。
-    /// 呼び出し側は、作り直しの前にこれを呼ぶ。
-    private func dismissFullscreenIfEngineWillChange(toBaseQuality base: String, profile newProfile: PlaybackProfile) {
-        guard presentedViewController is FullscreenPlayerViewController else { return }
-        if engineWillChange(toBaseQuality: base, profile: newProfile) {
-            dismiss(animated: true)
-        }
-    }
-
     /// AVPlayer 経路の開始 (従来どおり)。
     /// 渡す材料 (asset) は呼び出し側で用意する。中継が必須の方式では、
     /// 中継の URL を非同期に解決してから材料を作って渡す (用意が
@@ -2418,8 +2485,8 @@ final class PlayerViewController: UIViewController {
 #if canImport(MobileVLCKit)
     /// VLCKit 経路の開始。プレイリストを VLC に渡す
     /// (TS に入った HEVC を読み解けるのはこちら)。
-    /// 描き先は常に通常画面の映像の枠 (surfaceView)。全画面のときは
-    /// 描き先を変えず、枠ごと全画面側へ貸し出す (生放送と同じ作り)。
+    /// 描き先は常に映像の枠 (surfaceView)。全画面はこの画面の中の
+    /// 状態で、枠の置き場所は変わらないため、そのまま全画面に出る。
     ///
     /// 渡す URL は、アプリ内の中継 (StreamRelayServer) 経由にする。
     /// VLCKit には再生の取りに行く処理へ任意のヘッダーを付ける公式の
@@ -2448,8 +2515,7 @@ final class PlayerViewController: UIViewController {
         vlcResumeAfterSeek = false
         let vlc = VLCMediaPlayer()
         vlc.delegate = self
-        // 描き先は常に surfaceView。全画面表示中は surfaceView ごと
-        // 全画面側へ貸し出されているため、そのままで全画面に出る。
+        // 描き先は常に surfaceView (全画面でも置き場所は変わらない)。
         vlc.drawable = surfaceView
         let media = VLCMedia(url: relayedURL ?? url)
         // 受け取りの溜めは録画用の多めの値にする (先読みを厚くして
@@ -2812,7 +2878,8 @@ final class PlayerViewController: UIViewController {
         // 映像の高さ: 幅なりの 16:9 が情報欄の最低限 (120pt) を残して収まるならそのまま、
         // 収まらない (主に横向き) なら収まる高さまで縮める。
         // 映像自体は resizeAspect で全体が収まるため、切れることはない。
-        if let heightConstraint = videoHeightConstraint {
+        // 全画面の間は高さの決まり自体を外しているため、ここでは触らない。
+        if !isFullscreen, let heightConstraint = videoHeightConstraint {
             let ideal = view.bounds.width * 9.0 / 16.0
             let available = view.bounds.height
                 - view.safeAreaInsets.top
@@ -2823,8 +2890,8 @@ final class PlayerViewController: UIViewController {
                 heightConstraint.constant = target
             }
         }
-        // 全画面へ貸し出し中の層の枠は、全画面側が決める
-        // (通常画面の枠で上書きしない)。
+        // 映像の層は常に映像の枠の中にあり、枠の大きさに合わせる
+        // (全画面で枠が広がったときも同じ)。
         if playerLayer?.superlayer === surfaceView.layer {
             playerLayer?.frame = surfaceView.bounds
         }
@@ -3072,9 +3139,17 @@ final class PlayerViewController: UIViewController {
             self.bottomGradient.alpha = visible ? 1 : 0
             self.controlsContainer.alpha = visible ? 1 : 0
             self.centerTransport.alpha = visible ? 1 : 0
+            // 全画面の上部帯も、操作帯と一緒に透明度で出し入れする
+            // (全画面でないときは隠したままなので、透明度は効かない)。
+            self.fsTopGradient.alpha = visible ? 1 : 0
+            self.fsTopBar.alpha = visible ? 1 : 0
         }
         controlsContainer.isUserInteractionEnabled = visible
         centerTransport.isUserInteractionEnabled = visible
+        fsTopBar.isUserInteractionEnabled = visible
+        if isFullscreen {
+            setNeedsStatusBarAppearanceUpdate()
+        }
         if !visible {
             hideTimer?.invalidate()
             hideTimer = nil
@@ -3353,15 +3428,12 @@ final class PlayerViewController: UIViewController {
         excitementStrip.densities = density.densities
         excitementStrip.segments = segments
         excitementStrip.duration = density.duration
-        // 全画面を開いている間に材料が用意できたら、全画面側の帯にも
-        // 同じ材料を渡す。
-        activeFullscreenPlayer?.setExcitement(
-            densities: density.densities, segments: segments, duration: density.duration)
         // 帯は操作帯の並びの中で、シークバーの真上に差し込む。
-        // 操作帯はその分だけ高くする。
+        // 操作帯はその分だけ高くする。全画面でも同じ帯がそのまま
+        // 広がって出る (全画面はこの画面の中の状態のため)。
         if excitementStrip.superview == nil {
             controlsStackView.insertArrangedSubview(excitementStrip, at: 1)
-            controlsHeightConstraint?.constant = 88 + 28
+            refreshControlsHeight()
         }
         if !segments.isEmpty {
             digestButton.isHidden = false
@@ -4095,8 +4167,7 @@ final class PlayerViewController: UIViewController {
         quality = newQuality
         // 画質が変わるとサーバー側のストリームが別物になるため、セッションも作り直す。
         sessionID = UUID().uuidString
-        qualityButton.setTitle("画質: \(quality)", for: .normal)
-        qualityButton.menu = makeQualityMenu()
+        updateQualityButtons()
         buttonsFlowView.setNeedsLayout()
         startPlayback(at: current.isFinite ? current : 0)
         if !wasPlaying {
@@ -4105,211 +4176,96 @@ final class PlayerViewController: UIViewController {
         }
     }
 
-    /// フルスクリーン表示へ移る。AVPlayer 経路は同じプレイヤーを共有し、
-    /// 映像の層も通常画面のものをそのまま貸すので再生は途切れない。
-    /// VLCKit 経路は、映像の枠ごと全画面側へ貸し出す
-    /// (生放送の全画面と同じ作り) ので、こちらも受信は止まらない。
-    @objc private func showFullscreen() {
-#if canImport(MobileVLCKit)
-        if vlcPlayer != nil {
-            let fullscreen = FullscreenPlayerViewController(
-                program: program, quality: quality,
-                isCellularProfile: profile == .cellular,
-                hooks: makeFullscreenHooks())
-            fullscreen.onQualitySelected = { [weak self] newQuality in
-                self?.userSwitchQuality(newQuality)
-            }
-            fullscreen.onProfileSelected = { [weak self] isCellular in
-                self?.switchProfile(to: isCellular ? .cellular : .wifi) ?? ""
-            }
-            passExcitementToFullscreen(fullscreen)
-            present(fullscreen, animated: true)
-            return
-        }
-#endif
-        guard let player else { return }
-        let fullscreen = FullscreenPlayerViewController(
-            player: player, program: program, quality: quality,
-            isCellularProfile: profile == .cellular,
-            sharedPlayerLayer: playerLayer,
-            onReturnPlayerLayer: { [weak self] layer in
-                // 全画面から戻るときに、層を通常画面の枠へ戻す。
-                guard let self else { return }
-                self.surfaceView.layer.addSublayer(layer)
-                layer.frame = self.surfaceView.bounds
-            })
-        // 字幕の重ね物も、映像の層と一緒に全画面側へ貸し出す
-        // (全画面を閉じるときに、通常画面の映像の枠へ戻してもらう)。
-        NSLayoutConstraint.deactivate(captionHomeConstraints)
-        fullscreen.borrowedCaptionView = captionOverlayView
-        fullscreen.onReturnCaptionView = { [weak self] in
-            guard let self else { return }
-            self.surfaceView.addSubview(self.captionOverlayView)
-            NSLayoutConstraint.activate(self.captionHomeConstraints)
-            self.surfaceView.bringSubviewToFront(self.captionOverlayView)
-        }
-        // コメントの重ね物も一緒に貸し出す (全画面側では映像の上・
-        // 字幕の下に重ねる)。これまでは貸し出しの仕組み自体がなく、
-        // 通常画面に残ったまま全画面に覆われて見えなくなっていた。
-        NSLayoutConstraint.deactivate(commentHomeConstraints)
-        fullscreen.borrowedCommentView = commentOverlay
-        fullscreen.onReturnCommentView = { [weak self] in
-            guard let self else { return }
-            // 元の重なり (映像の枠の上・操作帯の下) へ戻す。
-            self.videoContainer.insertSubview(self.commentOverlay, aboveSubview: self.surfaceView)
-            NSLayoutConstraint.activate(self.commentHomeConstraints)
-        }
-        fullscreen.onQualitySelected = { [weak self] newQuality in
-            self?.userSwitchQuality(newQuality)
-        }
-        fullscreen.onProfileSelected = { [weak self] isCellular in
-            self?.switchProfile(to: isCellular ? .cellular : .wifi) ?? ""
-        }
-        passExcitementToFullscreen(fullscreen)
-        present(fullscreen, animated: true)
+    // MARK: - 全画面 (再生画面の中の状態)
+
+    /// 全画面ボタンの見た目を、全画面かどうかで切り替える
+    /// (入るときは広げる矢印、戻すときは縮める矢印)。
+    private func updateFullscreenEnterButton() {
+        let config = UIImage.SymbolConfiguration(pointSize: 20, weight: .regular)
+        fullscreenEnterButton.setImage(
+            UIImage(systemName: isFullscreen
+                ? "arrow.down.right.and.arrow.up.left"
+                : "arrow.up.left.and.arrow.down.right", withConfiguration: config),
+            for: .normal)
+        fullscreenEnterButton.tintColor = .white
+        fullscreenEnterButton.accessibilityLabel = isFullscreen ? "全画面を終了する" : "全画面にする"
     }
 
-    /// 全画面へ、盛り上がりの波形の材料 (用意できている分) を渡す。
-    /// 全画面の控えも持っておき、材料があとから用意できたときは
-    /// buildExcitement から渡し直す。
-    private func passExcitementToFullscreen(_ fullscreen: FullscreenPlayerViewController) {
-        activeFullscreenPlayer = fullscreen
-        if let density = excitementDensity {
-            fullscreen.setExcitement(
-                densities: density.densities,
-                segments: highlightSegments,
-                duration: density.duration)
+    @objc private func toggleFullscreen() {
+        if isFullscreen {
+            exitFullscreen()
+        } else {
+            enterFullscreen()
         }
     }
 
-#if canImport(MobileVLCKit)
-    /// VLCKit 経路で全画面へ渡す操作の受け口。
-    /// 映像の枠の貸し出しと、位置・長さ・再生状態の読み取り、
-    /// 再生・停止・移動の委譲をまとめたもの (生放送の全画面が枠を
-    /// 貸し出す作りと同じ考え方で、録画の全画面にも操作を足した形)。
-    private func makeFullscreenHooks() -> FullscreenPlayerViewController.PlaybackHooks {
-        .init(
-            attachVideo: { [weak self] videoView in
-                guard let self else { return }
-                self.borrowSurfaceView(into: videoView)
-            },
-            detachVideo: { [weak self] in
-                guard let self else { return }
-                self.returnSurfaceView()
-            },
-            currentTime: { [weak self] in
-                self?.currentPosition() ?? 0
-            },
-            itemDuration: { [weak self] in
-                self?.currentItemDurationSeconds ?? .nan
-            },
-            isPlaying: { [weak self] in
-                self?.isCurrentlyPlaying() ?? false
-            },
-            play: { [weak self] in
-                self?.playAtCurrentRate()
-            },
-            pause: { [weak self] in
-                self?.pauseEngine()
-            },
-            seek: { [weak self] seconds in
-                self?.seek(to: seconds)
-            },
-            isMuted: { [weak self] in
-                self?.isEngineMuted ?? false
-            },
-            setMuted: { [weak self] muted in
-                self?.setEngineMuted(muted)
-            },
-            displayTime: { [weak self] in
-                guard let self else { return nil }
-                return self.activeSeekDisplayTarget(realPosition: self.currentPosition())
-            }
-        )
+    /// 全画面へ移る。別の画面へは移らず、この画面のまま、映像の
+    /// 入れ物を画面いっぱいに広げ、情報欄などを隠し、横向きを要求
+    /// する。映像の枠も、コメント・字幕・波形の重ね物も、置き場所を
+    /// 変えないため、再生は途切れず、付け替えで操作が固まることも
+    /// ない。画質やプロファイルの切り替えで再生の仕組みが替わっても、
+    /// 描き先は同じ枠のままなので、そのまま全画面で作り直せる。
+    private func enterFullscreen() {
+        guard !isFullscreen else { return }
+        isFullscreen = true
+        navigationController?.setNavigationBarHidden(true, animated: true)
+        infoTabBar.isHidden = true
+        scrollView.isHidden = true
+        commentTableView.isHidden = true
+        videoContainerTopConstraint?.isActive = false
+        videoHeightConstraint?.isActive = false
+        NSLayoutConstraint.activate(videoContainerFullscreenConstraints)
+        fsTopGradient.isHidden = false
+        fsTopBar.isHidden = false
+        fsOptionsRow.isHidden = false
+        refreshControlsHeight()
+        updateFullscreenEnterButton()
+        setControlsVisible(true)
+        scheduleHideControls()
+        setNeedsStatusBarAppearanceUpdate()
+        // 横向きへの回転を明示的に促す (iOS 16 以降の作法)。
+        if #available(iOS 16.0, *) {
+            setNeedsUpdateOfSupportedInterfaceOrientations()
+            view.window?.windowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: .landscape))
+        }
+        view.setNeedsLayout()
     }
 
-    /// 全画面表示の間、映像の枠 (surfaceView) そのものを全画面側へ貸し出す。
-    /// VLC の描き先は surfaceView のまま変えず、枠の置き場所だけを移す。
-    /// 再生中に描き先を別のビューへ差し替えると、全画面で音だけ出て映像が
-    /// 出なくなる (実機確認済み) ため、この形にしている。枠の中の描画は
-    /// 枠と一緒にそのまま付いてくるので、再生は途切れない。
-    private func borrowSurfaceView(into container: UIView) {
-        guard surfaceView.superview !== container else { return }
-        NSLayoutConstraint.deactivate(surfaceViewHomeConstraints)
-        surfaceView.removeFromSuperview()
-        container.addSubview(surfaceView)
-        surfaceViewBorrowConstraints = [
-            surfaceView.topAnchor.constraint(equalTo: container.topAnchor),
-            surfaceView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            surfaceView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            surfaceView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-        ]
-        NSLayoutConstraint.activate(surfaceViewBorrowConstraints)
-        // コメントの重ね物も、映像の枠と一緒に貸し出す (生放送の全画面と
-        // 同じやり方)。これまでは通常画面に残ったまま全画面に覆われて、
-        // 全画面ではコメントが流れなくなっていた。
-        if commentOverlay.superview === videoContainer {
-            NSLayoutConstraint.deactivate(commentHomeConstraints)
-            commentOverlay.removeFromSuperview()
-            container.addSubview(commentOverlay)
-            commentBorrowConstraints = [
-                commentOverlay.topAnchor.constraint(equalTo: container.topAnchor),
-                commentOverlay.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-                commentOverlay.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                commentOverlay.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            ]
-            NSLayoutConstraint.activate(commentBorrowConstraints)
-        }
-        // 字幕の重ね物は枠の中にあるため一緒に付いて行くが、重なりを
-        // 全画面の並び (映像→コメント→字幕) に合わせるため、枠から
-        // 出してコメントの上へ置き直す。
-        if captionOverlayView.superview === surfaceView {
-            NSLayoutConstraint.deactivate(captionHomeConstraints)
-            captionOverlayView.removeFromSuperview()
-            container.addSubview(captionOverlayView)
-            captionBorrowConstraints = [
-                captionOverlayView.topAnchor.constraint(equalTo: container.topAnchor),
-                captionOverlayView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-                captionOverlayView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                captionOverlayView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            ]
-            NSLayoutConstraint.activate(captionBorrowConstraints)
-        }
-        // 貸し出し中は、通常画面側のタップ (操作帯の出し入れ) を止める
-        // (全画面側のタップと二重に効かないように)。
-        surfaceTapRecognizer?.isEnabled = false
+    /// 全画面を終え、通常の並びへ戻す。向きは、端末の向きへ戻す
+    /// 要求を出す (入るときの横向きへの要求は、戻す要求を出さないと
+    /// 残り続けるため)。
+    @objc private func exitFullscreen() {
+        guard isFullscreen else { return }
+        isFullscreen = false
+        navigationController?.setNavigationBarHidden(false, animated: true)
+        infoTabBar.isHidden = false
+        scrollView.isHidden = selectedInfoTab != .info
+        commentTableView.isHidden = selectedInfoTab != .comment
+        NSLayoutConstraint.deactivate(videoContainerFullscreenConstraints)
+        videoContainerTopConstraint?.isActive = true
+        videoHeightConstraint?.isActive = true
+        fsTopGradient.isHidden = true
+        fsTopBar.isHidden = true
+        fsOptionsRow.isHidden = true
+        refreshControlsHeight()
+        updateFullscreenEnterButton()
+        setNeedsStatusBarAppearanceUpdate()
+        restoreOrientationAfterFullscreen()
+        view.setNeedsLayout()
     }
 
-    /// 貸し出した映像の枠を通常画面へ戻す。
-    private func returnSurfaceView() {
-        guard surfaceView.superview !== videoContainer else { return }
-        NSLayoutConstraint.deactivate(surfaceViewBorrowConstraints)
-        surfaceViewBorrowConstraints = []
-        surfaceView.removeFromSuperview()
-        videoContainer.addSubview(surfaceView)
-        // 重ね物 (操作帯など) より後ろへ戻す。
-        videoContainer.sendSubviewToBack(surfaceView)
-        NSLayoutConstraint.activate(surfaceViewHomeConstraints)
-        surfaceTapRecognizer?.isEnabled = true
-        // コメントの重ね物も通常画面へ戻す (映像の枠の上・操作帯の下)。
-        if commentOverlay.superview !== videoContainer {
-            NSLayoutConstraint.deactivate(commentBorrowConstraints)
-            commentBorrowConstraints = []
-            commentOverlay.removeFromSuperview()
-            videoContainer.insertSubview(commentOverlay, aboveSubview: surfaceView)
-            NSLayoutConstraint.activate(commentHomeConstraints)
+    /// 操作帯の高さを、盛り上がりの帯と、全画面の画質・プロファイル
+    /// の並びの有無に合わせて決め直す。
+    private func refreshControlsHeight() {
+        var height: CGFloat = 88
+        if excitementStrip.superview != nil {
+            height += 28
         }
-        // 字幕の重ね物も映像の枠の中へ戻す (枠の中で一番上に保つ)。
-        if captionOverlayView.superview !== surfaceView {
-            NSLayoutConstraint.deactivate(captionBorrowConstraints)
-            captionBorrowConstraints = []
-            captionOverlayView.removeFromSuperview()
-            surfaceView.addSubview(captionOverlayView)
-            NSLayoutConstraint.activate(captionHomeConstraints)
-            surfaceView.bringSubviewToFront(captionOverlayView)
+        if isFullscreen {
+            height += 34
         }
+        controlsHeightConstraint?.constant = height
     }
-#endif
 
     /// 音声のみ: 映像だけを隠し、最小画質に切り替えて通信量を抑える。切ると元の画質に戻す。
     /// 操作帯は映像の上に重なっているため、隠すのは映像の描画だけにする
@@ -4603,5 +4559,35 @@ private final class CommentListCell: UITableViewCell {
     func configure(text: String, timeText: String) {
         bodyLabel.text = text
         timeLabel.text = timeText
+    }
+}
+
+extension UIViewController {
+    /// 横向き固定の全画面を閉じたあと、向きを端末の向きへ戻す。
+    /// 入るときの横向きへの要求 (requestGeometryUpdate) はシーン側に残り続け、
+    /// 閉じただけでは誰も戻しを要求しないため、アプリ全体が横向きのままになる。
+    /// そこで、閉じ終わったあとの画面側で、許可する向きの再評価と、
+    /// 現在の端末の向きに合った向きの要求を行う。
+    func restoreOrientationAfterFullscreen() {
+        setNeedsUpdateOfSupportedInterfaceOrientations()
+        restoreOrientation(on: view.window?.windowScene)
+    }
+
+    /// 指定した画面 (ウィンドウシーン) へ、端末の向きに合った向きへの
+    /// 戻しを要求する。自分の窓がすでに無い場合 (全画面のまま画面を
+    /// 離れたとき) は、控えておいたシーンを渡して使う。
+    func restoreOrientation(on scene: UIWindowScene?) {
+        // 端末の向きと画面の向きは、横向きでは左右が逆に対応する。
+        // それ以外 (縦・うつ伏せ等) は縦へ戻す。
+        let mask: UIInterfaceOrientationMask
+        switch UIDevice.current.orientation {
+        case .landscapeLeft:
+            mask = .landscapeRight
+        case .landscapeRight:
+            mask = .landscapeLeft
+        default:
+            mask = .portrait
+        }
+        scene?.requestGeometryUpdate(.iOS(interfaceOrientations: mask))
     }
 }

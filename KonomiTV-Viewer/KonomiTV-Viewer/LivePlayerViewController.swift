@@ -43,17 +43,29 @@ final class LivePlayerViewController: UIViewController {
     private let qualityButton = RippleButton()
     private let profileButton = RippleButton()
     private let audioOnlyButton = RippleButton()
-    private let fullscreenButton = RippleButton()
     private let messageLabel = NoticeLabel()
     private var videoHeightConstraint: NSLayoutConstraint?
-    /// 映像の枠を通常画面に固定する決まり (制約) の控え。全画面へ貸し出す
-    /// ときに外し、戻すときに付け直すために持っておく。
-    private var videoViewHomeConstraints: [NSLayoutConstraint] = []
-    /// 全画面へ貸し出し中に、映像の枠を全画面側へ固定する決まり (制約)。
-    private var videoViewBorrowConstraints: [NSLayoutConstraint] = []
-    /// 映像タップの受け口。貸し出し中は止める (全画面側のタップと二重に
-    /// 効かないようにするため)。
-    private weak var videoTapRecognizer: UITapGestureRecognizer?
+    // MARK: 全画面 (再生画面の中の状態)
+    /// 全画面表示中かどうか。全画面は別の画面へ移らず、この画面のまま
+    /// 向きとレイアウトを切り替えて行う (映像の枠も、データ放送・
+    /// コメント・字幕の重ね物も、置き場所を変えない)。
+    private var isFullscreen = false
+    /// 通常表示で映像の領域を画面の上端 (安全領域) へ固定する決まり。
+    /// 全画面へ移るときに外し、画面いっぱいの決まりへ切り替える。
+    private var videoAreaTopConstraint: NSLayoutConstraint?
+    /// 全画面で映像の領域を画面いっぱいに広げる決まり (通常は無効)。
+    private var videoAreaFullscreenConstraints: [NSLayoutConstraint] = []
+    /// 全画面の上部帯 (グラデーション + 終了ボタン + 局名)。
+    /// 全画面のときだけ出す。
+    private let fsTopGradient = GradientView(direction: .top)
+    private let fsTopBar = UIStackView()
+    private let fsNameLabel = UILabel()
+    private let fsExitButton = RippleButton()
+    /// 映像の右下に重ねる全画面ボタン (Web 版と同じ置き場所のアイコン)。
+    /// 全画面の間は、元へ戻すアイコンに変える。
+    private let fullscreenEnterButton = RippleButton()
+    /// 全画面のまま画面を離れたときに、向きを戻す要求を出す先の控え。
+    private weak var fullscreenWindowScene: UIWindowScene?
     /// 操作帯の出し入れ (録画再生と同じ作り)。
     private var controlsVisible = true
     private var hideTimer: Timer?
@@ -84,11 +96,10 @@ final class LivePlayerViewController: UIViewController {
     /// 字幕の本体 (録画と同じ部品)。生放送では、流れの中の時刻印の差を
     /// 再生位置に読み替えて蓄える (AribCaption.swift の ingestLivePackets)。
     private let captionEngine = CaptionDisplayEngine()
-    /// 字幕の重ね物。映像の枠 (videoArea) の中に入れ、全画面では映像の
-    /// 枠と一緒に貸し出す (データ放送の重ね合わせと同じ扱い)。
+    /// 字幕の重ね物。映像の枠 (videoArea) の中に入れ、全画面でも
+    /// 置き場所は変えず、枠が広がるのに合わせて広がる
+    /// (データ放送の重ね合わせと同じ扱い)。
     private let captionOverlayView = CaptionOverlayView()
-    private var captionHomeConstraints: [NSLayoutConstraint] = []
-    private var captionBorrowConstraints: [NSLayoutConstraint] = []
     /// 字幕表示のオン/オフ (操作帯の中。録画と同じ置き場所・同じ設定)。
     private let captionButton = RippleButton()
     /// 字幕の更新タイマー (0.25秒ごと)。再生部品の時計に合わせて字幕の
@@ -159,9 +170,9 @@ final class LivePlayerViewController: UIViewController {
     /// 実況コメントの土台 (2本の窓口の管理)。
     private var commentSession: LiveCommentSession?
     /// コメントを映像の上に流す重ね物 (録画と同じ描き手)。
+    /// 映像の領域の中に置いたまま動かさず、全画面でも同じ場所で
+    /// 流れ続ける。
     private let commentOverlay = JikkyoCommentOverlayView()
-    private var commentHomeConstraints: [NSLayoutConstraint] = []
-    private var commentBorrowConstraints: [NSLayoutConstraint] = []
     /// コメント表示のオン/オフ (操作帯の中。録画と同じ置き場所・設定)。
     private let commentButton = RippleButton()
     /// 流れる表示の仮想の時計 (秒)。再生中だけ進む (止まっている間は
@@ -203,10 +214,9 @@ final class LivePlayerViewController: UIViewController {
     /// 始まっていない間と読み込み中は薄くして押せなくする
     /// (Web 版の使えない間の見せ方と同じ)。
     private var remoteDimmableViews: [UIView] = []
-    /// 重ね合わせを通常画面に固定する決まり (制約) の控え。
-    private var bmlHomeConstraints: [NSLayoutConstraint] = []
-    /// 全画面へ貸し出し中に、重ね合わせを全画面側へ固定する決まり (制約)。
-    private var bmlBorrowConstraints: [NSLayoutConstraint] = []
+    /// 重ね合わせを映像の領域へ固定する決まり (制約) の控え。
+    /// 止めるときに外すために持つ (置き場所自体は変えない)。
+    private var bmlConstraints: [NSLayoutConstraint] = []
 
     init(channel: LiveChannel) {
         self.channel = channel
@@ -223,6 +233,22 @@ final class LivePlayerViewController: UIViewController {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    // 全画面の間だけ横向きに寄せる (別の画面へ移らないため、この画面
+    // 自身が向きを申告する)。全画面でないときは今までどおり制限しない。
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        isFullscreen ? .landscape : super.supportedInterfaceOrientations
+    }
+
+    // 全画面の間は、操作類が消えているときだけステータスバーも隠す
+    // (以前の全画面の画面と同じ扱い)。
+    override var prefersStatusBarHidden: Bool {
+        isFullscreen ? !controlsVisible : super.prefersStatusBarHidden
+    }
+
+    override var prefersHomeIndicatorAutoHidden: Bool {
+        isFullscreen || super.prefersHomeIndicatorAutoHidden
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -254,8 +280,7 @@ final class LivePlayerViewController: UIViewController {
     /// 実況コメントの接続を始めたかどうか (1回だけ始める)。
     private var commentSessionStarted = false
     /// 画面を離れるときに再生とコメント接続を止めたかどうか。
-    /// 戻ってきたときに再開するために使う (全画面で覆われただけの
-    /// ときは止めないため、その場合は印も付かない)。
+    /// 戻ってきたときに再開するために使う。
     private var stoppedOnDisappear = false
     /// 離れる直前に再生中だったかどうか。戻ってきたときに、止めて
     /// いた場合は作り直したあとも止めたままにするため。
@@ -305,19 +330,26 @@ final class LivePlayerViewController: UIViewController {
         bar?.titleTextAttributes = nil
         hideTimer?.invalidate()
         hideTimer = nil
+        // 全画面のまま離れる場合は、向きを戻す要求の出し先を控えておく
+        // (離れた後はこの画面の窓が無くなるため)。
+        if isFullscreen {
+            fullscreenWindowScene = view.window?.windowScene
+        }
         // 再生を止めるのは、離れることが確定してから viewDidDisappear で
         // 行う (下のコメント参照)。ここでは軽い片付けだけ行う。
     }
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        // フルスクリーン表示で覆われただけのときは再生を止めない。
-        // それ以外で画面を離れるときは止める。
-#if canImport(MobileVLCKit)
-        if presentedViewController is LiveFullscreenViewController {
-            return
+        // 全画面のまま画面を離れたときは、全画面へ入るときに出した
+        // 横向きへの要求が残り続けるため、端末の向きへ戻す要求を出す
+        // (全画面を閉じて離れる場合は、閉じる側ですでに済んでいる)。
+        if isFullscreen {
+            isFullscreen = false
+            navigationController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+            restoreOrientation(on: fullscreenWindowScene)
+            fullscreenWindowScene = nil
         }
-#endif
         // 離れることが確定してから止める。以前は viewWillDisappear
         // (切り替わりの先頭) で止めていて、VLC を止める呼び出しが先頭で
         // 走るため切り替わりごと固まり、スワイプを途中でやめた場合でも
@@ -344,7 +376,8 @@ final class LivePlayerViewController: UIViewController {
         // パネル 120pt) を残して収まるならそのまま、収まらない
         // (主に横向き) なら収まる高さまで縮める。
         // 映像は VLC 側で全体が収まるように描かれるため、切れることはない。
-        if let heightConstraint = videoHeightConstraint {
+        // 全画面の間は高さの決まり自体を外しているため、ここでは触らない。
+        if !isFullscreen, let heightConstraint = videoHeightConstraint {
             let ideal = view.bounds.width * 9.0 / 16.0
             let available = view.bounds.height
                 - view.safeAreaInsets.top
@@ -369,7 +402,6 @@ final class LivePlayerViewController: UIViewController {
         // 映像をタップしたら操作帯を出し入れする (Web 版と同じ作り)。
         let tap = UITapGestureRecognizer(target: self, action: #selector(toggleControls))
         videoView.addGestureRecognizer(tap)
-        videoTapRecognizer = tap
 
         // 再生・一時停止は下の帯から出し、映像の真ん中に置く
         // (本家 Web 版の中央の並びと同じ置き場所。生放送には少し戻る/
@@ -393,7 +425,12 @@ final class LivePlayerViewController: UIViewController {
         updateCaptionButton()
         commentButton.addTarget(self, action: #selector(toggleComments), for: .touchUpInside)
         updateCommentButton()
-        let controlsRow = UIStackView(arrangedSubviews: [liveTimeLabel, UIView(), captionButton, commentButton])
+        // 全画面ボタンは、Web 版と同じく映像の右下 (操作帯の右端) に
+        // 重ねるアイコンボタンにする。全画面の間は元へ戻すアイコンに
+        // 変える (updateFullscreenEnterButton)。
+        fullscreenEnterButton.addTarget(self, action: #selector(toggleFullscreen), for: .touchUpInside)
+        updateFullscreenEnterButton()
+        let controlsRow = UIStackView(arrangedSubviews: [liveTimeLabel, UIView(), captionButton, commentButton, fullscreenEnterButton])
         controlsRow.axis = .horizontal
         controlsRow.spacing = 10
         controlsRow.alignment = .center
@@ -409,31 +446,71 @@ final class LivePlayerViewController: UIViewController {
         videoArea.addSubview(playPauseButton)
 
         // 字幕の重ね物 (映像の上に重ねる。操作は受けない)。
-        // 置き場所の決まりは貸し出し・返却で付け替えるため控えに持つ
-        // (データ放送の重ね合わせと同じ作り)。
+        // 置き場所は変えないため、決まりは最初から有効にするだけ
+        // (全画面では領域が広がるのに合わせて、そのまま広がる)。
         captionOverlayView.translatesAutoresizingMaskIntoConstraints = false
         videoArea.addSubview(captionOverlayView)
-        captionHomeConstraints = [
+        NSLayoutConstraint.activate([
             captionOverlayView.topAnchor.constraint(equalTo: videoArea.topAnchor),
             captionOverlayView.bottomAnchor.constraint(equalTo: videoArea.bottomAnchor),
             captionOverlayView.leadingAnchor.constraint(equalTo: videoArea.leadingAnchor),
             captionOverlayView.trailingAnchor.constraint(equalTo: videoArea.trailingAnchor),
-        ]
-        NSLayoutConstraint.activate(captionHomeConstraints)
+        ])
 
         // 実況コメントの流れる表示の重ね物 (映像の上に重ねる。
         // 操作は受けない)。字幕より下に置く (字幕が一番上)。
         commentOverlay.translatesAutoresizingMaskIntoConstraints = false
         videoArea.addSubview(commentOverlay)
-        commentHomeConstraints = [
+        NSLayoutConstraint.activate([
             commentOverlay.topAnchor.constraint(equalTo: videoArea.topAnchor),
             commentOverlay.bottomAnchor.constraint(equalTo: videoArea.bottomAnchor),
             commentOverlay.leadingAnchor.constraint(equalTo: videoArea.leadingAnchor),
             commentOverlay.trailingAnchor.constraint(equalTo: videoArea.trailingAnchor),
-        ]
-        NSLayoutConstraint.activate(commentHomeConstraints)
+        ])
         // 字幕をコメントより上に戻す (この後ろに足した分だけ)。
         videoArea.bringSubviewToFront(captionOverlayView)
+
+        // 全画面の上部帯 (終了ボタン + 局名)。全画面のときだけ出し、
+        // 操作帯と一緒に透明度で出し入れする (setControlsVisible)。
+        // 映像の領域の中で一番上に置く。
+        fsExitButton.setImage(
+            UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold)),
+            for: .normal
+        )
+        fsExitButton.tintColor = .white
+        fsExitButton.addTarget(self, action: #selector(exitFullscreen), for: .touchUpInside)
+        fsExitButton.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            fsExitButton.widthAnchor.constraint(equalToConstant: 44),
+            fsExitButton.heightAnchor.constraint(equalToConstant: 44),
+        ])
+        fsNameLabel.text = channel.name
+        fsNameLabel.textColor = .white
+        fsNameLabel.font = .scaledSystemFont(ofSize: 16, weight: .bold)
+        fsNameLabel.numberOfLines = 1
+        fsNameLabel.lineBreakMode = .byTruncatingTail
+        fsNameLabel.shadowColor = UIColor.black.withAlphaComponent(0.6)
+        fsNameLabel.shadowOffset = CGSize(width: 0, height: 1)
+        fsTopGradient.translatesAutoresizingMaskIntoConstraints = false
+        fsTopGradient.isHidden = true
+        videoArea.addSubview(fsTopGradient)
+        fsTopBar.axis = .horizontal
+        fsTopBar.spacing = 12
+        fsTopBar.alignment = .center
+        fsTopBar.addArrangedSubview(fsExitButton)
+        fsTopBar.addArrangedSubview(fsNameLabel)
+        fsTopBar.translatesAutoresizingMaskIntoConstraints = false
+        fsTopBar.isHidden = true
+        videoArea.addSubview(fsTopBar)
+        NSLayoutConstraint.activate([
+            fsTopGradient.topAnchor.constraint(equalTo: videoArea.topAnchor),
+            fsTopGradient.leadingAnchor.constraint(equalTo: videoArea.leadingAnchor),
+            fsTopGradient.trailingAnchor.constraint(equalTo: videoArea.trailingAnchor),
+            fsTopGradient.heightAnchor.constraint(equalToConstant: 66),
+            fsTopBar.topAnchor.constraint(equalTo: videoArea.safeAreaLayoutGuide.topAnchor, constant: 8),
+            fsTopBar.leadingAnchor.constraint(equalTo: videoArea.safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            fsTopBar.trailingAnchor.constraint(equalTo: videoArea.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+        ])
 
         // MARK: 映像の下の情報欄 (Web 版パネル)
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -528,12 +605,10 @@ final class LivePlayerViewController: UIViewController {
         updateProfileButtonTitle()
         audioOnlyButton.setTitle("音声のみ: OFF", for: .normal)
         audioOnlyButton.addTarget(self, action: #selector(toggleAudioOnly), for: .touchUpInside)
-        fullscreenButton.setTitle("全画面", for: .normal)
-        fullscreenButton.addTarget(self, action: #selector(showFullscreen), for: .touchUpInside)
-        for button in [qualityButton, profileButton, audioOnlyButton, fullscreenButton] {
+        for button in [qualityButton, profileButton, audioOnlyButton] {
             stylePlayerChip(button)
         }
-        let chipsRow = UIStackView(arrangedSubviews: [qualityButton, audioOnlyButton, fullscreenButton])
+        let chipsRow = UIStackView(arrangedSubviews: [qualityButton, audioOnlyButton])
         chipsRow.axis = .horizontal
         chipsRow.spacing = 8
         let chipsRow2 = UIStackView(arrangedSubviews: [profileButton, UIView()])
@@ -589,14 +664,14 @@ final class LivePlayerViewController: UIViewController {
         let heightConstraint = videoArea.heightAnchor.constraint(equalToConstant: 200)
         videoHeightConstraint = heightConstraint
 
-        // 映像の枠の固定は、貸し出し・返却で付け外しできるよう別に持つ。
-        videoViewHomeConstraints = [
+        // 映像の枠は置き場所を変えないため、決まりは最初から
+        // 有効にするだけ (全画面では領域が広がるのに合わせて広がる)。
+        NSLayoutConstraint.activate([
             videoView.topAnchor.constraint(equalTo: videoArea.topAnchor),
             videoView.bottomAnchor.constraint(equalTo: videoArea.bottomAnchor),
             videoView.leadingAnchor.constraint(equalTo: videoArea.leadingAnchor),
             videoView.trailingAnchor.constraint(equalTo: videoArea.trailingAnchor),
-        ]
-        NSLayoutConstraint.activate(videoViewHomeConstraints)
+        ])
 
         // MARK: パネルのタブと、チャンネル/コメントのパネル
         // パネル本体は、置き場所の決まり (この後の activate) より先に
@@ -607,8 +682,16 @@ final class LivePlayerViewController: UIViewController {
         buildChannelPanel()
         buildCommentPanel()
 
+        // 映像の領域の上端の決まりは控えに持ち、全画面へ移るときに
+        // 画面いっぱいの決まり (下) へ切り替える。
+        let areaTop = videoArea.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor)
+        videoAreaTopConstraint = areaTop
+        videoAreaFullscreenConstraints = [
+            videoArea.topAnchor.constraint(equalTo: view.topAnchor),
+            videoArea.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ]
         NSLayoutConstraint.activate([
-            videoArea.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            areaTop,
             videoArea.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             videoArea.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             heightConstraint,
@@ -1548,9 +1631,23 @@ final class LivePlayerViewController: UIViewController {
             self.bottomGradient.alpha = visible ? 1 : 0
             self.controlsContainer.alpha = visible ? 1 : 0
             self.playPauseButton.alpha = visible ? 1 : 0
+            // 全画面の上部帯も、操作帯と一緒に透明度で出し入れする
+            // (全画面でないときは隠したままなので、透明度は効かない)。
+            self.fsTopGradient.alpha = visible ? 1 : 0
+            self.fsTopBar.alpha = visible ? 1 : 0
+            // 全画面の間は、リモコンの浮きボタンも操作類と一緒に
+            // 出し入れする (通常画面では常に出したまま)。
+            if self.isFullscreen {
+                self.remoteFloatingButton.alpha = visible ? 1 : 0
+            }
         }
         controlsContainer.isUserInteractionEnabled = visible
         playPauseButton.isUserInteractionEnabled = visible
+        fsTopBar.isUserInteractionEnabled = visible
+        if isFullscreen {
+            remoteFloatingButton.isUserInteractionEnabled = visible
+            setNeedsStatusBarAppearanceUpdate()
+        }
         if !visible {
             hideTimer?.invalidate()
             hideTimer = nil
@@ -2342,16 +2439,16 @@ final class LivePlayerViewController: UIViewController {
 
     /// リモコンのパネルを出す。データ放送が始まっていなくても出せる
     /// (開始はパネルの「データ」ボタンから行うため)。
-    /// 通常画面では、縦向きなら映像の下に、横向きなら右端に出す。
+    /// 縦向きなら映像の下に、横向き (全画面を含む) なら右端に出す。
     @objc private func showRemotePanel() {
         let landscape = view.bounds.width > view.bounds.height
-        presentRemotePanel(in: view, mode: landscape ? .rightEdge : .belowVideo)
+        presentRemotePanel(mode: landscape ? .rightEdge : .belowVideo)
     }
 
-    /// 指定の置き場所でリモコンのパネルを出す (全画面側からも使う)。
-    private func presentRemotePanel(in host: UIView, mode: RemotePanelMode) {
+    /// 指定の置き場所でリモコンのパネルを出す。
+    private func presentRemotePanel(mode: RemotePanelMode) {
         guard let backdrop = remoteBackdrop, let panel = remotePanel else { return }
-        applyRemotePanelPlacement(host: host, mode: mode)
+        applyRemotePanelPlacement(host: view, mode: mode)
         updateRemotePanelState()
         backdrop.isHidden = false
         panel.isHidden = false
@@ -2363,17 +2460,13 @@ final class LivePlayerViewController: UIViewController {
         }
     }
 
-    /// リモコンのパネルを、動きなしで隠す。全画面側に置いていた場合は
-    /// 通常画面側へ戻しておく (全画面が閉じたあとも残らないように)。
+    /// リモコンのパネルを、動きなしで隠す。
     private func hideRemotePanelImmediately() {
         guard let backdrop = remoteBackdrop, let panel = remotePanel else { return }
         backdrop.layer.removeAllAnimations()
         panel.layer.removeAllAnimations()
         backdrop.isHidden = true
         panel.isHidden = true
-        if backdrop.superview !== view || panel.superview !== view {
-            applyRemotePanelPlacement(host: view, mode: .belowVideo)
-        }
     }
 
     /// 設定 (設定 → データ放送) の「データ放送機能を利用する」に
@@ -2469,13 +2562,13 @@ final class LivePlayerViewController: UIViewController {
         dataBroadcastOverlay = overlay
         let webView = overlay.prepareWebView()
         videoArea.insertSubview(webView, aboveSubview: videoView)
-        bmlHomeConstraints = [
+        bmlConstraints = [
             webView.topAnchor.constraint(equalTo: videoArea.topAnchor),
             webView.bottomAnchor.constraint(equalTo: videoArea.bottomAnchor),
             webView.leadingAnchor.constraint(equalTo: videoArea.leadingAnchor),
             webView.trailingAnchor.constraint(equalTo: videoArea.trailingAnchor),
         ]
-        NSLayoutConstraint.activate(bmlHomeConstraints)
+        NSLayoutConstraint.activate(bmlConstraints)
         isDataBroadcastActive = true
         dataBroadcastLoaded = false
         dataBroadcastStartFailed = false
@@ -2528,10 +2621,8 @@ final class LivePlayerViewController: UIViewController {
             messageLabel.text = nil
             showingDataBroadcastStatus = false
         }
-        NSLayoutConstraint.deactivate(bmlHomeConstraints)
-        NSLayoutConstraint.deactivate(bmlBorrowConstraints)
-        bmlHomeConstraints = []
-        bmlBorrowConstraints = []
+        NSLayoutConstraint.deactivate(bmlConstraints)
+        bmlConstraints = []
         dataBroadcastOverlay?.teardown()
         dataBroadcastOverlay = nil
         // データ放送を閉じたら、字幕は映像全体の表示に戻す。
@@ -2620,139 +2711,99 @@ final class LivePlayerViewController: UIViewController {
         updateRemotePanelState()
     }
 
-    /// フルスクリーン表示へ移る。映像の枠ごと全画面側へ貸し出すだけで、
-    /// 受信そのものは止めない。
-    @objc private func showFullscreen() {
+    // MARK: - 全画面 (再生画面の中の状態)
+
+    /// 全画面ボタンの見た目を、全画面かどうかで切り替える
+    /// (入るときは広げる矢印、戻すときは縮める矢印)。
+    private func updateFullscreenEnterButton() {
+        let config = UIImage.SymbolConfiguration(pointSize: 20, weight: .regular)
+        fullscreenEnterButton.setImage(
+            UIImage(systemName: isFullscreen
+                ? "arrow.down.right.and.arrow.up.left"
+                : "arrow.up.left.and.arrow.down.right", withConfiguration: config),
+            for: .normal)
+        fullscreenEnterButton.tintColor = .white
+        fullscreenEnterButton.accessibilityLabel = isFullscreen ? "全画面を終了する" : "全画面にする"
+    }
+
+    @objc private func toggleFullscreen() {
+        if isFullscreen {
+            exitFullscreen()
+        } else {
+            enterFullscreen()
+        }
+    }
+
+    /// 全画面へ移る。別の画面へは移らず、この画面のまま、映像の
+    /// 領域を画面いっぱいに広げ、パネルなどを隠し、横向きを要求
+    /// する。映像の枠も、データ放送・コメント・字幕の重ね物も、
+    /// 置き場所を変えないため、受信は途切れず、付け替えで操作が
+    /// 固まることもない。
+    private func enterFullscreen() {
 #if canImport(MobileVLCKit)
         guard vlcPlayer != nil else { return }
-        let fullscreen = LiveFullscreenViewController(channelName: channel.name)
-        fullscreen.onDidAppear = { [weak self] fullscreenVideoView in
-            self?.borrowVideoView(into: fullscreenVideoView)
-        }
-        fullscreen.onWillDisappear = { [weak self] in
-            // 全画面側に出していたリモコンのパネルは隠して戻す。
-            self?.hideRemotePanelImmediately()
-        }
-        fullscreen.onDidDisappear = { [weak self] in
-            guard let self else { return }
-            self.returnVideoView()
-            self.refreshPlayPauseIcon()
-        }
-        // 全画面にもリモコンの浮きボタンを出す (設定でデータ放送機能が
-        // オフのときは出さない)。押されたら、全画面側の画面にパネルを
-        // 右端寄せで出す。
-        fullscreen.remoteButtonVisible = SettingsStore.shared.dataBroadcastingEnabled
-        fullscreen.onShowRemotePanel = { [weak self, weak fullscreen] in
-            guard let self, let fullscreen else { return }
-            self.presentRemotePanel(in: fullscreen.view, mode: .rightEdge)
-        }
-        fullscreen.onTogglePlayPause = { [weak self] in
-            self?.togglePlayPause()
-        }
-        fullscreen.isPlayingProvider = { [weak self] in
-            self?.vlcPlayer?.isPlaying ?? false
-        }
-        present(fullscreen, animated: true)
 #endif
+        guard !isFullscreen else { return }
+        isFullscreen = true
+        // 開いていたリモコンのパネルは閉じる (置き場所が通常画面の
+        // 前提のため。全画面では浮きボタンから出し直せる)。
+        hideRemotePanelImmediately()
+        navigationController?.setNavigationBarHidden(true, animated: true)
+        panelTabBar.isHidden = true
+        scrollView.isHidden = true
+        channelPanel.isHidden = true
+        commentPanel.isHidden = true
+        videoAreaTopConstraint?.isActive = false
+        videoHeightConstraint?.isActive = false
+        NSLayoutConstraint.activate(videoAreaFullscreenConstraints)
+        fsTopGradient.isHidden = false
+        fsTopBar.isHidden = false
+        // リモコンの浮きボタンは、全画面ではパネルの選択状態によらず
+        // データ放送機能のオン/オフだけで出し分ける (以前の全画面と
+        // 同じ扱い)。位置は画面の右下のままで、操作類と一緒に
+        // 出し入れされる (setControlsVisible)。
+        remoteFloatingButton.isHidden = !SettingsStore.shared.dataBroadcastingEnabled
+        updateFullscreenEnterButton()
+        setControlsVisible(true)
+        scheduleHideControls()
+        setNeedsStatusBarAppearanceUpdate()
+        // 横向きへの回転を明示的に促す (iOS 16 以降の作法)。
+        if #available(iOS 16.0, *) {
+            setNeedsUpdateOfSupportedInterfaceOrientations()
+            view.window?.windowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: .landscape))
+        }
+        view.setNeedsLayout()
     }
 
-    /// 全画面表示の間、映像の枠 (videoView) そのものを全画面側へ貸し出す。
-    /// VLC の描き先は videoView のまま変えず、枠の置き場所だけを移す。
-    /// 再生中に描き先を別のビューへ差し替えると、全画面で音だけ出て映像が
-    /// 出なくなる (録画側で実機確認済みの弱点) ため、この形にしている。
-    /// 枠の中の描画は枠と一緒にそのまま付いてくるので、受信は途切れない。
-    private func borrowVideoView(into container: UIView) {
-        guard videoView.superview !== container else { return }
-        NSLayoutConstraint.deactivate(videoViewHomeConstraints)
-        videoView.removeFromSuperview()
-        container.addSubview(videoView)
-        videoViewBorrowConstraints = [
-            videoView.topAnchor.constraint(equalTo: container.topAnchor),
-            videoView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            videoView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            videoView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-        ]
-        NSLayoutConstraint.activate(videoViewBorrowConstraints)
-        // 貸し出し中は、通常画面側のタップ (操作帯の出し入れ) を止める
-        // (全画面側のタップと二重に効かないように)。
-        videoTapRecognizer?.isEnabled = false
-        // データ放送の重ね合わせも、映像の枠と一緒に貸し出す。
-        if let webView = dataBroadcastOverlay?.webView, webView.superview === videoArea {
-            NSLayoutConstraint.deactivate(bmlHomeConstraints)
-            webView.removeFromSuperview()
-            container.addSubview(webView)
-            bmlBorrowConstraints = [
-                webView.topAnchor.constraint(equalTo: container.topAnchor),
-                webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-                webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            ]
-            NSLayoutConstraint.activate(bmlBorrowConstraints)
-        }
-        // 実況コメントの流れる表示も、映像の枠と一緒に貸し出す
-        // (データ放送の上、字幕の下)。
-        if commentOverlay.superview === videoArea {
-            NSLayoutConstraint.deactivate(commentHomeConstraints)
-            commentOverlay.removeFromSuperview()
-            container.addSubview(commentOverlay)
-            commentBorrowConstraints = [
-                commentOverlay.topAnchor.constraint(equalTo: container.topAnchor),
-                commentOverlay.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-                commentOverlay.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                commentOverlay.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            ]
-            NSLayoutConstraint.activate(commentBorrowConstraints)
-        }
-        // 字幕の重ね物も、映像の枠と一緒に貸し出す (一番上に置く)。
-        if captionOverlayView.superview === videoArea {
-            NSLayoutConstraint.deactivate(captionHomeConstraints)
-            captionOverlayView.removeFromSuperview()
-            container.addSubview(captionOverlayView)
-            captionBorrowConstraints = [
-                captionOverlayView.topAnchor.constraint(equalTo: container.topAnchor),
-                captionOverlayView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-                captionOverlayView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                captionOverlayView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            ]
-            NSLayoutConstraint.activate(captionBorrowConstraints)
-        }
-    }
-
-    /// 貸し出した映像の枠を通常画面へ戻す。
-    private func returnVideoView() {
-        guard videoView.superview !== videoArea else { return }
-        NSLayoutConstraint.deactivate(videoViewBorrowConstraints)
-        videoViewBorrowConstraints = []
-        videoView.removeFromSuperview()
-        videoArea.addSubview(videoView)
-        // 重ね物 (操作帯など) より後ろへ戻す。
-        videoArea.sendSubviewToBack(videoView)
-        NSLayoutConstraint.activate(videoViewHomeConstraints)
-        videoTapRecognizer?.isEnabled = true
-        // データ放送の重ね合わせも、映像の枠と一緒に通常画面へ戻す。
-        if let webView = dataBroadcastOverlay?.webView, webView.superview !== videoArea {
-            NSLayoutConstraint.deactivate(bmlBorrowConstraints)
-            bmlBorrowConstraints = []
-            webView.removeFromSuperview()
-            videoArea.insertSubview(webView, aboveSubview: videoView)
-            NSLayoutConstraint.activate(bmlHomeConstraints)
-        }
-        // 実況コメントの流れる表示も通常画面へ戻す。
-        if commentOverlay.superview !== videoArea {
-            NSLayoutConstraint.deactivate(commentBorrowConstraints)
-            commentBorrowConstraints = []
-            commentOverlay.removeFromSuperview()
-            videoArea.addSubview(commentOverlay)
-            NSLayoutConstraint.activate(commentHomeConstraints)
-        }
-        // 字幕の重ね物も通常画面へ戻す (一番上に置く)。
-        if captionOverlayView.superview !== videoArea {
-            NSLayoutConstraint.deactivate(captionBorrowConstraints)
-            captionBorrowConstraints = []
-            captionOverlayView.removeFromSuperview()
-            videoArea.addSubview(captionOverlayView)
-            NSLayoutConstraint.activate(captionHomeConstraints)
-        }
+    /// 全画面を終え、通常の並びへ戻す。全画面で出していたリモコンの
+    /// パネルは閉じる (以前の全画面を閉じるときと同じ扱い)。向きは、
+    /// 端末の向きへ戻す要求を出す (入るときの横向きへの要求は、
+    /// 戻す要求を出さないと残り続けるため)。
+    @objc private func exitFullscreen() {
+        guard isFullscreen else { return }
+        isFullscreen = false
+        hideRemotePanelImmediately()
+        navigationController?.setNavigationBarHidden(false, animated: true)
+        panelTabBar.isHidden = false
+        // パネルの出し分けは、選択中のタブに合わせて戻す
+        // (タブの切り替えそのものはしないため、ここでは出し分けだけ行う)。
+        scrollView.isHidden = selectedPanelTab != .program
+        channelPanel.isHidden = selectedPanelTab != .channel
+        commentPanel.isHidden = selectedPanelTab != .comment
+        NSLayoutConstraint.deactivate(videoAreaFullscreenConstraints)
+        videoAreaTopConstraint?.isActive = true
+        videoHeightConstraint?.isActive = true
+        fsTopGradient.isHidden = true
+        fsTopBar.isHidden = true
+        // リモコンの浮きボタンの出し分けと透明度を、通常画面の
+        // 扱いへ戻す。
+        remoteFloatingButton.alpha = 1
+        remoteFloatingButton.isUserInteractionEnabled = true
+        updateRemoteButtonVisibility()
+        updateFullscreenEnterButton()
+        setNeedsStatusBarAppearanceUpdate()
+        restoreOrientationAfterFullscreen()
+        view.setNeedsLayout()
     }
 
     private func refreshPlayPauseIcon() {
@@ -2816,248 +2867,6 @@ extension LivePlayerViewController: VLCMediaPlayerDelegate {
     }
 }
 
-/// 生放送のフルスクリーン画面。映像だけの全画面表示に、
-/// 終了ボタンと再生・一時停止だけを重ねて出す。
-/// 操作類はタップで出し、再生中はしばらく触らなければ自動で消える。
-final class LiveFullscreenViewController: UIViewController {
-    private let channelName: String
-
-    /// 開く動きが終わったら呼ばれる (引数は映像の枠の貸し出し先)。
-    /// 付け替えは切り替わりの先頭では行わない (固まるため)。
-    var onDidAppear: ((UIView) -> Void)?
-    /// 閉じられる前に呼ばれる (全画面側に出ていたパネルを隠すため)。
-    var onWillDisappear: (() -> Void)?
-    /// 閉じる動きが終わったら呼ばれる (貸し出した枠を通常画面へ戻すため)。
-    var onDidDisappear: (() -> Void)?
-    /// 再生・一時停止の切り替えを呼び出し元へ委ねる。
-    var onTogglePlayPause: (() -> Void)?
-    /// 現在再生中かどうかを呼び出し元へ聞く。
-    var isPlayingProvider: (() -> Bool)?
-    /// リモコンの浮きボタンが押されたときに呼ばれる (パネル自体は
-    /// 呼び出し元がこの画面の上に出す)。
-    var onShowRemotePanel: (() -> Void)?
-    /// リモコンの浮きボタンを出すかどうか (設定でデータ放送機能が
-    /// オフのときは出さない)。表示前に呼び出し元が決める。
-    var remoteButtonVisible = true
-
-    private let videoView = UIView()
-    /// 上部の帯のグラデーション (Web 版ヘッダーと同じ、黒から透明へ)。
-    private let topGradient = GradientView(direction: .top)
-    private let topBar = UIStackView()
-    private let nameLabel = UILabel()
-    private let exitButton = RippleButton()
-    private let playPauseButton = RippleButton()
-    /// リモコンの浮きボタン (通常画面と同じ顔ぶれ: 48x48 の円)。
-    /// 操作類と一緒に現れて、一緒に消える。
-    private let remoteButton = RippleButton()
-    private var controlsVisible = true
-    private var hideTimer: Timer?
-
-    init(channelName: String) {
-        self.channelName = channelName
-        super.init(nibName: nil, bundle: nil)
-        modalPresentationStyle = .fullScreen
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
-    override var shouldAutorotate: Bool { true }
-    override var prefersStatusBarHidden: Bool { !controlsVisible }
-    override var prefersHomeIndicatorAutoHidden: Bool { true }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        view.backgroundColor = .black
-        buildLayout()
-        updatePlayPauseIcon()
-        scheduleHideControls()
-    }
-
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        // 映像の枠の付け替えは、開く動きが終わってから行う
-        // (切り替わりの先頭で行うと、その間ずっと画面が固まるため。
-        // 録画再生の全画面と同じ直し)。
-        onDidAppear?(videoView)
-        if #available(iOS 16.0, *) {
-            setNeedsUpdateOfSupportedInterfaceOrientations()
-            view.window?.windowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: .landscape))
-        }
-    }
-
-    override func viewWillDisappear(_ animated: Bool) {
-        super.viewWillDisappear(animated)
-        hideTimer?.invalidate()
-        hideTimer = nil
-        onWillDisappear?()
-    }
-
-    override func viewDidDisappear(_ animated: Bool) {
-        super.viewDidDisappear(animated)
-        // 貸し出した映像の枠は、閉じる動きが終わってから戻す
-        // (切り替わりの先頭で戻すと、その間ずっと画面が固まるため)。
-        onDidDisappear?()
-    }
-
-    private func buildLayout() {
-        videoView.backgroundColor = .black
-        videoView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(videoView)
-        let tap = UITapGestureRecognizer(target: self, action: #selector(toggleControls))
-        videoView.addGestureRecognizer(tap)
-
-        // 終了ボタンは丸い地をやめ、グラデーションの帯の上にアイコンだけを置く
-        // (Web 版ヘッダーの戻るアイコンと同じ考え方。当たり判定の 44x44 は保つ)。
-        exitButton.setImage(
-            UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold)),
-            for: .normal
-        )
-        exitButton.tintColor = .white
-        exitButton.addTarget(self, action: #selector(exitFullscreen), for: .touchUpInside)
-        exitButton.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            exitButton.widthAnchor.constraint(equalToConstant: 44),
-            exitButton.heightAnchor.constraint(equalToConstant: 44),
-        ])
-
-        nameLabel.text = channelName
-        nameLabel.textColor = .white
-        nameLabel.font = .scaledSystemFont(ofSize: 16, weight: .bold)
-        nameLabel.numberOfLines = 1
-        nameLabel.lineBreakMode = .byTruncatingTail
-        nameLabel.shadowColor = UIColor.black.withAlphaComponent(0.6)
-        nameLabel.shadowOffset = CGSize(width: 0, height: 1)
-
-        topGradient.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(topGradient)
-
-        topBar.axis = .horizontal
-        topBar.spacing = 12
-        topBar.alignment = .center
-        topBar.addArrangedSubview(exitButton)
-        topBar.addArrangedSubview(nameLabel)
-        topBar.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(topBar)
-
-        playPauseButton.setImage(
-            UIImage(systemName: "pause.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 36)),
-            for: .normal
-        )
-        playPauseButton.tintColor = .white
-        playPauseButton.addTarget(self, action: #selector(togglePlayPause), for: .touchUpInside)
-        playPauseButton.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(playPauseButton)
-
-        // リモコンの浮きボタンは画面の右下 (余白 16)。地は通常画面と
-        // 同じ panel 色で、操作類と一緒に現れて消える。
-        remoteButton.setImage(
-            UIImage(systemName: "appletvremote.gen4.fill",
-                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 25))
-                ?? UIImage(systemName: "tv", withConfiguration: UIImage.SymbolConfiguration(pointSize: 25)),
-            for: .normal
-        )
-        remoteButton.tintColor = AppPalette.text
-        remoteButton.backgroundColor = AppPalette.panel
-        remoteButton.layer.cornerRadius = 24
-        remoteButton.layer.shadowColor = UIColor.black.cgColor
-        remoteButton.layer.shadowOpacity = 0.3
-        remoteButton.layer.shadowRadius = 6
-        remoteButton.layer.shadowOffset = CGSize(width: 0, height: 3)
-        remoteButton.accessibilityLabel = "リモコン"
-        remoteButton.addTarget(self, action: #selector(showRemotePanelFromFullscreen), for: .touchUpInside)
-        remoteButton.translatesAutoresizingMaskIntoConstraints = false
-        remoteButton.isHidden = !remoteButtonVisible
-        view.addSubview(remoteButton)
-
-        NSLayoutConstraint.activate([
-            videoView.topAnchor.constraint(equalTo: view.topAnchor),
-            videoView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            videoView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            videoView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            topGradient.topAnchor.constraint(equalTo: view.topAnchor),
-            topGradient.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            topGradient.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            topGradient.heightAnchor.constraint(equalToConstant: 66),
-            topBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            topBar.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
-            topBar.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
-            // 再生・一時停止は下辺ではなく画面の真ん中に置く
-            // (本家 Web 版の中央の並びと同じ置き場所)。
-            playPauseButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            playPauseButton.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            playPauseButton.widthAnchor.constraint(equalToConstant: 60),
-            playPauseButton.heightAnchor.constraint(equalToConstant: 60),
-            remoteButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
-            remoteButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
-            remoteButton.widthAnchor.constraint(equalToConstant: 48),
-            remoteButton.heightAnchor.constraint(equalToConstant: 48),
-        ])
-    }
-
-    @objc private func showRemotePanelFromFullscreen() {
-        onShowRemotePanel?()
-    }
-
-    @objc private func toggleControls() {
-        setControlsVisible(!controlsVisible)
-        if controlsVisible {
-            scheduleHideControls()
-        }
-    }
-
-    private func setControlsVisible(_ visible: Bool) {
-        controlsVisible = visible
-        UIView.animate(withDuration: 0.25) {
-            self.topBar.alpha = visible ? 1 : 0
-            self.topGradient.alpha = visible ? 1 : 0
-            self.playPauseButton.alpha = visible ? 1 : 0
-            self.remoteButton.alpha = visible ? 1 : 0
-        }
-        topBar.isUserInteractionEnabled = visible
-        playPauseButton.isUserInteractionEnabled = visible
-        remoteButton.isUserInteractionEnabled = visible
-        setNeedsStatusBarAppearanceUpdate()
-        if !visible {
-            hideTimer?.invalidate()
-            hideTimer = nil
-        }
-    }
-
-    private func scheduleHideControls() {
-        hideTimer?.invalidate()
-        hideTimer = nil
-        guard isPlayingProvider?() ?? false else { return }
-        hideTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in
-            self?.setControlsVisible(false)
-        }
-    }
-
-    private func updatePlayPauseIcon() {
-        let playing = isPlayingProvider?() ?? false
-        playPauseButton.setImage(
-            UIImage(systemName: playing ? "pause.fill" : "play.fill",
-                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 36)),
-            for: .normal
-        )
-    }
-
-    @objc private func exitFullscreen() {
-        let presenter = presentingViewController
-        dismiss(animated: true) {
-            // 入るときの横向きへの要求 (requestGeometryUpdate) は閉じただけでは
-            // 戻らないため、閉じ終わったあとに向きの戻しを明示的に行う。
-            presenter?.restoreOrientationAfterFullscreen()
-        }
-    }
-
-    @objc private func togglePlayPause() {
-        onTogglePlayPause?()
-        updatePlayPauseIcon()
-        scheduleHideControls()
-    }
-}
 #endif
 
 // MARK: - パネルの一覧 (チャンネル/コメント)
