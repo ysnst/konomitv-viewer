@@ -458,12 +458,14 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
 
         // 上のページ送りは見出し行の下に置き、先頭まわり一式と一緒にスクロールさせる。
         topPaginationView.onPageSelected = { [weak self] page in
-            self?.goToPage(page)
+            guard let self else { return }
+            self.goToPage(page, source: self.topPaginationView)
         }
         headContainerView.addSubview(topPaginationView)
         // 下のページ送りはテーブルの末尾に付ける。幅はレイアウト時に合わせ直す。
         bottomPaginationView.onPageSelected = { [weak self] page in
-            self?.goToPage(page)
+            guard let self else { return }
+            self.goToPage(page, source: self.bottomPaginationView)
         }
         let footer = UIView()
         footer.addSubview(bottomPaginationView)
@@ -984,7 +986,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     }
 
     /// ページ送りから指定されたページへ移る。
-    private func goToPage(_ page: Int) {
+    private func goToPage(_ page: Int, source: PaginationView) {
         guard page != currentPage, !isLoading else { return }
         // 旧ページの復元タイマーが、新ページの位置を後から上書きしないよう終了する。
         scrollRestoreTimer?.invalidate()
@@ -992,7 +994,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         pendingScrollRestore = nil
         isScrollRestoring = false
         guard loadedContext == WatchedHistoryStore.Context.current else { refresh(); return }
-        let position = VideoPageLayout.Position(tableView)
+        let position = VideoPageLayout.Position(tableView, source: source, coordinateView: view)
         let moveToTop = SettingsStore.shared.scrollToTopOnPageChange
         if isFilterActive {
             // フィルタ中は取得済みの結果から切り出すだけなので、通信はしない。
@@ -1036,7 +1038,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                     }
                     // 復元したページが総ページ数を超えていたら、最後のページを取り直す
                     // (録画が減ってページが無くなっている場合)。
-                    let lastPage = max(1, Int(ceil(Double(response.total) / Double(Self.pageSize))))
+                    let lastPage = PaginationGeometry.pageCount(totalItems: response.total, pageSize: Self.pageSize)
                     if page > lastPage {
                         response = try await APIClient.shared.fetchVideos(page: lastPage, order: self.sortOrder, searchQuery: queryAtStart)
                     }
@@ -1192,13 +1194,13 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             updatePagination()
             // ヘッダー・footer・外側のSafe Areaを含めて確定してから一度だけ復元する。
             view.layoutIfNeeded()
-            position.restore(in: tableView, scrollToFirstProgram: scrollToTop)
+            position.restore(in: tableView, scrollToTop: scrollToTop)
         }
     }
 
     /// 総ページ数 (最低1)。
     private var totalPages: Int {
-        max(1, Int(ceil(Double(total) / Double(Self.pageSize))))
+        PaginationGeometry.pageCount(totalItems: total, pageSize: Self.pageSize)
     }
 
     /// 上下両方のページ送りに、いまのページ状態を反映する。
@@ -2304,6 +2306,7 @@ final class PaginationView: UIView {
     private let stack = UIStackView()
     private var currentPage = 1
     private var totalPages = 1
+    private var buttonWidths: [NSLayoutConstraint] = []
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -2338,6 +2341,10 @@ final class PaginationView: UIView {
             stack.removeArrangedSubview(arranged)
             arranged.removeFromSuperview()
         }
+        buttonWidths.removeAll(keepingCapacity: true)
+        stack.addArrangedSubview(makeChevronButton(
+            systemName: "chevron.left.2", page: 1,
+            isEnabled: isEnabled && currentPage > 1, label: "最初のページ"))
         stack.addArrangedSubview(makeChevronButton(
             systemName: "chevron.left", page: currentPage - 1,
             isEnabled: isEnabled && currentPage > 1, label: "前のページ"))
@@ -2345,15 +2352,30 @@ final class PaginationView: UIView {
             stack.addArrangedSubview(makeNumberButton(page: page, isEnabled: isEnabled))
         }
         stack.addArrangedSubview(makeChevronButton(
-            systemName: "chevron.right", page: currentPage + 1,
+            systemName: "chevron.right", page: currentPage < totalPages ? currentPage + 1 : totalPages,
             isEnabled: isEnabled && currentPage < totalPages, label: "次のページ"))
+        stack.addArrangedSubview(makeChevronButton(
+            systemName: "chevron.right.2", page: totalPages,
+            isEnabled: isEnabled && currentPage < totalPages, label: "最後のページ"))
+        setNeedsLayout()
     }
 
-    /// 出す番号の範囲。最大5個で、いまのページがなるべく真ん中に来るようにする。
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let count = CGFloat(buttonWidths.count)
+        guard count > 0 else { return }
+        // 高さ56ptを増やさず、9個と3桁以上の番号を実際の横幅へ収める。
+        // 旧38pt/6ptを上限とし、狭幅では間隔を先に詰めてから等幅で縮める。
+        let available = max(0, bounds.width - 16)
+        let spacing = count > 1 ? min(6, max(0, (available - count * 32) / (count - 1))) : 0
+        stack.spacing = spacing
+        let width = min(38, max(0, (available - spacing * (count - 1)) / count))
+        for constraint in buttonWidths { constraint.constant = width }
+    }
+
+    /// 番号窓の計算も本番と自動テストで同じ処理を使う。
     private func pageWindow() -> [Int] {
-        let count = min(totalPages, 5)
-        let start = min(max(currentPage - 2, 1), max(totalPages - count + 1, 1))
-        return Array(start ..< start + count)
+        PaginationGeometry.pageWindow(currentPage: currentPage, totalPages: totalPages)
     }
 
     private func makeNumberButton(page: Int, isEnabled: Bool) -> UIButton {
@@ -2362,6 +2384,8 @@ final class PaginationView: UIView {
         button.accessibilityLabel = "\(page) ページ"
         let isCurrent = page == currentPage
         button.titleLabel?.font = .scaledSystemFont(ofSize: 14, weight: isCurrent ? .bold : .regular)
+        button.titleLabel?.adjustsFontSizeToFitWidth = true
+        button.titleLabel?.minimumScaleFactor = 0.5
         button.setTitleColor(isCurrent ? .white : AppPalette.text, for: .normal)
         button.backgroundColor = isCurrent ? AppPalette.accent : AppPalette.panel
         button.layer.cornerRadius = 4
@@ -2370,10 +2394,9 @@ final class PaginationView: UIView {
         button.tag = page
         button.addTarget(self, action: #selector(pageButtonTapped(_:)), for: .touchUpInside)
         button.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            button.widthAnchor.constraint(equalToConstant: 38),
-            button.heightAnchor.constraint(equalToConstant: 38),
-        ])
+        let width = button.widthAnchor.constraint(equalToConstant: 38)
+        buttonWidths.append(width)
+        NSLayoutConstraint.activate([width, button.heightAnchor.constraint(equalToConstant: 38)])
         return button
     }
 
@@ -2389,10 +2412,9 @@ final class PaginationView: UIView {
         button.tag = page
         button.addTarget(self, action: #selector(pageButtonTapped(_:)), for: .touchUpInside)
         button.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            button.widthAnchor.constraint(equalToConstant: 38),
-            button.heightAnchor.constraint(equalToConstant: 38),
-        ])
+        let width = button.widthAnchor.constraint(equalToConstant: 38)
+        buttonWidths.append(width)
+        NSLayoutConstraint.activate([width, button.heightAnchor.constraint(equalToConstant: 38)])
         return button
     }
 
@@ -3087,30 +3109,50 @@ final class VideoPageLayout {
     struct Position {
         private let offset: CGPoint
         private let insetTop: CGFloat
+        private weak var anchorView: UIView?
+        private weak var coordinateView: UIView?
+        private let anchorY: CGFloat?
 
-        init(_ table: UITableView) {
+        init(_ table: UITableView, source: UIView? = nil, coordinateView: UIView? = nil) {
             offset = table.contentOffset
             insetTop = table.adjustedContentInset.top
+            // テーブル外の上部pagerは固定表示のため、テーブルのoffsetを追わせない。
+            // テーブル内の操作元だけ、同じ画面内座標を復元する目印にする。
+            if let source, let coordinateView, source.isDescendant(of: table) {
+                anchorView = source
+                self.coordinateView = coordinateView
+                anchorY = source.convert(source.bounds, to: coordinateView).midY
+            } else {
+                anchorView = nil
+                self.coordinateView = nil
+                anchorY = nil
+            }
         }
 
-        /// 推定行高を使わないテーブルで、全行・ヘッダー・footer確定後に一度だけ呼ぶ。
-        func restore(in table: UITableView, scrollToFirstProgram: Bool) {
+        /// 確定行高とheader/footerのレイアウト後に一度だけ復元する。遅延の再補正は行わない。
+        func restore(in table: UITableView, scrollToTop: Bool) {
             table.layoutIfNeeded()
             let inset = table.adjustedContentInset
             let minimum = -inset.top
             let maximum = max(minimum, table.contentSize.height - table.bounds.height + inset.bottom)
-            let target: CGFloat
-            if scrollToFirstProgram, table.numberOfSections > 0, table.numberOfRows(inSection: 0) > 0 {
-                // 検索や容量表示を含むtableHeaderViewではなく、番組の先頭行へ合わせる。
-                target = table.rectForRow(at: IndexPath(row: 0, section: 0)).minY - inset.top
+            let currentAnchorY: CGFloat?
+            if let anchorView, let coordinateView, anchorView.isDescendant(of: table) {
+                anchorView.superview?.layoutIfNeeded()
+                currentAnchorY = anchorView.convert(anchorView.bounds, to: coordinateView).midY
             } else {
-                // Safe Area等が変化した場合も、可視領域上端からの同じ距離を保つ。
-                target = offset.y + insetTop - inset.top
+                currentAnchorY = nil
             }
-            table.setContentOffset(CGPoint(x: offset.x, y: min(maximum, max(minimum, target))), animated: false)
+            let delta = anchorY.flatMap { before in currentAnchorY.map { Double($0 - before) } }
+            let target = PaginationGeometry.restoredOffset(
+                currentOffset: Double(table.contentOffset.y), savedOffset: Double(offset.y),
+                insetDifference: Double(insetTop - inset.top), anchorDelta: delta,
+                scrollToTop: scrollToTop, minimum: Double(minimum), maximum: Double(maximum))
+            let point = CGPoint(x: offset.x, y: CGFloat(target))
+            // すでに最上部／正しい位置なら、不要なスクロール処理自体を起こさない。
+            if table.contentOffset != point { table.setContentOffset(point, animated: false) }
 #if DEBUG
-            // 座標だけを出し、検索語・認証・番組情報をログへ含めない。
-            print("[Pagination] before=\(offset.y) after=\(table.contentOffset.y) inset=\(inset) size=\(table.contentSize) first=\(table.numberOfRows(inSection: 0) > 0 ? table.rectForRow(at: IndexPath(row: 0, section: 0)).minY : 0)")
+            // 認証・検索語・番組情報は含めず、実機で位置の変化を追える座標だけを記録する。
+            print("[Pagination] before=\(offset.y) after=\(table.contentOffset.y) contentInset=\(table.contentInset) adjustedInset=\(inset) bounds=\(table.bounds) size=\(table.contentSize) anchorBefore=\(String(describing: anchorY)) anchorAfter=\(String(describing: currentAnchorY))")
 #endif
         }
     }

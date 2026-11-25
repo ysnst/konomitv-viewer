@@ -80,14 +80,16 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
         buildHeadingBar()
 
         topPaginationView.onPageSelected = { [weak self] page in
-            self?.goToPage(page)
+            guard let self else { return }
+            self.goToPage(page, source: self.topPaginationView)
         }
         view.addSubview(topPaginationView)
         topPaginationView.translatesAutoresizingMaskIntoConstraints = false
 
         // 下のページ送りはテーブルの末尾に付ける (録画一覧と同じ)。
         bottomPaginationView.onPageSelected = { [weak self] page in
-            self?.goToPage(page)
+            guard let self else { return }
+            self.goToPage(page, source: self.bottomPaginationView)
         }
         let footer = UIView()
         footer.addSubview(bottomPaginationView)
@@ -357,7 +359,7 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
             }
             // 指定ページが総ページ数を超えていたら、最後のページを取り直す
             // (履歴から消してページが無くなっている場合。録画一覧と同じ)。
-            let lastPage = max(1, Int(ceil(Double(response.total) / Double(Self.pageSize))))
+            let lastPage = PaginationGeometry.pageCount(totalItems: response.total, pageSize: Self.pageSize)
             if page > lastPage {
                 response = try await APIClient.shared.fetchVideos(page: lastPage, ids: idsAtStart)
                 guard isLoadValid(authGeneration: authAtStart, syncGeneration: syncAtStart,
@@ -377,7 +379,7 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
                 tableView.reloadData()
                 updatePagination()
                 view.layoutIfNeeded()
-                position.restore(in: tableView, scrollToFirstProgram: scrollToTop)
+                position.restore(in: tableView, scrollToTop: scrollToTop)
             }
         } catch {
             guard isLoadValid(authGeneration: authAtStart, syncGeneration: syncAtStart,
@@ -404,7 +406,7 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
     /// 変わっていたら、前の状態の並びは使わず、破棄して取り直す
     /// (ページ送りのたびに世代を今の値へ書き換えて取り繕うと、
     /// 前のログインで取った並びがそのまま使われてしまうため)。
-    private func goToPage(_ page: Int) {
+    private func goToPage(_ page: Int, source: PaginationView) {
         guard page != currentPage, !isLoading, !historyIDs.isEmpty else { return }
         guard loadContext == WatchedHistoryStore.Context.current,
               loadAuthGeneration == SettingsStore.shared.authGeneration,
@@ -417,7 +419,7 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
             reloadHistory(page: 1)
             return
         }
-        let position = VideoPageLayout.Position(tableView)
+        let position = VideoPageLayout.Position(tableView, source: source, coordinateView: view)
         let moveToTop = SettingsStore.shared.scrollToTopOnPageChange
         isLoading = true
         updatePagination()
@@ -429,7 +431,7 @@ final class WatchedHistoryViewController: UIViewController, UITableViewDataSourc
 
     /// 総ページ数 (最低1)。
     private var totalPages: Int {
-        max(1, Int(ceil(Double(total) / Double(Self.pageSize))))
+        PaginationGeometry.pageCount(totalItems: total, pageSize: Self.pageSize)
     }
 
     /// 上下両方のページ送りに、いまのページ状態を反映する。

@@ -115,14 +115,16 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
         buildSortRow()
 
         topPaginationView.onPageSelected = { [weak self] page in
-            self?.goToPage(page)
+            guard let self else { return }
+            self.goToPage(page, source: self.topPaginationView)
         }
         view.addSubview(topPaginationView)
         topPaginationView.translatesAutoresizingMaskIntoConstraints = false
 
         // 下のページ送りはテーブルの末尾に付ける (録画一覧と同じ)。
         bottomPaginationView.onPageSelected = { [weak self] page in
-            self?.goToPage(page)
+            guard let self else { return }
+            self.goToPage(page, source: self.bottomPaginationView)
         }
         let footer = UIView()
         footer.addSubview(bottomPaginationView)
@@ -398,7 +400,7 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
                 page: page, order: sortOrder.apiOrder, ids: idsAtStart)
             // 指定ページが総ページ数を超えていたら、最後のページを取り直す
             // (登録を消してページが無くなっている場合。録画一覧と同じ)。
-            let lastPage = max(1, Int(ceil(Double(response.total) / Double(Self.pageSize))))
+            let lastPage = PaginationGeometry.pageCount(totalItems: response.total, pageSize: Self.pageSize)
             if page > lastPage {
                 response = try await APIClient.shared.fetchVideos(
                     page: lastPage, order: sortOrder.apiOrder, ids: idsAtStart)
@@ -419,7 +421,7 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
                 tableView.reloadData()
                 updatePagination()
                 view.layoutIfNeeded()
-                position.restore(in: tableView, scrollToFirstProgram: scrollToTop)
+                position.restore(in: tableView, scrollToTop: scrollToTop)
             }
         } catch {
             guard expectedContext == WatchedHistoryStore.Context.current else {
@@ -443,13 +445,13 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
 
     /// ページ送りから指定されたページへ移る。登録の並びは取り直さず、
     /// 取得済みの並びでページだけ取り直す。
-    private func goToPage(_ page: Int) {
+    private func goToPage(_ page: Int, source: PaginationView) {
         guard page != currentPage, !isLoading, !mylistIDs.isEmpty else { return }
         guard loadContext == WatchedHistoryStore.Context.current else {
             reloadMylist(page: 1)
             return
         }
-        let position = VideoPageLayout.Position(tableView)
+        let position = VideoPageLayout.Position(tableView, source: source, coordinateView: view)
         let moveToTop = SettingsStore.shared.scrollToTopOnPageChange
         isLoading = true
         updatePagination()
@@ -461,7 +463,7 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
 
     /// 総ページ数 (最低1)。
     private var totalPages: Int {
-        max(1, Int(ceil(Double(total) / Double(Self.pageSize))))
+        PaginationGeometry.pageCount(totalItems: total, pageSize: Self.pageSize)
     }
 
     /// 上下両方のページ送りに、いまのページ状態を反映する。
