@@ -139,9 +139,6 @@ struct SyncedClientSettings: Equatable {
         }
     }
 
-    /// 視聴履歴の保持件数の選択肢 (Web 版は数値入力だが、アプリでは
-    /// 他の選択項目と同じく候補から選ぶ形にしてある)。
-    static let watchedHistoryMaxCountOptions = [10, 20, 30, 50, 100, 200]
 }
 
 /// マイリストの登録1件分 (Web 版の mylist の要素と同じ形)。
@@ -984,7 +981,9 @@ final class SyncedSettingsStore {
     /// 差し替えたかどうかを返す。同期が効いていない・取得に失敗した
     /// ときは何もせず false を返す。
     @MainActor
-    func refreshFromServer() async -> Bool {
+    // requireFresh時は「変更あり」ではなく、当該要求で最新値を取得・確認できたことを返す。
+    // 保存中などで取得を省略した場合を、履歴削減確認の成功として使わない。
+    func refreshFromServer(requireFresh: Bool = false) async -> Bool {
         lastRefreshFailed = false
         // 前回の起動で送れずに端末へ残した変更があれば、ここで
         // 引き継ぐ (条件が合わなければ破棄する)。
@@ -1057,7 +1056,7 @@ final class SyncedSettingsStore {
             return false
         }
         let server = Self.settings(fromClientSettings: settings, fallback: current)
-        guard server != current else { return false }
+        guard server != current else { return requireFresh }
         current = server
         saveToLocal(server)
         return true

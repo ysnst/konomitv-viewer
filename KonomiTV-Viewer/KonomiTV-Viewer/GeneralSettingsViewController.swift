@@ -12,8 +12,8 @@ import UIKit
 ///
 /// スキップ秒数と再生速度は Web 版 (改造) でも端末ごとに持つ項目で、
 /// アプリでも端末に保存する。それ以外の項目は利用者設定と共通で、
-/// 読み書きは SyncedSettingsStore が担う。変更はその場で保存される。
-final class GeneralSettingsViewController: SettingsDetailViewController {
+/// 読み書きは SyncedSettingsStore が担う。件数は入力確定時、それ以外はその場で保存する。
+final class GeneralSettingsViewController: SettingsDetailViewController, UITextFieldDelegate {
     private let pinnedChannelsButton = RippleButton()
     private let timeTableButton = RippleButton()
     private let jikkyoForceSwitch = WebToggle()
@@ -24,7 +24,11 @@ final class GeneralSettingsViewController: SettingsDetailViewController {
     private let playbackRateButton = RippleButton()
     private let resumeRewindButton = RippleButton()
     private let cmAutoSkipSwitch = WebToggle()
-    private let maxCountButton = RippleButton()
+    private let maxCountField = UITextField()
+    private var maxCountOriginal: Int?
+    private var maxCountContext: WatchedHistoryStore.Context?
+    private var maxCountEditGeneration = 0
+    private var maxCountIsSaving = false
     private let panelTabButton = RippleButton()
 
     init() {
@@ -56,9 +60,28 @@ final class GeneralSettingsViewController: SettingsDetailViewController {
 
     private func buildItems() {
         for button in [seekBackwardButton, seekForwardButton, playbackRateButton,
-                       resumeRewindButton, maxCountButton, panelTabButton] {
+                       resumeRewindButton, panelTabButton] {
             styleSelectButton(button)
         }
+        styleTextField(maxCountField, placeholder: "1以上の整数")
+        maxCountField.keyboardType = .numberPad
+        maxCountField.textAlignment = .right
+        maxCountField.accessibilityLabel = "視聴履歴の保持件数"
+        maxCountField.delegate = self
+        let toolbar = UIToolbar()
+        toolbar.items = [
+            UIBarButtonItem(title: "キャンセル", style: .plain, target: self, action: #selector(cancelMaxCountEdit)),
+            UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil),
+            UIBarButtonItem(title: "確定", style: .done, target: self, action: #selector(confirmMaxCountEdit)),
+        ]
+        toolbar.sizeToFit()
+        maxCountField.inputAccessoryView = toolbar
+        let unit = makeDescriptionLabel("件")
+        unit.setContentHuggingPriority(.required, for: .horizontal)
+        unit.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let maxCountRow = UIStackView(arrangedSubviews: [maxCountField, unit])
+        maxCountRow.spacing = 8
+        maxCountRow.alignment = .center
         cmAutoSkipSwitch.addTarget(self, action: #selector(cmAutoSkipChanged), for: .valueChanged)
         jikkyoForceSwitch.addTarget(self, action: #selector(jikkyoForceChanged), for: .valueChanged)
         use28HourClockSwitch.addTarget(self, action: #selector(use28HourClockChanged), for: .valueChanged)
@@ -114,7 +137,7 @@ final class GeneralSettingsViewController: SettingsDetailViewController {
                 toggle: originalTimeSwitch)),
             makeDivider(),
             itemGroup(title: "ビデオをみるときにデフォルトで表示されるパネルのタブ", field: panelTabButton),
-            itemGroup(title: "視聴履歴の保持件数", field: maxCountButton),
+            itemGroup(title: "視聴履歴の保持件数", field: maxCountRow),
             itemGroup(title: "スキップ秒数 (戻し)", field: seekBackwardButton, syncDisabled: true),
             itemGroup(title: "スキップ秒数 (送り)", field: seekForwardButton, syncDisabled: true),
             itemGroup(title: "録画再生の再生速度", field: playbackRateField, syncDisabled: true),
@@ -149,7 +172,8 @@ final class GeneralSettingsViewController: SettingsDetailViewController {
         jikkyoForceSwitch.isOn = synced.tvChannelSortByJikkyoForce
         use28HourClockSwitch.isOn = synced.use28HourClock
         originalTimeSwitch.isOn = synced.showOriginalBroadcastTimeDuringPlayback
-        updateMaxCountButton(selected: synced.videoWatchedHistoryMaxCount)
+        // 非同期の設定読込や他項目の変更で、入力途中のドラフトを上書きしない。
+        if maxCountOriginal == nil { maxCountField.text = String(synced.videoWatchedHistoryMaxCount) }
         updatePanelTabButton(selected: synced.videoPanelActiveTab)
     }
 
@@ -177,16 +201,105 @@ final class GeneralSettingsViewController: SettingsDetailViewController {
         })
     }
 
-    private func updateMaxCountButton(selected: Int) {
-        maxCountButton.setTitle("\(selected)件", for: .normal)
-        maxCountButton.menu = UIMenu(children: SyncedClientSettings.watchedHistoryMaxCountOptions.map { count in
-            UIAction(title: "\(count)件", state: count == selected ? .on : .off) { [weak self] _ in
-                var settings = SyncedSettingsStore.shared.current
-                settings.videoWatchedHistoryMaxCount = count
-                SyncedSettingsStore.shared.update(settings)
-                self?.reloadValues()
+    func textFieldDidBeginEditing(_ textField: UITextField) {
+        guard textField === maxCountField, maxCountOriginal == nil else { return }
+        maxCountOriginal = SyncedSettingsStore.shared.current.videoWatchedHistoryMaxCount
+        maxCountContext = WatchedHistoryStore.Context.current
+        maxCountEditGeneration += 1
+    }
+
+    func textFieldDidEndEditing(_ textField: UITextField) {
+        // キーボードを閉じるだけでは確定しない。明示的な確定処理中だけドラフトを保持する。
+        if textField === maxCountField, maxCountOriginal != nil, !maxCountIsSaving { cancelMaxCountEdit() }
+    }
+
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+        if textField === maxCountField { confirmMaxCountEdit() }
+        return false
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        cancelMaxCountEdit()
+    }
+
+    @objc private func cancelMaxCountEdit() {
+        maxCountEditGeneration += 1
+        maxCountOriginal = nil
+        maxCountContext = nil
+        maxCountIsSaving = false
+        maxCountField.isEnabled = true
+        maxCountField.resignFirstResponder()
+        maxCountField.text = String(SyncedSettingsStore.shared.current.videoWatchedHistoryMaxCount)
+    }
+
+    @objc private func confirmMaxCountEdit() {
+        guard !maxCountIsSaving, let original = maxCountOriginal, let context = maxCountContext else { return }
+        guard let value = WatchedHistoryLimitInput.parse(maxCountField.text ?? "") else {
+            showMaxCountMessage("1以上の整数を入力してください。小数・記号・端末で表現できない大きな数値は保存できません。")
+            return
+        }
+        maxCountIsSaving = true
+        maxCountField.resignFirstResponder()
+        maxCountField.isEnabled = false
+        let generation = maxCountEditGeneration
+        Task { [weak self] in
+            let verified: Bool
+            if SyncedSettingsStore.isSyncEnabled {
+                verified = await SyncedSettingsStore.shared.refreshFromServer(requireFresh: true)
+            } else { verified = true }
+            guard let self, generation == self.maxCountEditGeneration else { return }
+            guard context == WatchedHistoryStore.Context.current else {
+                self.cancelMaxCountEdit()
+                self.showMaxCountMessage("接続先またはアカウントが変更されたため、保存を取り消しました。")
+                return
             }
-        })
+            guard verified else {
+                self.cancelMaxCountEdit()
+                self.showMaxCountMessage("設定の同期中、または最新の設定を確認できませんでした。現在の値は変更していません。少し待ってから再度お試しください。")
+                return
+            }
+            self.reviewMaxCount(value, original: original, context: context, generation: generation)
+        }
+    }
+
+    private func reviewMaxCount(_ value: Int, original: Int, context: WatchedHistoryStore.Context, generation: Int) {
+        guard generation == maxCountEditGeneration, context == WatchedHistoryStore.Context.current else { return }
+        let current = SyncedSettingsStore.shared.current.videoWatchedHistoryMaxCount
+        if value == current { cancelMaxCountEdit(); return }
+        if value < current || current != original {
+            var message = current != original ? "編集中に保持件数が\(current)件へ変更されました。\(value)件へ変更しますか？" : "保持件数を\(current)件から\(value)件へ減らしますか？"
+            if value < current { message += "\n次回の新しい履歴追加時に、上限を超える古い履歴が削除される場合があります。" }
+            let alert = UIAlertController(title: "視聴履歴の保持件数", message: message, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "キャンセル", style: .cancel) { [weak self] _ in self?.cancelMaxCountEdit() })
+            alert.addAction(UIAlertAction(title: "変更する", style: .default) { [weak self, weak alert] _ in
+                // 確認中の同期変更で再確認が必要でも、古いalertと同時に表示しない。
+                alert?.dismiss(animated: true) {
+                    self?.saveMaxCount(value, reviewedCount: current, context: context, generation: generation)
+                }
+            })
+            present(alert, animated: true)
+        } else { saveMaxCount(value, reviewedCount: current, context: context, generation: generation) }
+    }
+
+    private func saveMaxCount(_ value: Int, reviewedCount: Int, context: WatchedHistoryStore.Context, generation: Int) {
+        guard generation == maxCountEditGeneration else { return }
+        guard context == WatchedHistoryStore.Context.current else { cancelMaxCountEdit(); return }
+        // 確認中の同期更新も見直す。最後のコピーから対象項目だけ変え、他設定を巻き戻さない。
+        var settings = SyncedSettingsStore.shared.current
+        guard settings.videoWatchedHistoryMaxCount == reviewedCount else {
+            reviewMaxCount(value, original: reviewedCount, context: context, generation: generation)
+            return
+        }
+        settings.videoWatchedHistoryMaxCount = value
+        SyncedSettingsStore.shared.update(settings)
+        cancelMaxCountEdit()
+    }
+
+    private func showMaxCountMessage(_ message: String) {
+        let alert = UIAlertController(title: "視聴履歴の保持件数", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "閉じる", style: .default))
+        present(alert, animated: true)
     }
 
     private func updatePanelTabButton(selected: String) {

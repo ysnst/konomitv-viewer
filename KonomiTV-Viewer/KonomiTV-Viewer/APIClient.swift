@@ -1206,23 +1206,8 @@ final class WatchedHistorySync {
                         ?? defaultMaxCount
                     // 上限が 0 のときは追加しない (空の履歴に1件増えてしまう)。
                     guard maxCount > 0 else { return }
-                    // 上限まで戻るよう、はみ出しの分だけ古いものから落とす
-                    // (1件だけ落とすと、はみ出しが大きいときに上限へ戻らない)。
-                    // 落とす対象は辞書の形の要素だけ (形の違う要素は残す)。
-                    while history.count >= maxCount {
-                        var oldestIndex: Int?
-                        var oldestCreated = Double.greatestFiniteMagnitude
-                        for i in history.indices {
-                            guard let entry = history[i] as? [String: Any] else { continue }
-                            let created = (entry["created_at"] as? NSNumber)?.doubleValue ?? 0
-                            if created < oldestCreated {
-                                oldestCreated = created
-                                oldestIndex = i
-                            }
-                        }
-                        guard let index = oldestIndex else { break }
-                        history.remove(at: index)
-                    }
+                    // 入力確定では履歴を削除せず、新規登録時に既存の削除順で一括整理する。
+                    history = WatchedHistoryRetention.preparingForInsertion(history, maximumCount: maxCount)
                     history.append([
                         "video_id": videoID,
                         "last_playback_position": position,

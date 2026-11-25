@@ -25,6 +25,37 @@ struct HistoryStoreTests {
             ["watched_history": [["video_id": 1, "last_playback_position": position,
                                   "updated_at": updated]]]
         }
+        // 本家のmin=1と任意整数入力。UIの編集中にはこの値を設定へ書き込まない。
+        for count in [1, 1000, 5000, 10000, Int.max] {
+            precondition(WatchedHistoryLimitInput.parse(String(count)) == count)
+        }
+        precondition(WatchedHistoryLimitInput.parse(" 1000\n") == 1000)
+        for input in ["", " ", "0", "-1", "+1", "1.5", "1e3", "１２３", "100x", String(Int.max) + "0"] {
+            precondition(WatchedHistoryLimitInput.parse(input) == nil, "Invalid draft must not become a saved count")
+        }
+
+        func entry(_ id: Int, _ created: Double) -> [String: Any] { ["video_id": id, "created_at": created] }
+        func identities(_ history: [Any]) -> [String] {
+            history.map { raw in
+                if let dictionary = raw as? [String: Any] { return String((dictionary["video_id"] as? Int) ?? -1) }
+                return raw as? String ?? "unknown"
+            }
+        }
+        // 同時刻なら配列で先の履歴を落とし、残す並びや不正要素を変更しない。
+        let retention: [Any] = [entry(1, 10), "malformed", entry(2, 5), entry(3, 5), entry(4, 20)]
+        precondition(identities(WatchedHistoryRetention.preparingForInsertion(retention, maximumCount: 4)) == ["1", "malformed", "4"])
+        precondition(identities(WatchedHistoryRetention.preparingForInsertion(retention, maximumCount: 10)) == identities(retention))
+        precondition(identities(WatchedHistoryRetention.preparingForInsertion(retention, maximumCount: 0)) == identities(retention))
+        let special: [Any] = [entry(1, .nan), entry(2, .infinity), entry(3, Double.greatestFiniteMagnitude),
+                              entry(4, -.infinity), ["video_id": 5], "keep"]
+        precondition(identities(WatchedHistoryRetention.preparingForInsertion(special, maximumCount: 1)) == ["1", "2", "3", "keep"])
+        // 1万件からの大幅な削減でも、古いものだけを一括で落として新規1件の余地を作る。
+        let large: [Any] = (0..<10000).map { entry($0, Double($0)) }
+        let reduced = WatchedHistoryRetention.preparingForInsertion(large, maximumCount: 3)
+        precondition(identities(reduced) == ["9998", "9999"])
+        // 最大値では加減算をオーバーフローさせず、既存履歴に触れない。
+        precondition(WatchedHistoryRetention.preparingForInsertion(large, maximumCount: Int.max).count == large.count)
+
         let snapshot = WatchedHistorySnapshot(settings: settings(20))
         precondition(snapshot.ratio(videoID: 1, duration: 100) == 0.2)
         precondition(snapshot.ratio(videoID: 2, duration: 100) == nil)
@@ -138,6 +169,6 @@ struct HistoryStoreTests {
             context = transition
             precondition(reader.currentSnapshot.videoIDs.isEmpty, "Context change must hide old history before notification")
         }
-        print("HistoryStoreTests passed: ratios, invalid data, ordering, coalescing, stale responses, context changes, retry, disabled sync")
+        print("HistoryStoreTests passed: limit input, retention order and large reductions, ratios, invalid data, ordering, coalescing, stale responses, context changes, retry, disabled sync")
     }
 }

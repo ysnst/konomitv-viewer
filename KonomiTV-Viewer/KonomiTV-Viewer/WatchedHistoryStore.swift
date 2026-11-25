@@ -205,3 +205,34 @@ final class WatchedHistoryStore {
         return await task.value
     }
 }
+
+/// 本家の数値入力(min=1、上限指定なし)へ合わせる。Intで表現できない値は送信しない。
+enum WatchedHistoryLimitInput {
+    static func parse(_ text: String) -> Int? {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, value.utf8.allSatisfy({ (48...57).contains($0) }),
+              let count = Int(value), count > 0 else { return nil }
+        return count
+    }
+}
+
+/// 新しい履歴を追加する直前だけ上限を適用する。設定の編集中・保存時は呼ばない。
+enum WatchedHistoryRetention {
+    static func preparingForInsertion(_ history: [Any], maximumCount: Int) -> [Any] {
+        guard maximumCount > 0, history.count >= maximumCount else { return history }
+        let candidates: [(index: Int, created: Double)] = history.enumerated().compactMap { item -> (index: Int, created: Double)? in
+            let (index, raw) = item
+            guard let entry = raw as? [String: Any] else { return nil }
+            let created = (entry["created_at"] as? NSNumber)?.doubleValue ?? 0
+            // 従来の最小値探索が選ばなかったNaN/+inf/最大有限値を、新たな削除対象にしない。
+            guard created < Double.greatestFiniteMagnitude else { return nil }
+            return (index, created)
+        }.sorted {
+            $0.created == $1.created ? $0.index < $1.index : $0.created < $1.created
+        }
+        let removedCount = min(history.count - maximumCount + 1, candidates.count)
+        let removed = Set(candidates.prefix(removedCount).map(\.index))
+        // 元の順序と辞書以外の要素は保持し、最大1万件からの削減でも二重走査を繰り返さない。
+        return history.enumerated().compactMap { removed.contains($0.offset) ? nil : $0.element }
+    }
+}
