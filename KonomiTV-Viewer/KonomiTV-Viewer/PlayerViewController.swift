@@ -2023,6 +2023,7 @@ final class PlayerViewController: UIViewController {
             messageLabel.text = "おやすみタイマーをオフにしました"
         }
         updateSleepTimerButton()
+        applyRepeatPlayback()
         buttonsFlowView.setNeedsLayout()
     }
 
@@ -3321,6 +3322,15 @@ final class PlayerViewController: UIViewController {
             showPlayerNotice("おやすみタイマーのため、ここで停止します")
             return
         }
+        if SettingsStore.shared.repeatVideoPlayback, !recordingInProgress {
+#if canImport(VLCKit)
+            if vlcPlayer != nil { startPlayback(at: 0); return }
+#endif
+            seek(to: 0, isUserInitiated: false) { [weak self] in
+                DispatchQueue.main.async { self?.playAtCurrentRate() }
+            }
+            return
+        }
         guard AppEdition.episodeNavigationEnabled, let nextID = nextEpisodeID else { return }
         let generation = playbackGeneration
         let endEventID = playbackEndEventID
@@ -3996,6 +4006,16 @@ final class PlayerViewController: UIViewController {
         presenter.present(alert, animated: true)
     }
 
+    private func applyRepeatPlayback() {
+#if canImport(VLCKit)
+        guard let vlcPlayer, vlcPlayer.state == .playing || vlcPlayer.state == .paused else { return }
+        // 4系のA-Bループで同じ出力を維持する。終端の再接続とPiPの破棄を避ける。
+        if SettingsStore.shared.repeatVideoPlayback, !recordingInProgress, sleepTimerMode != .end {
+            _ = vlcPlayer.setABLoop(fromPosition: 0, toPosition: 1)
+        } else { _ = vlcPlayer.resetABLoop() }
+#endif
+    }
+
     private func makePiPController() -> PlaybackPiPController {
         let pip = PlaybackPiPController(videoView: surfaceView, isLive: false,
             currentTime: { [weak self] in self?.currentPosition() ?? 0 },
@@ -4116,6 +4136,10 @@ final class PlayerViewController: UIViewController {
                 .init(title: "音声のみ再生", toggle: self.audioOnly, change: { [weak self] _ in self?.toggleAudioOnly() }),
                 .init(title: "おやすみタイマー", value: self.sleepTimerButton.title(for: .normal) ?? "オフ", action: { [weak self] in self?.cycleSleepTimer() }),
             ]
+            rows.insert(.init(title: "リピート再生", toggle: store.repeatVideoPlayback, change: { [weak self] on in
+                store.repeatVideoPlayback = on
+                self?.applyRepeatPlayback()
+            }), at: 3)
             if !self.digestButton.isHidden {
                 rows.append(.init(title: "ダイジェスト再生", toggle: self.digestPlaybackEnabled, change: { [weak self] _ in self?.toggleDigestPlayback() }))
             }
@@ -4285,6 +4309,7 @@ extension PlayerViewController {
             guard source === vlcPlayer else { return }
             if vlcPlayer.state == .playing {
                 self.vlcDidStartPlaying = true
+                self.applyRepeatPlayback()
                 self.vlcStartWatchdog?.invalidate()
                 self.vlcStartWatchdog = nil
                 // 見張りが先に失敗を表示していた場合は、始まったので消す。

@@ -220,6 +220,7 @@ final class SettingsStore {
         static let videoPanelActiveTab = "viewer_video_panel_active_tab"
         // コメント表示のうち、Web 版でも端末ごとに持つ項目
         // (dplayer-danmaku-unlimited / dplayer-danmaku-opacity に相当)。
+        static let repeatVideoPlayback = "viewer_repeat_video_playback"
         static let showCommentsUnlimited = "viewer_show_comments_unlimited"
         static let showExcitementInFullscreen = "viewer_show_excitement_in_fullscreen"
         static let commentOpacity = "viewer_comment_opacity"
@@ -913,6 +914,12 @@ final class SettingsStore {
     }
 
     // MARK: - コメント表示の端末ごとの設定
+
+    /// 本家PWAの録画リピートは初期ON。端末だけに保存し、サーバー設定を変更しない。
+    var repeatVideoPlayback: Bool {
+        get { defaults.object(forKey: Key.repeatVideoPlayback) == nil ? true : defaults.bool(forKey: Key.repeatVideoPlayback) }
+        set { defaults.set(newValue, forKey: Key.repeatVideoPlayback) }
+    }
 
     /// コメントを無制限に表示するか (Web 版の dplayer-danmaku-unlimited に
     /// 相当し、Web 版と同じく端末ごとに持つ)。オンのときは、流れる
