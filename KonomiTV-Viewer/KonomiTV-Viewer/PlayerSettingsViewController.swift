@@ -282,7 +282,11 @@ final class PlayerActionRow: UIStackView {
         axis = .horizontal
         alignment = .bottom
         spacing = 4
-        addArrangedSubview(time)
+        // 横向きの余剰幅は時刻ラベルでなくスペーサーへ渡し、時間表記を左でまとめる。
+        time.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        let timeContainer = UIStackView(arrangedSubviews: [time, UIView()])
+        timeContainer.alignment = .bottom
+        addArrangedSubview(timeContainer)
         addArrangedSubview(actions)
         actionWidth.isActive = true
     }
