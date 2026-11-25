@@ -64,6 +64,8 @@
 	<true/>
 	<key>UIStatusBarStyle</key>
 	<string>UIStatusBarStyleLightContent</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>キャプチャした映像を写真ライブラリへ保存するために使います。</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>同じネットワークにある KonomiTV サーバーへ接続するために使います。</string>
 	<!-- 音声のみ再生を画面を消しても続けるため -->

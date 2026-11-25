@@ -120,7 +120,14 @@ final class FullscreenPlayerViewController: UIViewController {
     private let captionButton = RippleButton()
     private let settingsButton = RippleButton()
     private let pipButton = RippleButton()
+    private let captureButton = RippleButton()
+    private let commentCaptureButton = RippleButton()
+    var captureAvailable: (() -> Bool)?
+    var commentCaptureAvailable: (() -> Bool)?
+    var onCapture: ((Bool, UIViewController) -> Void)?
     var pipAvailable: (() -> Bool)?
+    var pipActive: (() -> Bool)?
+    var pipPending: (() -> Bool)?
     var onTogglePiP: (() -> Void)?
     private let fullscreenButton = RippleButton()
     var captionsEnabled: (() -> Bool)?
@@ -248,7 +255,7 @@ final class FullscreenPlayerViewController: UIViewController {
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         // 設定の適応表示が全画面になっても、借りた映像・字幕・実況を返さない。
-        if presentedViewController is ViewerNavigationController, !isBeingDismissed { return }
+        if (presentedViewController is ViewerNavigationController || presentedViewController is UIActivityViewController), !isBeingDismissed { return }
         hideTimer?.invalidate()
         hideTimer = nil
         fastSeekBackController.invalidate()
@@ -444,7 +451,11 @@ final class FullscreenPlayerViewController: UIViewController {
         fullscreenButton.addTarget(self, action: #selector(exitFullscreen), for: .touchUpInside)
         styleVideoOverlayButton(pipButton, symbol: "pip.enter", title: "ピクチャ・イン・ピクチャ")
         pipButton.addAction(UIAction { [weak self] _ in self?.onTogglePiP?() }, for: .touchUpInside)
-        let optionsRow = UIStackView(arrangedSubviews: [UIView(), captionButton, settingsButton, pipButton, fullscreenButton])
+        styleVideoOverlayButton(captureButton, symbol: "camera", title: "キャプチャ")
+        styleVideoOverlayButton(commentCaptureButton, symbol: "camera.badge.ellipsis", title: "コメント付きキャプチャ")
+        captureButton.addAction(UIAction { [weak self] _ in guard let self else { return }; self.onCapture?(false, self) }, for: .touchUpInside)
+        commentCaptureButton.addAction(UIAction { [weak self] _ in guard let self else { return }; self.onCapture?(true, self) }, for: .touchUpInside)
+        let optionsRow = UIStackView(arrangedSubviews: [UIView(), captureButton, commentCaptureButton, captionButton, settingsButton, pipButton, fullscreenButton])
         optionsRow.spacing = 0
         optionsRow.axis = .horizontal
 
@@ -621,7 +632,14 @@ final class FullscreenPlayerViewController: UIViewController {
 
     private func updateProgress() {
         updateCaptionControl()
+        captureButton.isEnabled = captureAvailable?() ?? false
+        commentCaptureButton.isEnabled = commentCaptureAvailable?() ?? false
+        captureButton.alpha = captureButton.isEnabled ? 1 : 0.35
+        commentCaptureButton.alpha = commentCaptureButton.isEnabled ? 1 : 0.35
         pipButton.isHidden = !(pipAvailable?() ?? false)
+        pipButton.isEnabled = !(pipPending?() ?? false)
+        pipButton.setImage(UIImage(systemName: pipActive?() == true ? "pip.exit" : "pip.enter"), for: .normal)
+        pipButton.accessibilityValue = pipActive?() == true ? "再生中" : "停止中"
         let current = currentSeconds
         if current.isFinite {
             currentTimeLabel.text = TimeFormat.hms(current)

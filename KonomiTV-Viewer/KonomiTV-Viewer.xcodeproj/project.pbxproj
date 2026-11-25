@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A1000000000000000000000C /* NativeVideoSnapshot.m in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000B /* NativeVideoSnapshot.m */; };
+		A1000000000000000000000A /* VideoCaptureController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000009 /* VideoCaptureController.swift */; };
 		A10000000000000000000008 /* PlaybackPiPController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000007 /* PlaybackPiPController.swift */; };
 		A10000000000000000000006 /* PlayerSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000005 /* PlayerSettingsViewController.swift */; };
 		A10000000000000000000004 /* VideoHomeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* VideoHomeViewController.swift */; };
@@ -79,6 +81,10 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		A1000000000000000000000E /* Viewer-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Viewer-Bridging-Header.h"; sourceTree = "<group>"; };
+		A1000000000000000000000D /* NativeVideoSnapshot.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "NativeVideoSnapshot.h"; sourceTree = "<group>"; };
+		A1000000000000000000000B /* NativeVideoSnapshot.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "NativeVideoSnapshot.m"; sourceTree = "<group>"; };
+		A10000000000000000000009 /* VideoCaptureController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "VideoCaptureController.swift"; sourceTree = "<group>"; };
 		A10000000000000000000007 /* PlaybackPiPController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackPiPController.swift; sourceTree = "<group>"; };
 		A10000000000000000000005 /* PlayerSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerSettingsViewController.swift; sourceTree = "<group>"; };
 		A10000000000000000000003 /* VideoHomeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoHomeViewController.swift; sourceTree = "<group>"; };
@@ -205,6 +211,10 @@
 				A10000000000000000000003 /* VideoHomeViewController.swift */,
 				A10000000000000000000005 /* PlayerSettingsViewController.swift */,
 				A10000000000000000000007 /* PlaybackPiPController.swift */,
+				A1000000000000000000000E /* Viewer-Bridging-Header.h */,
+				A1000000000000000000000D /* NativeVideoSnapshot.h */,
+				A1000000000000000000000B /* NativeVideoSnapshot.m */,
+				A10000000000000000000009 /* VideoCaptureController.swift */,
 				200000000000000000000016 /* PlayerViewController.swift */,
 				200000000000000000000017 /* LiveListViewController.swift */,
 				200000000000000000000018 /* LivePlayerViewController.swift */,
@@ -351,6 +361,8 @@
 				A10000000000000000000004 /* VideoHomeViewController.swift in Sources */,
 				A10000000000000000000006 /* PlayerSettingsViewController.swift in Sources */,
 				A10000000000000000000008 /* PlaybackPiPController.swift in Sources */,
+				A1000000000000000000000C /* NativeVideoSnapshot.m in Sources */,
+				A1000000000000000000000A /* VideoCaptureController.swift in Sources */,
 				200000000000000000000036 /* PlayerViewController.swift in Sources */,
 				200000000000000000000037 /* LiveListViewController.swift in Sources */,
 				200000000000000000000038 /* LivePlayerViewController.swift in Sources */,
@@ -473,6 +485,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = jp.tatsuya0902.konomitv.viewer;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMBED_LIBRARIES_IF_NEEDED = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "$(SRCROOT)/KonomiTV-Viewer/Viewer-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -496,6 +509,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = jp.tatsuya0902.konomitv.viewer;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMBED_LIBRARIES_IF_NEEDED = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "$(SRCROOT)/KonomiTV-Viewer/Viewer-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};

@@ -4,7 +4,17 @@ import UIKit
 func styleVideoOverlayButton(_ button: UIButton, symbol: String, title: String) {
     button.configuration = nil
     button.setTitle(nil, for: .normal)
-    button.setImage(UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 21)), for: .normal)
+    let configuration = UIImage.SymbolConfiguration(pointSize: 21)
+    var icon = UIImage(systemName: symbol, withConfiguration: configuration)
+    if symbol == "camera.badge.ellipsis" {
+        // 実況付きはカメラへ吹き出しを重ね、文字だけの説明に頼らず通常撮影と区別する。
+        let format = UIGraphicsImageRendererFormat()
+        icon = UIGraphicsImageRenderer(size: CGSize(width: 28, height: 28), format: format).image { _ in
+            UIImage(systemName: "camera", withConfiguration: configuration)?.withTintColor(.white).draw(in: CGRect(x: 0, y: 1, width: 24, height: 22))
+            UIImage(systemName: "text.bubble.fill")?.withTintColor(.white).draw(in: CGRect(x: 15, y: 15, width: 13, height: 12))
+        }.withRenderingMode(.alwaysTemplate)
+    }
+    button.setImage(icon, for: .normal)
     button.tintColor = .white
     button.backgroundColor = .clear
     button.accessibilityLabel = title

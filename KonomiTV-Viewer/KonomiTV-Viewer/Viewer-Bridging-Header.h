@@ -1,0 +1,1 @@
+#import "NativeVideoSnapshot.h"
