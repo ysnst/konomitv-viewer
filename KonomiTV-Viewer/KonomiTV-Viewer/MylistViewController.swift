@@ -77,7 +77,11 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
     /// ページ取得の元になる。
     private var mylistIDs: [Int] = []
     /// いま表示しているページの番組 (最大で pageSize 件)。
-    private var programs: [RecordedProgram] = []
+    private var programs: [RecordedProgram] = [] {
+        didSet { pageLayout.invalidateHeights() }
+    }
+    /// 推定行高による後追いのoffset補正を避け、現在ページだけを実測する。
+    private let pageLayout = VideoPageLayout()
     /// 表示上の全件数 (サーバー応答の total。登録のうち実在する録画の件数)。
     private var total = 0
     private var currentPage = 1
@@ -135,8 +139,11 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
         tableView.dataSource = self
         tableView.delegate = self
         tableView.register(VideoCell.self, forCellReuseIdentifier: VideoCell.reuseID)
-        tableView.rowHeight = UITableView.automaticDimension
-        tableView.estimatedRowHeight = 125
+        // 全行の高さをdelegateで確定する。推定高を混ぜると復元後にUIKitがoffsetを動かす。
+        tableView.rowHeight = 1
+        tableView.estimatedRowHeight = 0
+        tableView.estimatedSectionHeaderHeight = 0
+        tableView.estimatedSectionFooterHeight = 0
         tableView.backgroundColor = AppPalette.background
         tableView.separatorStyle = .none
         tableView.contentInset = UIEdgeInsets(top: 0, left: 0, bottom: 10, right: 0)
@@ -383,7 +390,7 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
     }
 
     /// 並べた ID のまま、指定ページの番組を取る。
-    private func loadPage(_ page: Int, scrollToTop: Bool = false) async {
+    private func loadPage(_ page: Int, scrollToTop: Bool = false, position: VideoPageLayout.Position? = nil) async {
         let expectedContext = loadContext
         let idsAtStart = mylistIDs
         do {
@@ -401,18 +408,19 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
                 reloadMylist(page: 1)
                 return
             }
+            // 自動更新中に利用者がスクロールした場合は、反映直前の位置を使う。
+            let position = position ?? VideoPageLayout.Position(tableView)
             currentPage = min(page, lastPage)
             total = response.total
             programs = response.recorded_programs
             // 登録はあるのに録画自体が残っていない場合は、空の表示にする。
             statusLabel.text = programs.isEmpty ? Self.emptyText : nil
-            let oldOffset = tableView.contentOffset.y
-            tableView.reloadData()
-            updatePagination()
-            tableView.layoutIfNeeded()
-            let minimum = -tableView.adjustedContentInset.top
-            let maximum = max(minimum, tableView.contentSize.height - tableView.bounds.height + tableView.adjustedContentInset.bottom)
-            tableView.setContentOffset(CGPoint(x: 0, y: scrollToTop ? minimum : min(maximum, max(minimum, oldOffset))), animated: false)
+            UIView.performWithoutAnimation {
+                tableView.reloadData()
+                updatePagination()
+                view.layoutIfNeeded()
+                position.restore(in: tableView, scrollToFirstProgram: scrollToTop)
+            }
         } catch {
             guard expectedContext == WatchedHistoryStore.Context.current else {
                 isLoading = false
@@ -441,11 +449,13 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
             reloadMylist(page: 1)
             return
         }
+        let position = VideoPageLayout.Position(tableView)
+        let moveToTop = SettingsStore.shared.scrollToTopOnPageChange
         isLoading = true
         updatePagination()
         Task { [weak self] in
             guard let self else { return }
-            await self.loadPage(page, scrollToTop: SettingsStore.shared.scrollToTopOnPageChange)
+            await self.loadPage(page, scrollToTop: moveToTop, position: position)
         }
     }
 
@@ -485,6 +495,10 @@ final class MylistViewController: UIViewController, UITableViewDataSource, UITab
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         programs.count
+    }
+
+    func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
+        pageLayout.height(for: programs[indexPath.row], width: tableView.bounds.width, selectionActive: false)
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {

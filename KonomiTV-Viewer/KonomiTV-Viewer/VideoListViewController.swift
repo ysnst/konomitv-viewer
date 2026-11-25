@@ -219,7 +219,11 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     private let statusLabel = UILabel()
 
     /// いま表示しているページの番組 (最大で pageSize 件)。
-    private var programs: [RecordedProgram] = []
+    private var programs: [RecordedProgram] = [] {
+        didSet { pageLayout.invalidateHeights() }
+    }
+    /// 推定行高による後追いのoffset補正を避け、現在ページだけを実測する。
+    private let pageLayout = VideoPageLayout()
     /// 表示上の全件数 (フィルタ中は絞り込み後の件数。Web 版と同じ)。
     private var total = 0
     private var currentPage = 1
@@ -477,9 +481,11 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         tableView.delegate = self
         tableView.register(VideoCell.self, forCellReuseIdentifier: VideoCell.reuseID)
         // 行の高さはカードの中身 (題名・説明の行数) に合わせて自動で決める。
-        // 推定値は Web 版カードのスマホ縦の intrinsic height (115px) + カード間隔 (10px)。
-        tableView.rowHeight = UITableView.automaticDimension
-        tableView.estimatedRowHeight = 125
+        // 全行の高さをdelegateで確定する。推定高を混ぜると復元後にUIKitがoffsetを動かす。
+        tableView.rowHeight = 1
+        tableView.estimatedRowHeight = 0
+        tableView.estimatedSectionHeaderHeight = 0
+        tableView.estimatedSectionFooterHeight = 0
         tableView.backgroundColor = AppPalette.background
         tableView.separatorStyle = .none
         // 一覧の下端にもカード間隔と同じ余白を置く。
@@ -986,19 +992,20 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         pendingScrollRestore = nil
         isScrollRestoring = false
         guard loadedContext == WatchedHistoryStore.Context.current else { refresh(); return }
+        let position = VideoPageLayout.Position(tableView)
         let moveToTop = SettingsStore.shared.scrollToTopOnPageChange
         if isFilterActive {
             // フィルタ中は取得済みの結果から切り出すだけなので、通信はしない。
             currentPage = page
-            showFilteredPage(scrollToTop: moveToTop)
+            showFilteredPage(scrollToTop: moveToTop, position: position)
             saveViewState()
         } else {
-            loadPage(page, scrollToTop: moveToTop)
+            loadPage(page, scrollToTop: moveToTop, position: position)
         }
     }
 
     /// 指定ページを読み込む (フィルタ中は全件取得して絞り込んでから切り出す)。
-    private func loadPage(_ page: Int, scrollToTop: Bool = false) {
+    private func loadPage(_ page: Int, scrollToTop: Bool = false, position: VideoPageLayout.Position? = nil) {
         guard !isLoading else { return }
         guard SettingsStore.shared.isConfigured else {
             statusLabel.text = "設定タブで接続先 URL を設定してください。"
@@ -1016,7 +1023,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         let queryAtStart = searchText
         let contextAtStart = WatchedHistoryStore.Context.current
         if isFilterActive {
-            loadAllForFilter(targetPage: page, baseURLAtStart: baseURLAtStart, scrollToTop: scrollToTop)
+            loadAllForFilter(targetPage: page, baseURLAtStart: baseURLAtStart, scrollToTop: scrollToTop, position: position)
         } else {
             Task { [weak self] in
                 guard let self else { return }
@@ -1045,6 +1052,8 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                         self.applySearchChange()
                         return
                     }
+                    // 明示ページ送りは操作直前の位置、それ以外の更新は反映直前の位置を保つ。
+                    let position = position ?? VideoPageLayout.Position(self.tableView)
                     self.currentPage = min(page, lastPage)
                     self.loadedContext = contextAtStart
                     self.loadedBaseURLString = baseURLAtStart
@@ -1054,7 +1063,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                     // サーバー側のページ分けで読んだので、全件の控えは使えない。
                     self.hasCollectedAllPrograms = false
                     self.allCollectedPrograms = []
-                    self.applyLoadedPage(scrollToTop: scrollToTop)
+                    self.applyLoadedPage(scrollToTop: scrollToTop, position: position)
                     self.saveViewState()
                     self.restoreScrollPositionIfNeeded()
                 } catch {
@@ -1084,7 +1093,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     /// 既存の改造サーバー向けフィルタは最大50ページまで取得する。
     /// 検索中は検索結果のページだけを対象とし、通常検索ではこの経路を使わない。
     /// 絞り込みは端末側で、並びはサーバーの並びをそのまま保つ (Web 版と同じ)。
-    private func loadAllForFilter(targetPage: Int, baseURLAtStart: String?, scrollToTop: Bool) {
+    private func loadAllForFilter(targetPage: Int, baseURLAtStart: String?, scrollToTop: Bool, position: VideoPageLayout.Position?) {
         let queryAtStart = searchText
         let contextAtStart = WatchedHistoryStore.Context.current
         Task { [weak self] in
@@ -1112,6 +1121,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                     self.applySearchChange()
                     return
                 }
+                let position = position ?? VideoPageLayout.Position(self.tableView)
                 self.loadedContext = contextAtStart
                 self.loadedBaseURLString = baseURLAtStart
                 self.loadedSearchQuery = queryAtStart
@@ -1125,7 +1135,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                 self.total = self.filteredPrograms.count
                 // 復元したページが絞り込み後のページ数を超えていたら、最後のページにする。
                 self.currentPage = min(max(targetPage, 1), self.totalPages)
-                self.showFilteredPage(scrollToTop: scrollToTop)
+                self.showFilteredPage(scrollToTop: scrollToTop, position: position)
                 self.saveViewState()
                 self.restoreScrollPositionIfNeeded()
             } catch {
@@ -1152,19 +1162,19 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     }
 
     /// 絞り込み済みの結果から、いまのページの分を切り出して表示する。
-    private func showFilteredPage(scrollToTop: Bool = false) {
+    private func showFilteredPage(scrollToTop: Bool = false, position: VideoPageLayout.Position? = nil) {
+        let position = position ?? VideoPageLayout.Position(tableView)
         let start = (currentPage - 1) * Self.pageSize
         if start < filteredPrograms.count {
             programs = Array(filteredPrograms[start ..< min(start + Self.pageSize, filteredPrograms.count)])
         } else {
             programs = []
         }
-        applyLoadedPage(scrollToTop: scrollToTop)
+        applyLoadedPage(scrollToTop: scrollToTop, position: position)
     }
 
     /// データ取得成功後だけ位置を決める。明示ページ送り以外は現在位置を維持する。
-    private func applyLoadedPage(scrollToTop: Bool = false) {
-        let previousOffset = tableView.contentOffset.y
+    private func applyLoadedPage(scrollToTop: Bool = false, position: VideoPageLayout.Position) {
         if programs.isEmpty {
             // 検索中で1件も無いときは、Web 版の検索結果と同じ文面にする。
             statusLabel.text = searchText.isEmpty
@@ -1176,14 +1186,14 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         countLabel.text = total > 0 ? "\(total)件" : nil
         // 一覧の中身が変わると「選択する」のピルの出し分けも変わるため、
         // 先頭まわりを組み直す。
-        refreshHeadContainer()
-        tableView.reloadData()
-        updatePagination()
-        // 可変行高とヘッダーの更新を確定させてから移動する。失敗時はこの経路へ入らない。
-        tableView.layoutIfNeeded()
-        let minimum = -tableView.adjustedContentInset.top
-        let maximum = max(minimum, tableView.contentSize.height - tableView.bounds.height + tableView.adjustedContentInset.bottom)
-        tableView.setContentOffset(CGPoint(x: 0, y: scrollToTop ? minimum : min(maximum, max(minimum, previousOffset))), animated: false)
+        UIView.performWithoutAnimation {
+            refreshHeadContainer()
+            tableView.reloadData()
+            updatePagination()
+            // ヘッダー・footer・外側のSafe Areaを含めて確定してから一度だけ復元する。
+            view.layoutIfNeeded()
+            position.restore(in: tableView, scrollToFirstProgram: scrollToTop)
+        }
     }
 
     /// 総ページ数 (最低1)。
@@ -1537,6 +1547,10 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         programs.count
+    }
+
+    func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
+        pageLayout.height(for: programs[indexPath.row], width: tableView.bounds.width, selectionActive: isSelectionMode)
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -2581,6 +2595,8 @@ final class VideoCell: UITableViewCell {
         metaRow.alignment = .center
         metaRow.spacing = 8
         metaRow.translatesAutoresizingMaskIntoConstraints = false
+        // ロゴの遅延読み込みで行高が変わらないよう、固定14ptのロゴ分は先に確保する。
+        metaRow.heightAnchor.constraint(greaterThanOrEqualToConstant: 14).isActive = true
 
         // 局名行と時刻行の間は Web 版どおり 1px (時刻の margin-top)。
         let metaStack = UIStackView(arrangedSubviews: [metaRow, timeLabel])
@@ -2881,6 +2897,25 @@ final class VideoCell: UITableViewCell {
             : Self.cardContentLeading
     }
 
+    /// 表示と同じ制約で行高を測る。通信・画像取得は行わず、幅と選択用余白を反映する。
+    func measuredHeight(for program: RecordedProgram, width: CGFloat, selectionActive: Bool) -> CGFloat {
+        prepareForReuse()
+        configure(with: program)
+        configureSelection(active: selectionActive, selected: false)
+        // 未表示セルを高さ0でlayoutすると上下制約を壊す。仮の広い領域で幅を確定し、
+        // 結果の行高は下の圧縮フィッティングで求める（スクロールの補正値ではない）。
+        bounds.size = CGSize(width: width, height: UIView.layoutFittingExpandedSize.height)
+        contentView.bounds.size = bounds.size
+        setNeedsLayout()
+        layoutIfNeeded()
+        let size = contentView.systemLayoutSizeFitting(
+            CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
+        // 縦方向の中央揃えだけではサムネイルの高さがfittingへ伝わらないため、
+        // 既存のサムネイル80pt・内側上下8pt・カード上10ptも満たす高さにする。
+        return ceil(max(size.height, 80 + 8 * 2 + 10))
+    }
+
     /// ゴミ箱の画面用の追加表示を設定する (通常の一覧では呼ばない)。
     /// notice は「あと○日で完全に削除されます」の文。showsActions が
     /// true のときだけ操作ボタンの行を出す (Web 版と同じく管理者だけ)。
@@ -3022,5 +3057,61 @@ final class VideoCell: UITableViewCell {
     func setLogo(_ image: UIImage) {
         logoView.image = image
         logoView.isHidden = false
+    }
+}
+
+
+/// 現在ページの確定行高と、再読込前の表示位置を共有する。ライブラリ全体は測らない。
+@MainActor
+final class VideoPageLayout {
+    private let sizingCell = VideoCell(style: .default, reuseIdentifier: nil)
+    private var heights: [Int: CGFloat] = [:]
+    private var measuredWidth: CGFloat = 0
+    private var measuredSelection = false
+
+    func invalidateHeights() { heights.removeAll(keepingCapacity: true) }
+
+    func height(for program: RecordedProgram, width: CGFloat, selectionActive: Bool) -> CGFloat {
+        if measuredWidth != width || measuredSelection != selectionActive {
+            invalidateHeights()
+            measuredWidth = width
+            measuredSelection = selectionActive
+        }
+        if let height = heights[program.id] { return height }
+        let height = sizingCell.measuredHeight(for: program, width: width, selectionActive: selectionActive)
+        heights[program.id] = height
+        return height
+    }
+
+    @MainActor
+    struct Position {
+        private let offset: CGPoint
+        private let insetTop: CGFloat
+
+        init(_ table: UITableView) {
+            offset = table.contentOffset
+            insetTop = table.adjustedContentInset.top
+        }
+
+        /// 推定行高を使わないテーブルで、全行・ヘッダー・footer確定後に一度だけ呼ぶ。
+        func restore(in table: UITableView, scrollToFirstProgram: Bool) {
+            table.layoutIfNeeded()
+            let inset = table.adjustedContentInset
+            let minimum = -inset.top
+            let maximum = max(minimum, table.contentSize.height - table.bounds.height + inset.bottom)
+            let target: CGFloat
+            if scrollToFirstProgram, table.numberOfSections > 0, table.numberOfRows(inSection: 0) > 0 {
+                // 検索や容量表示を含むtableHeaderViewではなく、番組の先頭行へ合わせる。
+                target = table.rectForRow(at: IndexPath(row: 0, section: 0)).minY - inset.top
+            } else {
+                // Safe Area等が変化した場合も、可視領域上端からの同じ距離を保つ。
+                target = offset.y + insetTop - inset.top
+            }
+            table.setContentOffset(CGPoint(x: offset.x, y: min(maximum, max(minimum, target))), animated: false)
+#if DEBUG
+            // 座標だけを出し、検索語・認証・番組情報をログへ含めない。
+            print("[Pagination] before=\(offset.y) after=\(table.contentOffset.y) inset=\(inset) size=\(table.contentSize) first=\(table.numberOfRows(inSection: 0) > 0 ? table.rectForRow(at: IndexPath(row: 0, section: 0)).minY : 0)")
+#endif
+        }
     }
 }
