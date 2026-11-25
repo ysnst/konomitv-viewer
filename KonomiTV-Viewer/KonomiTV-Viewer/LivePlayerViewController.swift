@@ -299,6 +299,10 @@ final class LivePlayerViewController: UIViewController {
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        // 映像内ヘッダーはこの画面だけ。標準バーを使う遷移先へ非表示状態を持ち込まない。
+        if presentedViewController == nil, navigationController?.topViewController !== self {
+            navigationController?.setNavigationBarHidden(false, animated: animated)
+        }
         // ナビゲーションバーの見た目を標準へ戻す (この画面の間だけ変えているため)。
         let bar = navigationController?.navigationBar
         bar?.tintColor = nil
@@ -679,6 +683,7 @@ final class LivePlayerViewController: UIViewController {
 
         // リモコンのパネルと幕は、開いたときに一番上へ来るよう最後に足す。
         buildRemotePanel()
+        restoreControlLayerOrder()
     }
 
     /// 局ロゴを読み込む (取れなければ読み込み前の地のまま)。
@@ -1747,6 +1752,7 @@ final class LivePlayerViewController: UIViewController {
             // では字幕を映像の枠の中で一番上に保つ (録画と同じ扱い)。
             if captionOverlayView.superview === videoArea {
                 videoArea.bringSubviewToFront(captionOverlayView)
+                restoreControlLayerOrder()
             }
         }
     }
@@ -2880,6 +2886,14 @@ final class LivePlayerViewController: UIViewController {
             captionOverlayView.removeFromSuperview()
             videoArea.addSubview(captionOverlayView)
             NSLayoutConstraint.activate(captionHomeConstraints)
+        }
+        restoreControlLayerOrder()
+    }
+
+    /// 字幕・実況の更新や全画面からの返却でも、操作を映像の上に保つ。
+    private func restoreControlLayerOrder() {
+        for control in [controlsContainer, playPauseButton, overlayTopGradient, overlayHeader] where control.superview === videoArea {
+            videoArea.bringSubviewToFront(control)
         }
     }
 

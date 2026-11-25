@@ -784,6 +784,10 @@ final class PlayerViewController: UIViewController {
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        // 映像内ヘッダーはこの画面だけ。標準バーを使う遷移先へ非表示状態を持ち込まない。
+        if presentedViewController == nil, navigationController?.topViewController !== self {
+            navigationController?.setNavigationBarHidden(false, animated: animated)
+        }
         // ナビゲーションバーの見た目を標準へ戻す (この画面の間だけ変えているため)。
         let bar = navigationController?.navigationBar
         bar?.tintColor = nil
@@ -4010,9 +4014,8 @@ final class PlayerViewController: UIViewController {
 #if canImport(VLCKit)
         guard let vlcPlayer, vlcPlayer.state == .playing || vlcPlayer.state == .paused else { return }
         // 4系のA-Bループで同じ出力を維持する。終端の再接続とPiPの破棄を避ける。
-        if SettingsStore.shared.repeatVideoPlayback, !recordingInProgress, sleepTimerMode != .end {
-            _ = vlcPlayer.setABLoop(fromPosition: 0, toPosition: 1)
-        } else { _ = vlcPlayer.resetABLoop() }
+        _ = KonomiTVConfigureRepeat(vlcPlayer,
+            SettingsStore.shared.repeatVideoPlayback && !recordingInProgress && sleepTimerMode != .end)
 #endif
     }
 

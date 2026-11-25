@@ -1,5 +1,9 @@
 #import "NativeVideoSnapshot.h"
 #import <VLCKit/VLCKit.h>
+BOOL KonomiTVConfigureRepeat(VLCMediaPlayer *player, BOOL enabled) {
+    return enabled ? [player setABLoopFromPosition:0 toPosition:1] : [player resetABLoop];
+}
+
 @implementation NativeVideoSnapshot
 + (BOOL)savePlayer:(VLCMediaPlayer *)player toPath:(NSString *)path {
     @try {
