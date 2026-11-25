@@ -238,6 +238,15 @@ final class RecordedFileInfoViewController: UIViewController {
             systemName: symbol,
             withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold))?
             .withTintColor(AppPalette.text, renderingMode: .alwaysOriginal))
+        // アイコンは大きさを固定し、縦横比を保って出す。横の並びの中で
+        // 余った幅をアイコンが吸って引き伸ばされないようにする
+        // (他の画面の見出しのアイコンと同じく、幅と高さを固定する)。
+        icon.contentMode = .scaleAspectFit
+        icon.setContentHuggingPriority(.required, for: .horizontal)
+        icon.setContentCompressionResistancePriority(.required, for: .horizontal)
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.widthAnchor.constraint(equalToConstant: 20).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 20).isActive = true
         let titleLabel = UILabel()
         titleLabel.text = title
         titleLabel.font = .scaledSystemFont(ofSize: 15, weight: .bold)
