@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A10000000000000000000008 /* PlaybackPiPController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000007 /* PlaybackPiPController.swift */; };
 		A10000000000000000000006 /* PlayerSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000005 /* PlayerSettingsViewController.swift */; };
 		A10000000000000000000004 /* VideoHomeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* VideoHomeViewController.swift */; };
 		A10000000000000000000002 /* WatchedHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* WatchedHistoryStore.swift */; };
@@ -78,6 +79,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		A10000000000000000000007 /* PlaybackPiPController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackPiPController.swift; sourceTree = "<group>"; };
 		A10000000000000000000005 /* PlayerSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerSettingsViewController.swift; sourceTree = "<group>"; };
 		A10000000000000000000003 /* VideoHomeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoHomeViewController.swift; sourceTree = "<group>"; };
 		A10000000000000000000001 /* WatchedHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchedHistoryStore.swift; sourceTree = "<group>"; };
@@ -202,6 +204,7 @@
 				A10000000000000000000001 /* WatchedHistoryStore.swift */,
 				A10000000000000000000003 /* VideoHomeViewController.swift */,
 				A10000000000000000000005 /* PlayerSettingsViewController.swift */,
+				A10000000000000000000007 /* PlaybackPiPController.swift */,
 				200000000000000000000016 /* PlayerViewController.swift */,
 				200000000000000000000017 /* LiveListViewController.swift */,
 				200000000000000000000018 /* LivePlayerViewController.swift */,
@@ -347,6 +350,7 @@
 				A10000000000000000000002 /* WatchedHistoryStore.swift in Sources */,
 				A10000000000000000000004 /* VideoHomeViewController.swift in Sources */,
 				A10000000000000000000006 /* PlayerSettingsViewController.swift in Sources */,
+				A10000000000000000000008 /* PlaybackPiPController.swift in Sources */,
 				200000000000000000000036 /* PlayerViewController.swift in Sources */,
 				200000000000000000000037 /* LiveListViewController.swift in Sources */,
 				200000000000000000000038 /* LivePlayerViewController.swift in Sources */,

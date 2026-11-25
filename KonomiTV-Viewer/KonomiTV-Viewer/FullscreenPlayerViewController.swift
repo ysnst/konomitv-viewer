@@ -119,6 +119,9 @@ final class FullscreenPlayerViewController: UIViewController {
     private let profileButton = RippleButton()
     private let captionButton = RippleButton()
     private let settingsButton = RippleButton()
+    private let pipButton = RippleButton()
+    var pipAvailable: (() -> Bool)?
+    var onTogglePiP: (() -> Void)?
     private let fullscreenButton = RippleButton()
     var captionsEnabled: (() -> Bool)?
     var captionAvailable: (() -> Bool)?
@@ -439,7 +442,9 @@ final class FullscreenPlayerViewController: UIViewController {
             self.onShowSettings?(self)
         }, for: .touchUpInside)
         fullscreenButton.addTarget(self, action: #selector(exitFullscreen), for: .touchUpInside)
-        let optionsRow = UIStackView(arrangedSubviews: [UIView(), captionButton, settingsButton, fullscreenButton])
+        styleVideoOverlayButton(pipButton, symbol: "pip.enter", title: "ピクチャ・イン・ピクチャ")
+        pipButton.addAction(UIAction { [weak self] _ in self?.onTogglePiP?() }, for: .touchUpInside)
+        let optionsRow = UIStackView(arrangedSubviews: [UIView(), captionButton, settingsButton, pipButton, fullscreenButton])
         optionsRow.spacing = 0
         optionsRow.axis = .horizontal
 
@@ -616,6 +621,7 @@ final class FullscreenPlayerViewController: UIViewController {
 
     private func updateProgress() {
         updateCaptionControl()
+        pipButton.isHidden = !(pipAvailable?() ?? false)
         let current = currentSeconds
         if current.isFinite {
             currentTimeLabel.text = TimeFormat.hms(current)

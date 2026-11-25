@@ -1,12 +1,12 @@
 import UIKit
 
-#if canImport(MobileVLCKit)
-import MobileVLCKit
+#if canImport(VLCKit)
+import VLCKit
 #endif
 
 /// 生放送の再生画面。サーバーは MPEG-TS の流しっぱなし形式しか出していないため、
-/// AVPlayer ではなく VLCKit (MobileVLCKit) で再生する。
-/// MobileVLCKit が組み込まれていないビルドでは、その旨を表示するだけになる。
+/// AVPlayer ではなく VLCKit (VLCKit) で再生する。
+/// VLCKit が組み込まれていないビルドでは、その旨を表示するだけになる。
 final class LivePlayerViewController: UIViewController {
     private let channel: LiveChannel
     private var audioOnly = false
@@ -45,6 +45,11 @@ final class LivePlayerViewController: UIViewController {
     private let audioOnlyButton = RippleButton()
     private let fullscreenButton = RippleButton()
     private let settingsButton = RippleButton()
+    private let pipButton = RippleButton()
+    private var pipController: PlaybackPiPController?
+    private var vlcStateObserver: VLCStateObserver?
+    private weak var playbackNavigation: UINavigationController?
+    private weak var activeFullscreen: LiveFullscreenViewController?
     private let overlayTopGradient = GradientView(direction: .top)
     private lazy var overlayHeader = PlayerOverlayHeader(title: channel.name) { [weak self] in
         self?.navigationController?.popViewController(animated: true)
@@ -63,7 +68,7 @@ final class LivePlayerViewController: UIViewController {
     private var controlsVisible = true
     private var hideTimer: Timer?
 
-#if canImport(MobileVLCKit)
+#if canImport(VLCKit)
     private var vlcPlayer: VLCMediaPlayer?
 #endif
     private var nowPlayingBegun = false
@@ -217,6 +222,7 @@ final class LivePlayerViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        PlaybackPiPController.stopCurrentPlayback()
         view.backgroundColor = AppPalette.background
         // 生放送の文字スーパーは、字幕の設定のテレビ側の項目に従う
         // (Web 版の生放送の扱いと同じ)。
@@ -275,6 +281,7 @@ final class LivePlayerViewController: UIViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        playbackNavigation = navigationController
         navigationController?.setNavigationBarHidden(true, animated: animated)
         // 設定でデータ放送機能のオン/オフが変わっていたら、入り口の
         // 出し分けと実行中の重ね合わせに反映する。
@@ -289,9 +296,10 @@ final class LivePlayerViewController: UIViewController {
         bar?.titleTextAttributes = nil
         hideTimer?.invalidate()
         hideTimer = nil
+        if pipController?.isActive == true || pipController?.isPending == true { return }
         // フルスクリーン表示で覆われただけのときは再生を止めない。
         // それ以外で画面を離れるときは今までどおり止める。
-#if canImport(MobileVLCKit)
+#if canImport(VLCKit)
         if presentedViewController is LiveFullscreenViewController {
             return
         }
@@ -302,7 +310,7 @@ final class LivePlayerViewController: UIViewController {
         // 戻ってきたときに再開できるよう、止めることと、再生中だった
         // かどうかを控えておく。
         stoppedOnDisappear = true
-#if canImport(MobileVLCKit)
+#if canImport(VLCKit)
         wasPlayingBeforeStop = vlcPlayer?.isPlaying ?? false
 #else
         wasPlayingBeforeStop = false
@@ -377,7 +385,10 @@ final class LivePlayerViewController: UIViewController {
         styleVideoOverlayButton(settingsButton, symbol: "gearshape.fill", title: "プレイヤー設定")
         styleVideoOverlayButton(fullscreenButton, symbol: "arrow.up.left.and.arrow.down.right", title: "全画面")
         settingsButton.addTarget(self, action: #selector(openPlayerSettings), for: .touchUpInside)
-        let controlsRow = UIStackView(arrangedSubviews: [liveTimeLabel, UIView(), captionButton, settingsButton, fullscreenButton])
+        styleVideoOverlayButton(pipButton, symbol: "pip.enter", title: "ピクチャ・イン・ピクチャ")
+        pipButton.isHidden = true
+        pipButton.addTarget(self, action: #selector(togglePiP), for: .touchUpInside)
+        let controlsRow = UIStackView(arrangedSubviews: [liveTimeLabel, UIView(), captionButton, settingsButton, pipButton, fullscreenButton])
         controlsRow.axis = .horizontal
         controlsRow.spacing = 10
         controlsRow.alignment = .center
@@ -1482,7 +1493,7 @@ final class LivePlayerViewController: UIViewController {
     /// 再生の状態に合わせて、仮想の時計の進みを切り替える
     /// (再生部品の状態変化の合図から呼ばれる)。
     private func updateCommentClock() {
-#if canImport(MobileVLCKit)
+#if canImport(VLCKit)
         let playing = vlcPlayer?.isPlaying ?? false
 #else
         let playing = false
@@ -1554,7 +1565,7 @@ final class LivePlayerViewController: UIViewController {
     private func scheduleHideControls() {
         hideTimer?.invalidate()
         hideTimer = nil
-#if canImport(MobileVLCKit)
+#if canImport(VLCKit)
         guard vlcPlayer?.isPlaying ?? false, presentedViewController == nil else { return }
         hideTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in
             self?.setControlsVisible(false)
@@ -1563,7 +1574,7 @@ final class LivePlayerViewController: UIViewController {
     }
 
     private func startStream() {
-#if canImport(MobileVLCKit)
+#if canImport(VLCKit)
         guard let url = APIClient.shared.liveStreamURL(
             displayChannelID: channel.display_channel_id,
             quality: quality,
@@ -1584,8 +1595,15 @@ final class LivePlayerViewController: UIViewController {
             return
         }
         let player = VLCMediaPlayer()
-        player.delegate = self
-        player.drawable = videoView
+        let observer = VLCStateObserver { [weak self, weak player] state in
+            guard let player else { return }
+            self?.handleVLCState(state, source: player)
+        }
+        vlcStateObserver = observer
+        player.delegate = observer
+        let pip = makePiPController()
+        pipController = pip
+        player.drawable = pip
         // 渡す URL は、アプリ内の中継 (StreamRelayServer) 経由にする。
         // VLCKit には再生の取りに行く処理へ任意のヘッダーを付ける公式の
         // 入口が無く、Cloudflare Access の合言葉が届かないため、外回線
@@ -1594,7 +1612,7 @@ final class LivePlayerViewController: UIViewController {
         // 届いた分からそのまま流す。中継が必須でない構成で中継が
         // 使えないときは元の URL に落ちる。録画側の扱いに揃え、接続先が
         // 内・外どちらでも中継を通す (合言葉が未設定なら、中継は素通しになる)。
-        let media = VLCMedia(url: relayedURL ?? url)
+        guard let media = VLCMedia(url: relayedURL ?? url) else { return }
         // 受け取りの溜め (ネットワークキャッシュ) の量で、低遅延の設定を
         // 近づける。Web 版の低遅延は再生バッファを 0.9 秒 / 通常 4.0 秒に
         // 切り替える仕組みで、VLCKit には同じ仕組みが無いため、受け取りの
@@ -1643,9 +1661,15 @@ final class LivePlayerViewController: UIViewController {
         StreamRelayServer.shared.setLiveCaptionTap(nil)
         captionTimer?.invalidate()
         captionTimer = nil
-#if canImport(MobileVLCKit)
-        vlcPlayer?.stop()
+#if canImport(VLCKit)
+        let pip = pipController
+        pipController = nil
+        pip?.dispose()
+        let previous = vlcPlayer
         vlcPlayer = nil
+        previous?.delegate = nil
+        previous?.stop()
+        vlcStateObserver = nil
 #endif
         if nowPlayingBegun {
             NowPlayingManager.shared.end(owner: self)
@@ -1709,7 +1733,7 @@ final class LivePlayerViewController: UIViewController {
 
     /// 再生部品 (VLCKit) の時計 (秒)。取れないときは 0。
     private func currentVLCTimeSeconds() -> Double {
-#if canImport(MobileVLCKit)
+#if canImport(VLCKit)
         guard let vlcPlayer else { return 0 }
         let ms = vlcPlayer.time.intValue
         return ms > 0 ? Double(ms) / 1000 : 0
@@ -1778,7 +1802,7 @@ final class LivePlayerViewController: UIViewController {
     private func updateNowPlaying() {
         guard nowPlayingBegun else { return }
         let playing: Bool = {
-#if canImport(MobileVLCKit)
+#if canImport(VLCKit)
             return vlcPlayer?.isPlaying ?? false
 #else
             return false
@@ -1793,7 +1817,7 @@ final class LivePlayerViewController: UIViewController {
     }
 
     private func playStream() {
-#if canImport(MobileVLCKit)
+#if canImport(VLCKit)
         vlcPlayer?.play()
         playPauseButton.setImage(
             UIImage(systemName: "pause.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 36)),
@@ -1807,7 +1831,7 @@ final class LivePlayerViewController: UIViewController {
     }
 
     private func pauseStream() {
-#if canImport(MobileVLCKit)
+#if canImport(VLCKit)
         vlcPlayer?.pause()
         playPauseButton.setImage(
             UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 36)),
@@ -1821,7 +1845,7 @@ final class LivePlayerViewController: UIViewController {
     }
 
     @objc private func togglePlayPause() {
-#if canImport(MobileVLCKit)
+#if canImport(VLCKit)
         guard let player = vlcPlayer else {
             // 再生部品が無い (中継の用意ができずに始められなかった等)
             // 場合は、再生ボタンで始め直す。
@@ -1856,6 +1880,10 @@ final class LivePlayerViewController: UIViewController {
     /// (本番 Web 版の追加の直しに合わせた)。音声のみの切り替えのような
     /// 内部の画質変更は、ここを通らないので書き戻しの対象にならない。
     private func userSwitchQuality(_ newQuality: String) {
+        guard pipController?.isActive != true, pipController?.isPending != true else {
+            messageLabel.text = "PiP を終了してから再生設定を変更してください。"
+            return
+        }
         guard newQuality != quality else { return }
         SettingsStore.shared.setStreamingQuality(newQuality, media: .tv, profile: profile)
         pendingQualityWriteBack = newQuality
@@ -1880,10 +1908,14 @@ final class LivePlayerViewController: UIViewController {
     /// 引き継がない。Web 版の should_resume_quality: false と同じ)。
     /// 低遅延の効き方も区分ごとに違うため、つなぎ直しで一緒に切り替わる。
     private func switchProfile(to newProfile: PlaybackProfile) {
+        guard pipController?.isActive != true, pipController?.isPending != true else {
+            messageLabel.text = "PiP を終了してから再生設定を変更してください。"
+            return
+        }
         guard newProfile != profile else { return }
         // 止めている間の切り替えで勝手に再開しないよう、つなぎ直す前に
         // 再生中だったかを控える (画質・音声のみの切り替えと同じ)。
-#if canImport(MobileVLCKit)
+#if canImport(VLCKit)
         let wasPlaying = vlcPlayer?.isPlaying ?? false
 #else
         let wasPlaying = false
@@ -1918,7 +1950,7 @@ final class LivePlayerViewController: UIViewController {
         guard newQuality != quality else { return }
         // 止めている間の切り替えで勝手に再開しないよう、つなぎ直す前に
         // 再生中だったかを控える。
-#if canImport(MobileVLCKit)
+#if canImport(VLCKit)
         let wasPlaying = vlcPlayer?.isPlaying ?? false
 #else
         let wasPlaying = false
@@ -1939,9 +1971,13 @@ final class LivePlayerViewController: UIViewController {
 
     /// 音声のみ: 映像の通り道を止めて繋ぎ直す (通信量も減る)。
     @objc private func toggleAudioOnly() {
+        guard pipController?.isActive != true, pipController?.isPending != true else {
+            messageLabel.text = "PiP を終了してから再生設定を変更してください。"
+            return
+        }
         // 止めている間の切り替えで勝手に再開しないよう、つなぎ直す前に
         // 再生中だったかを控える (画質の切り替えと同じ)。
-#if canImport(MobileVLCKit)
+#if canImport(VLCKit)
         let wasPlaying = vlcPlayer?.isPlaying ?? false
 #else
         let wasPlaying = false
@@ -2538,6 +2574,49 @@ final class LivePlayerViewController: UIViewController {
 
     /// フルスクリーン表示へ移る。映像の枠ごと全画面側へ貸し出すだけで、
     /// 受信そのものは止めない。
+    private func makePiPController() -> PlaybackPiPController {
+        let pip = PlaybackPiPController(videoView: videoView, isLive: true,
+            currentTime: { 0 }, duration: { 0 },
+            isPlaying: { [weak self] in self?.vlcPlayer?.isPlaying ?? false },
+            play: { [weak self] in self?.playStream() }, pause: { [weak self] in self?.pauseStream() },
+            seek: { _, completion in completion() })
+        pip.onStateChanged = { [weak self] in
+            guard let self else { return }
+            self.pipButton.isHidden = !(self.pipController?.isReady == true && !self.audioOnly)
+            self.pipButton.isEnabled = self.pipController?.isPending != true
+            self.activeFullscreen?.refreshPiPControl()
+            if self.pipController?.isActive == false, self.pipController?.isPending == false,
+               self.navigationController == nil {
+                self.commentSession?.stop()
+                self.commentOverlay.stop()
+                self.stopStream()
+            }
+        }
+        pip.onRestoreInterface = { [weak self] in
+            guard let self, let navigation = self.playbackNavigation else { return }
+            if navigation.viewControllers.contains(where: { $0 === self }) {
+                navigation.popToViewController(self, animated: false)
+            } else { navigation.pushViewController(self, animated: false) }
+        }
+        pip.onSuperseded = { [weak self] in
+            self?.commentSession?.stop()
+            self?.commentOverlay.stop()
+            self?.stopStream()
+        }
+        pip.onError = { [weak self] text in
+            guard let self else { return }
+            let alert = UIAlertController(title: "PiP", message: text, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "閉じる", style: .default))
+            (self.presentedViewController ?? self).present(alert, animated: true)
+        }
+        return pip
+    }
+
+    @objc private func togglePiP() {
+        guard let pip = pipController, !audioOnly else { return }
+        if pip.isActive || pip.isPending { pip.stop() } else { pip.start(owner: self) }
+    }
+
     @objc private func openPlayerSettings() { showPlayerSettings(from: self) }
 
     private func showPlayerSettings(from presenter: UIViewController) {
@@ -2572,7 +2651,7 @@ final class LivePlayerViewController: UIViewController {
         let navigation = PlayerSettingsNavigationController(rootViewController: menu)
         navigation.onClose = { [weak self, weak presenter] in
             self?.scheduleHideControls()
-#if canImport(MobileVLCKit)
+#if canImport(VLCKit)
             (presenter as? LiveFullscreenViewController)?.resumeControlAutoHide()
 #endif
         }
@@ -2583,9 +2662,12 @@ final class LivePlayerViewController: UIViewController {
     }
 
     @objc private func showFullscreen() {
-#if canImport(MobileVLCKit)
+#if canImport(VLCKit)
         guard vlcPlayer != nil else { return }
         let fullscreen = LiveFullscreenViewController(channelName: channel.name)
+        activeFullscreen = fullscreen
+        fullscreen.pipAvailable = { [weak self] in self?.pipController?.isReady == true && self?.audioOnly == false }
+        fullscreen.onTogglePiP = { [weak self] in self?.togglePiP() }
         fullscreen.captionsEnabled = { SettingsStore.shared.showCaptions }
         fullscreen.captionAvailable = { [weak self] in self?.audioOnly == false }
         fullscreen.onToggleCaptions = { [weak self] in self?.toggleCaptions() }
@@ -2718,7 +2800,7 @@ final class LivePlayerViewController: UIViewController {
     }
 
     private func refreshPlayPauseIcon() {
-#if canImport(MobileVLCKit)
+#if canImport(VLCKit)
         let playing = vlcPlayer?.isPlaying ?? false
         playPauseButton.setImage(
             UIImage(systemName: playing ? "pause.fill" : "play.fill",
@@ -2735,20 +2817,15 @@ final class LivePlayerViewController: UIViewController {
     }
 }
 
-#if canImport(MobileVLCKit)
-extension LivePlayerViewController: VLCMediaPlayerDelegate {
+#if canImport(VLCKit)
+extension LivePlayerViewController {
     /// VLC 側の状態変化 (再生開始・停止・終了など) に、画面内のボタンと
     /// ロック画面の表示を追随させる。
-    func mediaPlayerStateChanged(_ aNotification: Notification) {
+    func handleVLCState(_ state: VLCMediaPlayerState, source: VLCMediaPlayer) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            // 送り主が今のプレイヤーでなければ無視する (録画側と同じ)。
-            // 作り直した直後に前のプレイヤーの遅れた知らせが届くと、
-            // 失敗表示の出し消しが今の再生のものとして扱われてずれるため。
-            if let sender = aNotification.object as? VLCMediaPlayer,
-               sender !== self.vlcPlayer {
-                return
-            }
+            guard source === self.vlcPlayer else { return }
+            self.pipController?.invalidatePlaybackState()
             // 開始に失敗したら、真っ黒のまま無言にせず、その旨を表示する
             // (録画側と同じ扱い。再生の仕組み自体は変えていない)。
             if self.vlcPlayer?.state == .error {
@@ -2811,6 +2888,9 @@ final class LiveFullscreenViewController: UIViewController {
     private let remoteButton = RippleButton()
     private let optionsRow = UIStackView()
     private let captionButton = RippleButton()
+    private let pipButton = RippleButton()
+    var pipAvailable: (() -> Bool)?
+    var onTogglePiP: (() -> Void)?
     var captionsEnabled: (() -> Bool)?
     var captionAvailable: (() -> Bool)?
     var onToggleCaptions: (() -> Void)?
@@ -2949,7 +3029,10 @@ final class LiveFullscreenViewController: UIViewController {
         }, for: .touchUpInside)
         fullscreen.addTarget(self, action: #selector(exitFullscreen), for: .touchUpInside)
         optionsRow.axis = .horizontal
-        for button in [captionButton, settings, fullscreen] { optionsRow.addArrangedSubview(button) }
+        styleVideoOverlayButton(pipButton, symbol: "pip.enter", title: "ピクチャ・イン・ピクチャ")
+        pipButton.addAction(UIAction { [weak self] _ in self?.onTogglePiP?() }, for: .touchUpInside)
+        refreshPiPControl()
+        for button in [captionButton, settings, pipButton, fullscreen] { optionsRow.addArrangedSubview(button) }
         optionsRow.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(optionsRow)
 
@@ -3018,6 +3101,8 @@ final class LiveFullscreenViewController: UIViewController {
         captionButton.alpha = captionButton.isEnabled ? (on ? 1 : 0.45) : 0.25
         captionButton.accessibilityValue = on ? "オン" : "オフ"
     }
+
+    func refreshPiPControl() { pipButton.isHidden = !(pipAvailable?() ?? false) }
 
     func resumeControlAutoHide() {
         updateCaptionControl()

@@ -6,7 +6,7 @@ import UIKit
 /// 読み込む (部品の置き場所にある実物から取り込んだもの)。
 ///
 /// 並べている部品と根拠:
-/// - MobileVLCKit: Podfile で入れている映像再生の部品 (LGPL 2.1)。
+/// - VLCKit: Podfile で入れている映像再生の部品 (LGPL 2.1)。
 /// - libaribcaption: 字幕の描画に使っている同梱の部品 (MIT)。
 ///   全文は同梱先にある LICENSE の実物。
 /// - Fluent UI System Icons: 画面のアイコン素材 (MIT)。
@@ -21,7 +21,7 @@ final class LicenseViewController: SettingsDetailViewController {
     }
 
     static let components: [Component] = [
-        Component(name: "MobileVLCKit",
+        Component(name: "VLCKit",
                   licenseName: "GNU Lesser General Public License 2.1",
                   resourceName: "MobileVLCKit"),
         Component(name: "libaribcaption",

@@ -6,6 +6,6 @@ platform :ios, '16.0'
 
 target 'KonomiTV-Viewer' do
   use_frameworks!
-  pod 'MobileVLCKit'
+  pod 'VLCKit', :podspec => 'https://raw.githubusercontent.com/videolan/vlckit/4.0.0-a26/Packaging/podspecs/VLCKit.podspec'
   pod 'libaribcaption', :path => 'Vendor/libaribcaption'
 end
