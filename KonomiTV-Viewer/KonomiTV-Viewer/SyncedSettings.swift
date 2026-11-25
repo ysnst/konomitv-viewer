@@ -1796,7 +1796,9 @@ final class SyncedSettingsStore {
     /// 対象の追加要素が、まだサーバー側に無い (追加の保存がまだ
     /// 届いていない) 場合も、最終的な並びの中で既存の要素より前に
     /// 置かれているものは、先に結果へ入れてから対象の枠を並べ
-    /// 替えて、意図どおりの位置に置く。サーバー側で削除された
+    /// 替えて、意図どおりの位置に置く。結果が分からない送信で
+    /// 消えたかもしれない要素を登録し直した場合も、明示的に
+    /// 戻す対象であれば同じ扱いにする。サーバー側で削除された
     /// 既存の要素は、対象に含まれていても結果には無いため、
     /// 復活することはない。
     /// サーバー側の値が配列の形でないときは、受け皿として利用者の
@@ -1859,13 +1861,22 @@ final class SyncedSettingsStore {
             addedTargetBeforeKept = desiredTargets[..<lastKeptIndex]
                 .contains { addedTargets.contains($0) }
         }
+        // 先に結果へ入れる対象は、この編集で追加された要素に加え、
+        // 結果が分からない送信で消えたかもしれない要素のうち、
+        // 明示的に戻す対象で並び替えの対象にも含まれるものも
+        // 含める。元の並びにあった要素は追加の対象から漏れるため、
+        // そのままでは並び替えが効かず、最後に末尾へ戻されて
+        // しまう。落とす対象になった要素は並び替えの対象から
+        // 除かれているため、ここには含まれない。
+        let preInsertTargets = addedTargets.union(
+            extraAdded.intersection(targetSet))
         if keptInBaseOrder != keptInDesiredOrder || forceDesiredOrder
             || !movedAddedPresent.isEmpty || addedTargetBeforeKept {
             // 並び替えの対象で、最新の並びにまだ無い追加要素を、
             // 対象の枠を並べ替える前に結果へ入れておく。入れる位置は
             // この後の並べ替えで決まるため、ここでは末尾に入れる。
             for value in desired
-            where addedTargets.contains(value)
+            where preInsertTargets.contains(value)
                 && !presentValues.contains(value) {
                 result.append(value)
             }
