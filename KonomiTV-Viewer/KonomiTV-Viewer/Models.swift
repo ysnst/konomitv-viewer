@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// 1件だけ読み解けなかった要素を、値なしとして受けるための包み。
@@ -48,6 +49,51 @@ struct ThumbnailTileInfo: Codable {
     let column_count: Int
     let row_count: Int
     let interval_sec: Double
+}
+
+extension ThumbnailTileInfo {
+    /// 寸法と間隔が、タイルの計算に使える範囲に収まっているか。
+    /// サーバーから来た値には極端な大きさや有限でない値があり得て、
+    /// そのまま計算に使うと整数への変換や掛け算で落ちるため、
+    /// 使う前に確かめる。
+    var isUsableForTiles: Bool {
+        total_tiles > 0 && column_count > 0
+            && tile_width > 0 && tile_height > 0
+            && interval_sec.isFinite && interval_sec > 0
+    }
+
+    /// 再生位置 (秒) に対応するタイル番号。間隔が極端に小さい値でも
+    /// 整数への変換で落ちないよう、割り算の結果を小さい数の段階で
+    /// 確かめ、上限は整数へ直す前にかける。位置が使えない値なら nil。
+    func tileIndex(at seconds: Double) -> Int? {
+        guard isUsableForTiles, seconds.isFinite, seconds >= 0 else { return nil }
+        let quotient = seconds / interval_sec
+        guard quotient.isFinite else { return nil }
+        // quotient がタイル数以上なら末尾のタイル。そうでなければ
+        // quotient はタイル数 (整数) より小さいため、安全に整数へ直せる。
+        if quotient >= Double(total_tiles) { return total_tiles - 1 }
+        return Int(quotient)
+    }
+
+    /// タイル番号から、タイル画像の中の切り出し範囲を返す。
+    /// 掛け算が整数の範囲を超える場合や、範囲が画像からはみ出す
+    /// 場合は nil (切り出しをしない)。
+    func cropRect(tileIndex: Int, imageWidth: Int, imageHeight: Int) -> CGRect? {
+        guard tileIndex >= 0, tileIndex < total_tiles,
+              column_count > 0, tile_width > 0, tile_height > 0
+        else { return nil }
+        let column = tileIndex % column_count
+        let row = tileIndex / column_count
+        let (x, xOverflow) = column.multipliedReportingOverflow(by: tile_width)
+        let (y, yOverflow) = row.multipliedReportingOverflow(by: tile_height)
+        guard !xOverflow, !yOverflow else { return nil }
+        let (right, rightOverflow) = x.addingReportingOverflow(tile_width)
+        let (bottom, bottomOverflow) = y.addingReportingOverflow(tile_height)
+        guard !rightOverflow, !bottomOverflow,
+              right <= imageWidth, bottom <= imageHeight
+        else { return nil }
+        return CGRect(x: x, y: y, width: tile_width, height: tile_height)
+    }
 }
 
 struct RecordedVideoInfo: Codable {

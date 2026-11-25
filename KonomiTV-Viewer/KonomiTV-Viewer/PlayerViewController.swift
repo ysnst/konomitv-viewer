@@ -3660,8 +3660,7 @@ final class PlayerViewController: UIViewController {
     /// ではプレビューの映像は出さず、時刻だけ出す。
     private var seekTileInfo: ThumbnailTileInfo? {
         guard let tile = program.recorded_video.thumbnail_info?.tile,
-              tile.total_tiles > 0, tile.column_count > 0,
-              tile.tile_width > 0, tile.tile_height > 0, tile.interval_sec > 0
+              tile.isUsableForTiles
         else { return nil }
         return tile
     }
@@ -3693,16 +3692,18 @@ final class PlayerViewController: UIViewController {
             seekPreviewImageView.isHidden = true
             return
         }
-        let index = min(Int(target / tile.interval_sec), tile.total_tiles - 1)
-        guard index >= 0 else { return }
+        // タイル番号は安全な計算で求める (間隔が極端に小さい値でも
+        // 整数への変換で落ちない)。位置が使えない値なら映像は出さない。
+        guard let index = tile.tileIndex(at: target) else {
+            seekPreviewImageView.image = nil
+            seekPreviewImageView.isHidden = true
+            return
+        }
         if index != seekPreviewTileIndex {
             seekPreviewTileIndex = index
-            let column = index % tile.column_count
-            let row = index / tile.column_count
-            let rect = CGRect(
-                x: column * tile.tile_width, y: row * tile.tile_height,
-                width: tile.tile_width, height: tile.tile_height)
-            if let cropped = sprite.cropping(to: rect) {
+            if let rect = tile.cropRect(
+                tileIndex: index, imageWidth: sprite.width, imageHeight: sprite.height),
+               let cropped = sprite.cropping(to: rect) {
                 seekPreviewImageView.image = UIImage(
                     cgImage: cropped, scale: spriteImage?.scale ?? 1, orientation: .up)
             } else {

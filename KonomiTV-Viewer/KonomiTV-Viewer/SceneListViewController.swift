@@ -31,12 +31,16 @@ final class SceneListViewController: UIViewController {
         self.program = program
         self.highlightSegments = highlightSegments
         // 場面の並びは Web 版と同じく、12場面程度になるようタイルを間引く。
-        if let tile = program.recorded_video.thumbnail_info?.tile, tile.total_tiles > 0 {
+        // 寸法や間隔が極端な値なら、計算で落ちないよう場面は作らない。
+        if let tile = program.recorded_video.thumbnail_info?.tile, tile.isUsableForTiles {
             let step = max(1, Int((Double(tile.total_tiles) / 12).rounded()))
             var index = 0
             while index < tile.total_tiles {
                 chapters.append((tileIndex: index, time: Double(index) * tile.interval_sec))
-                index += step
+                // 次の番号が整数の範囲を超える場合は、そこで打ち切る。
+                let (next, overflow) = index.addingReportingOverflow(step)
+                if overflow { break }
+                index = next
             }
         }
         super.init(nibName: nil, bundle: nil)
@@ -343,16 +347,14 @@ final class SceneListViewController: UIViewController {
     }
 
     /// タイル画像から場面1枚を切り出す。材料が無ければ nil。
+    /// 切り出し範囲は安全な計算で求める (寸法が極端な値でも
+    /// 掛け算で落ちず、画像からはみ出す場合は切り出さない)。
     private func chapterImage(tileIndex: Int) -> UIImage? {
         guard let sprite = spriteCGImage,
               let tile = program.recorded_video.thumbnail_info?.tile,
-              tile.column_count > 0, tile.tile_width > 0, tile.tile_height > 0
+              let rect = tile.cropRect(
+                tileIndex: tileIndex, imageWidth: sprite.width, imageHeight: sprite.height)
         else { return nil }
-        let column = tileIndex % tile.column_count
-        let row = tileIndex / tile.column_count
-        let rect = CGRect(
-            x: column * tile.tile_width, y: row * tile.tile_height,
-            width: tile.tile_width, height: tile.tile_height)
         guard let cropped = sprite.cropping(to: rect) else { return nil }
         return UIImage(cgImage: cropped, scale: 1, orientation: .up)
     }
@@ -378,20 +380,18 @@ final class SceneListViewController: UIViewController {
 
     /// しおりを削除する (成功・失敗によらずサーバーの状態に合わせ直すため、
     /// 削除後は一覧を取り直す)。
+    /// 取り直しは共通の loadBookmarks を呼び、その開始時に世代を進める。
+    /// 複数の削除が同時に進み、完了の順序が入れ替わっても、最後に
+    /// 完了した削除の取り直しが最新の世代になり、その結果 (すべて
+    /// 消えた状態) が反映される。削除開始時の世代で取り直すと、
+    /// 先に終わった削除の取り直しだけが採用され、後に終わった削除の
+    /// 結果が破棄されて、消したしおりが表示に残ってしまう。
     private func deleteBookmark(id: String) {
         let videoID = program.id
-        bookmarkFetchGeneration += 1
-        let generation = bookmarkFetchGeneration
         Task { [weak self] in
             guard let self else { return }
             let deleted = await APIClient.shared.deleteBookmark(videoID: videoID, bookmarkID: id)
-            let fetched = await APIClient.shared.fetchBookmarks(videoID: videoID)
-            // 取得の間に新しい取得が始まっていたら、この結果は古い
-            // ため反映しない (loadBookmarks と同じ)。
-            if generation == self.bookmarkFetchGeneration {
-                self.bookmarks = fetched
-                self.rebuildContent()
-            }
+            self.loadBookmarks()
             if !deleted {
                 // 失敗が分からないと「押したのに消えない」ままになるため知らせる。
                 let alert = UIAlertController(
