@@ -28,9 +28,32 @@ AVPlayer経路は既存AVPlayerLayerから標準PiPへ接続可能。ただし�
 
 4系でも映像のdisplayViewとVLCのspuViewは分離される。ViewerのARIB字幕と実況も別UIViewであり、映像layerのみのPiPへ自動では入らない。合成は別描画経路と性能検証が必要。基本HEVC PiPを先に検証し、通常/全画面の表示設定と同期を保持する。
 
+### フェーズEの判断（0.16実機確認後）
+
+ユーザーはHEVC PiPの開始・継続・復帰・履歴同期を確認した一方、字幕・実況がPiPに入らないことを確認した。今回もVLCKit4.0.0a26を維持し、映像出力を変更しない。字幕と実況を個別に調査した結果、どちらも現公開APIだけで既存のPiPバッファへ安全に合成する入口を確認できなかった。
+
+実リビジョンの[VLCSampleBufferDisplay.m](https://github.com/videolan/vlc/blob/f7caf7922/modules/video_output/apple/VLCSampleBufferDisplay.m)では、1182〜1247行がCVPXからCVPixelBufferを取得し、CMSampleBufferとしてdisplayLayerへenqueueする。942〜950行がPiPへ渡すのはこのdisplayLayerだけ。983〜1002行で字幕spuViewを別の兄弟Viewとして作り、1375〜1403行のRenderSubpictureでそこへ描画する。VLC内部字幕へ切り替えるだけでも、PiPに渡る映像へは合成されない。
+
+Viewerの字幕はAribCaption.swiftのUIImageView、実況はJikkyoCommentOverlay.swiftのUILabelとCADisplayLinkによる別View描画である。H.264もAVPlayerLayerの外側にあるこれらのViewはPiPへ入らない。[VLCDrawable.h](https://github.com/videolan/vlckit/blob/4.0.0-a26/Headers/Public/Video/VLCDrawable.h)の公開契約はaddSubview/boundsとPiPの開始・停止・状態通知で、CVPX加工や字幕画像入力を提供しない。[Appleの動画用ContentSource](https://developer.apple.com/documentation/avkit/avpictureinpicturecontroller/contentsource-swift.class)もAVPlayerLayerまたはAVSampleBufferDisplayLayerを入力とする。通常UIViewを追加するAPIではない。
+
+| 方式 | 判断と理由 |
+| --- | --- |
+| 既存字幕/実況ViewをPiPへ渡す | 入力バッファに含まれず、公開追加APIなし |
+| VLC内部字幕トラックへ切替 | 現出力もspuView分離。ARIB互換性にも影響し解決しない |
+| CPUメモリコールバック | HWデコード停止または低速コピー・色変換・CPU字幕合成の制約があるため不採用 |
+| GPU出力コールバック | 当該リビジョンのengineはOpenGL/GLES2/D3D/Androidで、Metal/CVPX加工フックではない。標準Apple出力の置換が必要 |
+| CVPX→Metal/Core Image→新バッファ | 将来候補。ただしCVPX取得フックがなく、独自出力プラグイン、PTS・色空間/HDR・flush・seek・復帰を実装する大きな変更が必要 |
+| snapshotの連続合成 | PTS不明、ファイルI/Oと画像デコード/CPU合成を毎フレーム繰り返すため不採用 |
+
+CPU/GPUコールバックの根拠は実リビジョンの[libvlc_media_player.h](https://github.com/videolan/vlc/blob/f7caf7922/include/vlc/libvlc_media_player.h)958〜971行、1233〜1259行、1377〜1406行。静止画キャプチャから流用できるのは字幕画像や配置比率までで、正確なPTS、連続フレーム供給、背景合成処理は流用できない。
+
+Metalが一律に背景実行不可能とはしない。[通常の背景GPU制約](https://developer.apple.com/documentation/metal/preparing-your-metal-app-to-run-in-the-background)とは別に、[BGContinuedProcessingTask向けGPU entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.background-tasks.continued-processing.gpu)はあるが、端末条件とホストの署名権限が必要で、メディアPiPの権限と同じではない。利用中LiveContainerの版・署名は不明。ゲスト設定だけで利用可能とは判断できず、CADisplayLinkも背景実況更新を保証しない。
+
+字幕・実況のPiP合成は未実装。HEVC基本PiPは0.16でユーザー確認済み、生放送・H.264 PiPは実機未確認のまま既存コードを維持する。出力・依存変更なしのため、新しい合成負荷やHW経路変更は加えない。CPU/GPU・メモリ・発熱・電力の実測値は不明。安全な実装差分がないフェーズEの別IPAは生成せず、フェーズDのIPAと本調査を分けて保存する。
+
 ## 不採用方式
 
-- libvlc_video_set_callbacksでメモリ映像出力: [公式API](https://videolan.videolan.me/vlc/master/group__libvlc__media__player.html)がHW無効化、低速コピー/変換・CPU字幕合成の負担を明記。既存HEVC性能維持の要件に合わない。
+- libvlc_video_set_callbacksでメモリ映像出力: [公式API](https://videolan.videolan.me/vlc/master/group__libvlc__media__player.html)がHW無効化または低速コピー/変換・CPU字幕合成の負担を明記。既存HEVC性能維持の要件に合わない。
 - 連続スナップショット、画面スクリーンショット動画化: 正規映像出力ではなく同期/画質/負荷に問題。
 - HEVC→H.264再エンコード、疑似フローティングウィンドウ、AVPlayerのみ: ユーザー要件を満たさない。
 
