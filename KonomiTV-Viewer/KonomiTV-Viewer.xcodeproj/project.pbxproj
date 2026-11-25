@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A10000000000000000000012 /* CaptureSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000011 /* CaptureSettingsViewController.swift */; };
+		A10000000000000000000010 /* CaptureMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000F /* CaptureMetadata.swift */; };
 		A1000000000000000000000C /* NativeVideoSnapshot.m in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000B /* NativeVideoSnapshot.m */; };
 		A1000000000000000000000A /* VideoCaptureController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000009 /* VideoCaptureController.swift */; };
 		A10000000000000000000008 /* PlaybackPiPController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000007 /* PlaybackPiPController.swift */; };
@@ -81,6 +83,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		A10000000000000000000011 /* CaptureSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureSettingsViewController.swift; sourceTree = "<group>"; };
+		A1000000000000000000000F /* CaptureMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureMetadata.swift; sourceTree = "<group>"; };
 		A1000000000000000000000E /* Viewer-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Viewer-Bridging-Header.h"; sourceTree = "<group>"; };
 		A1000000000000000000000D /* NativeVideoSnapshot.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "NativeVideoSnapshot.h"; sourceTree = "<group>"; };
 		A1000000000000000000000B /* NativeVideoSnapshot.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "NativeVideoSnapshot.m"; sourceTree = "<group>"; };
@@ -215,6 +219,8 @@
 				A1000000000000000000000D /* NativeVideoSnapshot.h */,
 				A1000000000000000000000B /* NativeVideoSnapshot.m */,
 				A10000000000000000000009 /* VideoCaptureController.swift */,
+				A10000000000000000000011 /* CaptureSettingsViewController.swift */,
+				A1000000000000000000000F /* CaptureMetadata.swift */,
 				200000000000000000000016 /* PlayerViewController.swift */,
 				200000000000000000000017 /* LiveListViewController.swift */,
 				200000000000000000000018 /* LivePlayerViewController.swift */,
@@ -363,6 +369,8 @@
 				A10000000000000000000008 /* PlaybackPiPController.swift in Sources */,
 				A1000000000000000000000C /* NativeVideoSnapshot.m in Sources */,
 				A1000000000000000000000A /* VideoCaptureController.swift in Sources */,
+				A10000000000000000000012 /* CaptureSettingsViewController.swift in Sources */,
+				A10000000000000000000010 /* CaptureMetadata.swift in Sources */,
 				200000000000000000000036 /* PlayerViewController.swift in Sources */,
 				200000000000000000000037 /* LiveListViewController.swift in Sources */,
 				200000000000000000000038 /* LivePlayerViewController.swift in Sources */,

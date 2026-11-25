@@ -43,6 +43,14 @@ jobs:
             scripts/HistoryStoreTests.swift -o artifacts/tests/history-tests
           artifacts/tests/history-tests
 
+      - name: Test capture JPEG metadata compatibility
+        run: |
+          mkdir -p artifacts/tests artifacts/ipa
+          swiftc -parse-as-library \
+            KonomiTV-Viewer/KonomiTV-Viewer/CaptureMetadata.swift \
+            scripts/CaptureMetadataTests.swift -o artifacts/tests/capture-metadata-tests
+          artifacts/tests/capture-metadata-tests artifacts/ipa/capture-metadata-test.jpg
+
       # PR ではマージコミットをビルドするため、実際の checkout の SHA を記録する。
       - name: Compute version and source commit
         run: |

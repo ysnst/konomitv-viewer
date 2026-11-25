@@ -134,6 +134,24 @@ final class APIClient {
         }
     }
 
+    /// 本家の既存キャプチャAPIへ送る。公開APIなのでBearerで既存Basic認証を置き換えない。
+    /// multipart構築は背景処理へ分け、動画再生とUIを止めない。旧版の204も成功に含める。
+    func uploadCapture(jpeg: Data, fileName: String) async throws {
+        var request = try request(forPath: "/api/captures", method: "POST")
+        request.timeoutInterval = 60
+        let boundary = "KonomiTVCapture-\(UUID().uuidString)"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        let body = await Task.detached(priority: .userInitiated) {
+            var data = Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"image\"; filename=\"\(fileName)\"\r\nContent-Type: image/jpeg\r\n\r\n".utf8)
+            data.append(jpeg)
+            data.append(Data("\r\n--\(boundary)--\r\n".utf8))
+            return data
+        }.value
+        try Task.checkCancellation()
+        let (_, response) = try await session.upload(for: request, from: body)
+        try check(response)
+    }
+
     // MARK: - 録画一覧
 
     /// 30件ずつ。並び順はサーバー側の指定 (order = "desc" が新しい順、"asc" が古い順)。

@@ -51,11 +51,11 @@ final class NoticeLabel: UILabel {
 
 /// シークバーの色を Web 版のプレイヤーに合わせる。
 /// 再生済みの部分はテーマのピンク (DPlayer の theme = primary #E64F97)、
-/// 残りは白の薄い色、つまみは白。
+/// 残りは白20%、つまみも本家と同じアクセント色。
 func stylePlayerSeekSlider(_ slider: UISlider) {
     slider.minimumTrackTintColor = AppPalette.accent
     slider.maximumTrackTintColor = UIColor.white.withAlphaComponent(0.2)
-    slider.thumbTintColor = .white
+    slider.thumbTintColor = AppPalette.accent
 }
 
 /// Web 版パネルの小さな操作ボタン (program-info__button) の形にボタンを整える。
@@ -602,6 +602,7 @@ final class PlayerViewController: UIViewController {
         setupHeaderClock()
         captureController.onStateChanged = { [weak self] in self?.updateCaptureControls() }
         captureController.onError = { [weak self] message in self?.showCaptureError(message) }
+        captureController.onResult = { [weak self] message in self?.showCaptureError(message) }
         // 情報欄のタブの既定 (設定の「全般」の値) に、表示側も合わせる。
         applyInfoTab(selectedInfoTab)
         // コメントの重ね物に再生位置の読み取り口を渡し、見張りを始める。
@@ -4013,9 +4014,18 @@ final class PlayerViewController: UIViewController {
         let item = player?.currentItem
         let event = playbackEndEventID
         let context = WatchedHistoryStore.Context.current
+        let capturedAt = Date()
+        // PWAと同じく、動画ファイルの秒ではなく放送番組開始からの秒をEXIFへ記録する。
+        let recordingOffset = program.startDate.flatMap { start in
+            program.recorded_video.recordingStartDate.map { start.timeIntervalSince($0) }
+        } ?? program.recordingStartMargin
+        let metadata = CaptureMetadata(capturedAt: capturedAt, playbackPosition: currentPosition() - recordingOffset,
+            networkID: program.network_id, serviceID: program.service_id, eventID: program.event_id,
+            title: program.title, description: program.description, startTime: program.start_time,
+            endTime: program.end_time, duration: program.duration)
         captureController.capture(vlcPlayer: engine, playerItem: item,
             caption: SettingsStore.shared.showCaptions ? captionEngine.currentImage : nil,
-            comments: comments ? commentOverlay : nil, presenter: presenter,
+            comments: comments ? commentOverlay : nil, metadata: metadata, capturedAt: capturedAt, presenter: presenter,
             isCurrent: { [weak self] in
                 guard let self else { return false }
                 return self.pipController?.isActive != true && self.pipController?.isPending != true

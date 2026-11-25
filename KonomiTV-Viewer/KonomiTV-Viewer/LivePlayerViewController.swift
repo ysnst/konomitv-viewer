@@ -229,6 +229,7 @@ final class LivePlayerViewController: UIViewController {
         PlaybackPiPController.stopCurrentPlayback()
         captureController.onStateChanged = { [weak self] in self?.updateCaptureControls() }
         captureController.onError = { [weak self] message in self?.showCaptureError(message) }
+        captureController.onResult = { [weak self] message in self?.showCaptureError(message) }
         view.backgroundColor = AppPalette.background
         // 生放送の文字スーパーは、字幕の設定のテレビ側の項目に従う
         // (Web 版の生放送の扱いと同じ)。
@@ -2620,9 +2621,18 @@ final class LivePlayerViewController: UIViewController {
         guard canCaptureVideo, !comments || SettingsStore.shared.showComments else { return }
         let engine = vlcPlayer
         let context = WatchedHistoryStore.Context.current
+        let capturedAt = Date()
+        let program = channel.program_present
+        let fallbackTime = ISO8601DateFormatter().string(from: capturedAt)
+        let metadata = CaptureMetadata(capturedAt: capturedAt,
+            playbackPosition: program?.startDate.map { capturedAt.timeIntervalSince($0) } ?? 0,
+            networkID: channel.network_id, serviceID: channel.service_id, eventID: program?.event_id,
+            title: program?.title ?? channel.name, description: program?.description,
+            startTime: program?.start_time ?? fallbackTime, endTime: program?.end_time ?? fallbackTime,
+            duration: program?.duration ?? 0)
         captureController.capture(vlcPlayer: engine, playerItem: nil,
             caption: SettingsStore.shared.showCaptions ? captionEngine.currentImage : nil,
-            comments: comments ? commentOverlay : nil, presenter: presenter,
+            comments: comments ? commentOverlay : nil, metadata: metadata, capturedAt: capturedAt, presenter: presenter,
             isCurrent: { [weak self] in
                 guard let self else { return false }
                 return self.pipController?.isActive != true && self.pipController?.isPending != true

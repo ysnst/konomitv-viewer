@@ -1,7 +1,11 @@
 @preconcurrency import AVFoundation
 import CoreImage
+@preconcurrency import Photos
 import UIKit
 @preconcurrency import VLCKit
+
+private enum VideoCaptureFailure: Error { case frameUnavailable, photosDenied }
+private struct EncodedCapture: Sendable { let fileName: String; let jpeg: Data }
 
 /// 映像フレームと字幕・実況だけを合成する。画面全体や操作 UI はキャプチャしない。
 /// VLC snapshot に PTS はないため、字幕・実況は取得要求時点の近似である。
@@ -9,11 +13,15 @@ import UIKit
 final class VideoCaptureController {
     private var captureTask: Task<Void, Never>?
     private var generation = 0
+    // 保存開始後はPhotosのトランザクションを取り消せない。完了まで次の撮影を受け付けない。
+    private var isSaving = false
     private(set) var isCapturing = false
     var onStateChanged: (() -> Void)?
     var onError: ((String) -> Void)?
+    var onResult: ((String) -> Void)?
 
     func cancel() {
+        guard !isSaving else { return }
         generation += 1
         captureTask?.cancel()
         captureTask = nil
@@ -22,7 +30,7 @@ final class VideoCaptureController {
     }
 
     func capture(vlcPlayer: VLCMediaPlayer?, playerItem: AVPlayerItem?, caption: UIImage?,
-                 comments: UIView?, presenter: UIViewController, isCurrent: @escaping () -> Bool) {
+                 comments: UIView?, metadata: CaptureMetadata, capturedAt: Date, presenter: UIViewController, isCurrent: @escaping () -> Bool) {
         guard !isCapturing, isCurrent(), presenter.viewIfLoaded?.window != nil,
               presenter.presentedViewController == nil else { return }
         guard vlcPlayer != nil || playerItem != nil else {
@@ -31,6 +39,9 @@ final class VideoCaptureController {
         }
         generation += 1
         let token = generation
+        let settings = SyncedSettingsStore.shared.current
+        let captionMode = settings.captureCaptionMode
+        let destinationContext = WatchedHistoryStore.Context.current
         // 文字の現在位置だけを控える。元解像度への合成や画像変換は下の非同期処理へ渡す。
         let commentImage = comments.flatMap { view -> UIImage? in
             guard !view.isHidden, view.bounds.width > 0, view.bounds.height > 0 else { return nil }
@@ -52,6 +63,7 @@ final class VideoCaptureController {
                 if let temporaryDirectory { try? FileManager.default.removeItem(at: temporaryDirectory) }
                 // cancel→次の要求の順で進んでも、古い処理が新しい状態を消さない。
                 if self.generation == token {
+                    self.isSaving = false
                     self.captureTask = nil
                     self.isCapturing = false
                     self.onStateChanged?()
@@ -69,7 +81,7 @@ final class VideoCaptureController {
                     let file = directory.appendingPathComponent("frame.png")
                     // Objective-C の境界で NSException を捕捉する。失敗で通常再生を停止しない。
                     guard NativeVideoSnapshot.save(player: vlcPlayer, path: file.path) else {
-                        throw CaptureFailure.frameUnavailable
+                        throw VideoCaptureFailure.frameUnavailable
                     }
                     var captured: UIImage?
                     for _ in 0..<40 {
@@ -81,7 +93,7 @@ final class VideoCaptureController {
                         if captured != nil { break }
                         try await Task.sleep(nanoseconds: 50_000_000)
                     }
-                    guard let captured else { throw CaptureFailure.frameUnavailable }
+                    guard let captured else { throw VideoCaptureFailure.frameUnavailable }
                     frame = captured
                 } else if let playerItem {
                     let videoOutput = AVPlayerItemVideoOutput(pixelBufferAttributes: nil)
@@ -106,28 +118,79 @@ final class VideoCaptureController {
                         if captured != nil { break }
                         try await Task.sleep(nanoseconds: 50_000_000)
                     }
-                    guard let captured else { throw CaptureFailure.frameUnavailable }
+                    guard let captured else { throw VideoCaptureFailure.frameUnavailable }
                     frame = captured
-                } else { throw CaptureFailure.frameUnavailable }
+                } else { throw VideoCaptureFailure.frameUnavailable }
 
+                // フレーム取得後にAV出力を残す理由はない。アップロード待ちの間の余分な出力を止める。
+                if let activeOutput = output {
+                    playerItem?.remove(activeOutput)
+                    output = nil
+                }
                 try Task.checkCancellation()
                 guard self.generation == token, isCurrent() else { return }
-                let images = await Task.detached(priority: .userInitiated) {
-                    autoreleasepool { Self.compose(frame: frame, caption: caption, comments: commentImage) }
+                let software = "KonomiTV Viewer version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown")"
+                let captures = try await Task.detached(priority: .userInitiated) {
+                    try autoreleasepool { () -> [EncodedCapture] in
+                        let images = Self.compose(frame: frame, caption: caption, comments: commentImage, captionMode: captionMode)
+                        let formatter = DateFormatter()
+                        formatter.locale = Locale(identifier: "en_US_POSIX")
+                        formatter.dateFormat = "yyyyMMdd-HHmmss"
+                        let baseName = "Capture_" + formatter.string(from: capturedAt)
+                        return try images.map { image, hasCaption in
+                            guard let jpeg = image.jpegData(compressionQuality: 0.99) else { throw VideoCaptureFailure.frameUnavailable }
+                            var information = metadata
+                            information.is_caption_composited = hasCaption
+                            information.is_comment_composited = commentImage != nil
+                            return EncodedCapture(fileName: baseName + (hasCaption ? "_caption" : "") + ".jpg",
+                                jpeg: try CaptureJPEG.encode(jpeg, metadata: information, capturedAt: capturedAt, software: software))
+                        }
+                    }
                 }.value
                 try Task.checkCancellation()
                 guard self.generation == token, isCurrent(), let presenter,
                       presenter.viewIfLoaded?.window != nil, !presenter.isBeingDismissed,
                       presenter.presentedViewController == nil else { return }
-                guard !images.isEmpty else { throw CaptureFailure.frameUnavailable }
-                // UIImage を渡し、標準の共有と「画像を保存」を使う。写真権限は OS/ホストが管理する。
-                let activity = UIActivityViewController(activityItems: images, applicationActivities: nil)
-                if let popover = activity.popoverPresentationController {
-                    popover.sourceView = presenter.view
-                    popover.sourceRect = CGRect(x: presenter.view.bounds.midX, y: presenter.view.bounds.midY, width: 1, height: 1)
-                    popover.permittedArrowDirections = []
+                guard !captures.isEmpty else { throw VideoCaptureFailure.frameUnavailable }
+                // 元フレームはJPEGへ変換済み。一時画像をアップロード完了まで残さない。
+                if let directory = temporaryDirectory {
+                    try? FileManager.default.removeItem(at: directory)
+                    temporaryDirectory = nil
                 }
-                presenter.present(activity, animated: true)
+                self.isSaving = true
+                // サーバーと写真は独立した保存先。一方の失敗を他方への無断フォールバックにしない。
+                // サーバーのみでは写真API自体を呼ばないため、写真権限も要求しない。
+                var results: [String] = []
+                if settings.captureSaveMode != .browser {
+                    var uploaded = 0
+                    var reason = ""
+                    for capture in captures {
+                        do {
+                            guard destinationContext == WatchedHistoryStore.Context.current else { throw APIError.staleSession }
+                            try await APIClient.shared.uploadCapture(jpeg: capture.jpeg, fileName: capture.fileName)
+                            uploaded += 1
+                        } catch APIError.badStatus(let status) {
+                            reason = " (HTTP \(status))"
+                        } catch {
+                            reason = " (接続先・認証設定と通信状態を確認してください)"
+                        }
+                    }
+                    results.append("サーバー: \(uploaded)/\(captures.count)枚保存" + (uploaded < captures.count ? "・失敗あり\(reason)" : ""))
+                }
+                if settings.captureSaveMode != .uploadServer {
+                    do {
+                        try await Self.saveToPhotos(captures)
+                        results.append("写真ライブラリ: \(captures.count)枚保存")
+                    } catch {
+                        results.append("写真ライブラリ: 保存失敗。写真の追加権限と空き容量を確認してください。")
+                    }
+                }
+                // 保存済みの事実を、途中のシークなどを理由に取消扱いしない。
+                self.onResult?(results.joined(separator: "\n"))
+
+            } catch CaptureJPEG.Failure.metadataTooLarge {
+                guard self.generation == token, isCurrent() else { return }
+                self.onError?("番組情報がJPEGのメタデータ上限を超えたため、保存できませんでした。")
             } catch is CancellationError {
                 // 画面・画質・シークの変更による取り消しを通信失敗として表示しない。
             } catch {
@@ -137,9 +200,20 @@ final class VideoCaptureController {
         }
     }
 
-    private enum CaptureFailure: Error { case frameUnavailable }
+    private nonisolated static func saveToPhotos(_ captures: [EncodedCapture]) async throws {
+        let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+        guard status == .authorized || status == .limited else { throw VideoCaptureFailure.photosDenied }
+        try await PHPhotoLibrary.shared().performChanges {
+            for capture in captures {
+                let request = PHAssetCreationRequest.forAsset()
+                let options = PHAssetResourceCreationOptions()
+                options.originalFilename = capture.fileName
+                request.addResource(with: .photo, data: capture.jpeg, options: options)
+            }
+        }
+    }
 
-    private nonisolated static func compose(frame: UIImage, caption: UIImage?, comments: UIImage?) -> [UIImage] {
+    private nonisolated static func compose(frame: UIImage, caption: UIImage?, comments: UIImage?, captionMode: CaptureCaptionMode) -> [(UIImage, Bool)] {
         guard let pixels = frame.cgImage, pixels.width > 0, pixels.height > 0 else { return [] }
         let size = CGSize(width: pixels.width, height: pixels.height)
         let destination = CGRect(origin: .zero, size: size)
@@ -168,9 +242,12 @@ final class VideoCaptureController {
                 if let commentPixels { UIImage(cgImage: commentPixels).draw(in: destination) }
             }
         }
-        let withoutCaption = image(includeCaption: false)
-        // 本家の既定 Both と同様、表示中の字幕がある場合だけ字幕なし/ありの二枚を共有する。
-        if visibleCaption != nil { return [withoutCaption, image(includeCaption: true)] }
-        return [withoutCaption]
+        // 本家と同じ字幕モード。字幕が表示されていない場合は重複した二枚を作らない。
+        guard visibleCaption != nil else { return [(image(includeCaption: false), false)] }
+        switch captionMode {
+        case .videoOnly: return [(image(includeCaption: false), false)]
+        case .compositingCaption: return [(image(includeCaption: true), true)]
+        case .both: return [(image(includeCaption: false), false), (image(includeCaption: true), true)]
+        }
     }
 }

@@ -416,6 +416,8 @@ struct LiveProgram: Codable {
     let end_time: String
     /// 番組の長さ (秒)。Web 版の番組情報 (IProgram) にある項目。
     let duration: Double?
+    /// キャプチャの番組対応付けに使う。古いサーバーや番組情報なしでは未取得を許容する。
+    let event_id: Int?
 
     var startDate: Date? { DateParser.parse(start_time) }
     var endDate: Date? { DateParser.parse(end_time) }

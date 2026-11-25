@@ -7,7 +7,7 @@ import UIKit
 /// 分類は Web 版の設定の並びに合わせた「全般」「画質」「字幕」
 /// 「データ放送」「アカウント」「ニコニコ実況」と、アプリ専用の
 /// 「このアプリの設定」。
-/// Web 版にある「キャプチャ」「Twitter / Bluesky 連携」「サーバー設定」
+/// Web 版にある「Twitter / Bluesky 連携」「サーバー設定」
 /// は、アプリに土台が無い (サーバー設定は出さない決まり) ため置いていない。
 /// 見た目は他の設定画面と同じ: 上部に高さ 60px・地が
 /// background-lighten-1 の見出し帯、入口ボタンはマイページと同じ
@@ -104,6 +104,8 @@ final class SettingsCategoryViewController: UIViewController {
             iconName: "", fallbackSystemName: "text.bubble",
             title: "ニコニコ実況")
         jikkyoButton.addTarget(self, action: #selector(openJikkyoSettings), for: .touchUpInside)
+        let captureButton = makeEntryButton(iconName: "", fallbackSystemName: "camera", title: "キャプチャ")
+        captureButton.addTarget(self, action: #selector(openCaptureSettings), for: .touchUpInside)
         let appSettingsButton = makeEntryButton(
             iconName: "ic_fluent_settings_20_regular", fallbackSystemName: "gearshape",
             title: "このアプリの設定")
@@ -116,6 +118,7 @@ final class SettingsCategoryViewController: UIViewController {
             dataBroadcastingButton,
             accountButton,
             jikkyoButton,
+            captureButton,
             appSettingsButton,
         ])
         stack.axis = .vertical
@@ -188,6 +191,10 @@ final class SettingsCategoryViewController: UIViewController {
     @objc private func openJikkyoSettings() {
         navigationController?.pushViewController(
             JikkyoSettingsViewController(), animated: true)
+    }
+
+    @objc private func openCaptureSettings() {
+        navigationController?.pushViewController(CaptureSettingsViewController(), animated: true)
     }
 
     @objc private func openAppSettings() {

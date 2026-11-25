@@ -13,6 +13,9 @@ extension Notification.Name {
 /// サーバー側の値が正になり、入っていないときは端末内の値を使う
 /// (番組表の表示設定の TimeTableDisplaySettings と同じ考え方)。
 struct SyncedClientSettings: Equatable {
+    /// 本家と同じキー・値で同期するキャプチャ設定。
+    var captureSaveMode: CaptureSaveMode
+    var captureCaptionMode: CaptureCaptionMode
     // 字幕
     /// 字幕のフォント (Web 版の caption_font)。値の名前は Web 版のまま。
     var captionFont: String
@@ -75,6 +78,8 @@ struct SyncedClientSettings: Equatable {
 
     /// Web 版の既定値。
     static let defaults = SyncedClientSettings(
+        captureSaveMode: .uploadServer,
+        captureCaptionMode: .both,
         captionFont: "Windows TV MaruGothic",
         alwaysBorderCaptionText: true,
         specifyCaptionOpacity: false,
@@ -210,6 +215,8 @@ final class SyncedSettingsStore {
 
     /// 端末内の控えのキー名 (SettingsStore 側の保存名と一致させる)。
     private enum LocalKey {
+        static let captureSaveMode = "viewer_capture_save_mode"
+        static let captureCaptionMode = "viewer_capture_caption_mode"
         static let captionFont = "viewer_caption_font"
         static let alwaysBorderCaptionText = "viewer_always_border_caption_text"
         static let specifyCaptionOpacity = "viewer_specify_caption_opacity"
@@ -938,6 +945,8 @@ final class SyncedSettingsStore {
         from settings: SyncedClientSettings
     ) -> [String: Any] {
         [
+            "capture_save_mode": settings.captureSaveMode.rawValue,
+            "capture_caption_mode": settings.captureCaptionMode.rawValue,
             "caption_font": settings.captionFont,
             "always_border_caption_text": settings.alwaysBorderCaptionText,
             "specify_caption_opacity": settings.specifyCaptionOpacity,
@@ -1122,6 +1131,12 @@ final class SyncedSettingsStore {
     private static func loadFromLocal() -> SyncedClientSettings {
         let store = SettingsStore.shared
         var result = SyncedClientSettings.defaults
+        if let raw = store.syncedString(forKey: LocalKey.captureSaveMode), let value = CaptureSaveMode(rawValue: raw) {
+            result.captureSaveMode = value
+        }
+        if let raw = store.syncedString(forKey: LocalKey.captureCaptionMode), let value = CaptureCaptionMode(rawValue: raw) {
+            result.captureCaptionMode = value
+        }
         if let value = store.syncedString(forKey: LocalKey.captionFont),
            SyncedClientSettings.captionFontOptions.contains(where: { $0.value == value }) {
             result.captionFont = value
@@ -1200,6 +1215,8 @@ final class SyncedSettingsStore {
     /// 端末内の控えへ書く。
     private func saveToLocal(_ settings: SyncedClientSettings) {
         let store = SettingsStore.shared
+        store.setSyncedString(settings.captureSaveMode.rawValue, forKey: LocalKey.captureSaveMode)
+        store.setSyncedString(settings.captureCaptionMode.rawValue, forKey: LocalKey.captureCaptionMode)
         store.setSyncedString(settings.captionFont, forKey: LocalKey.captionFont)
         store.setSyncedBool(settings.alwaysBorderCaptionText, forKey: LocalKey.alwaysBorderCaptionText)
         store.setSyncedBool(settings.specifyCaptionOpacity, forKey: LocalKey.specifyCaptionOpacity)
@@ -1345,6 +1362,8 @@ final class SyncedSettingsStore {
         base: SyncedClientSettings, desired: SyncedClientSettings
     ) -> [String] {
         var keys: [String] = []
+        if base.captureSaveMode != desired.captureSaveMode { keys.append("capture_save_mode") }
+        if base.captureCaptionMode != desired.captureCaptionMode { keys.append("capture_caption_mode") }
         if base.captionFont != desired.captionFont { keys.append("caption_font") }
         if base.alwaysBorderCaptionText != desired.alwaysBorderCaptionText {
             keys.append("always_border_caption_text")
@@ -1440,6 +1459,16 @@ final class SyncedSettingsStore {
         pinnedOrderIntent: [String],
         to clientSettings: inout [String: Any]
     ) {
+        if base.captureSaveMode != desired.captureSaveMode
+            || (uncertainKeys.contains("capture_save_mode")
+                && !jsonEquals(clientSettings["capture_save_mode"], desired.captureSaveMode.rawValue)) {
+            clientSettings["capture_save_mode"] = desired.captureSaveMode.rawValue
+        }
+        if base.captureCaptionMode != desired.captureCaptionMode
+            || (uncertainKeys.contains("capture_caption_mode")
+                && !jsonEquals(clientSettings["capture_caption_mode"], desired.captureCaptionMode.rawValue)) {
+            clientSettings["capture_caption_mode"] = desired.captureCaptionMode.rawValue
+        }
         if base.captionFont != desired.captionFont
             || (uncertainKeys.contains("caption_font")
                 && !jsonEquals(clientSettings["caption_font"], desired.captionFont)) {
@@ -1938,6 +1967,12 @@ final class SyncedSettingsStore {
         fallback: SyncedClientSettings
     ) -> SyncedClientSettings {
         var result = fallback
+        if let raw = clientSettings["capture_save_mode"] as? String, let value = CaptureSaveMode(rawValue: raw) {
+            result.captureSaveMode = value
+        }
+        if let raw = clientSettings["capture_caption_mode"] as? String, let value = CaptureCaptionMode(rawValue: raw) {
+            result.captureCaptionMode = value
+        }
         if let value = clientSettings["caption_font"] as? String,
            SyncedClientSettings.captionFontOptions.contains(where: { $0.value == value }) {
             result.captionFont = value
