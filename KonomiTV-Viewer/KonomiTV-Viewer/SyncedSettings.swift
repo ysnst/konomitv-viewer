@@ -1686,7 +1686,9 @@ final class SyncedSettingsStore {
     /// 削除して登録し直した要素 (reRegisteredCreatedAt に鍵がある
     /// 要素) は、新しい登録として扱い、最新の値に残っている要素の
     /// 登録した時刻だけを新しい値へ差し替える (他の項目や、アプリの
-    /// 知らない項目はそのまま残す)。
+    /// 知らない項目はそのまま残す)。最新の値に残っていない場合も、
+    /// 再登録は利用者の明示的な操作なので、最終的な意図の要素で
+    /// 復元する (他の端末の削除より再登録を優先する仕様)。
     private static func mergedMylistEntries(
         latest: Any?, base: [MylistEntry], desired: [MylistEntry],
         extraRemovedKeys: Set<String> = [], extraAddedKeys: Set<String> = [],
@@ -1722,9 +1724,17 @@ final class SyncedSettingsStore {
         // キーワードと同じく、結果が分からない送信で消えたかも
         // しれない要素 (extraAddedKeys) は、最新の値に無ければ
         // 最終的な意図の要素で戻す。
+        // この端末で明示的に登録し直した要素 (reRegisteredCreatedAt
+        // に鍵がある要素) も、最新の値に無ければ最終的な意図の
+        // 要素で戻す。再登録は利用者の明示的な操作なので、他の
+        // 端末の削除や、以前の削除の適用でサーバー側から消えて
+        // いても、再登録を優先して復元する。自分が触っていない
+        // 要素は対象にならないため、無関係な削除が復活することは
+        // ない。
         for entry in desired
         where (!baseKeys.contains(key(type: entry.type, id: entry.id))
-                || extraAddedKeys.contains(key(type: entry.type, id: entry.id)))
+                || extraAddedKeys.contains(key(type: entry.type, id: entry.id))
+                || reRegisteredCreatedAt[key(type: entry.type, id: entry.id)] != nil)
             && !presentKeys.contains(key(type: entry.type, id: entry.id)) {
             result.append(entry.dictionary as Any)
         }
@@ -1783,6 +1793,12 @@ final class SyncedSettingsStore {
     /// 動かした場合に、その移動が合成の対象から漏れて効かなく
     /// なるのを防ぐため。対象でない追加要素は従来どおり末尾に
     /// 加わるだけで、他の端末の並び順は保たれる。
+    /// 対象の追加要素が、まだサーバー側に無い (追加の保存がまだ
+    /// 届いていない) 場合も、最終的な並びの中で既存の要素より前に
+    /// 置かれているものは、先に結果へ入れてから対象の枠を並べ
+    /// 替えて、意図どおりの位置に置く。サーバー側で削除された
+    /// 既存の要素は、対象に含まれていても結果には無いため、
+    /// 復活することはない。
     /// サーバー側の値が配列の形でないときは、受け皿として利用者の
     /// 並びそのものを返す。
     private static func mergedPinnedChannelIDs(
@@ -1824,10 +1840,35 @@ final class SyncedSettingsStore {
         let keptInBaseOrder = base.filter { keptSet.contains($0) }
         let keptInDesiredOrder = desired.filter { keptSet.contains($0) }
         let presentValues = Set(result.compactMap { $0 as? String })
-        let movedAddedPresent = targetSet.subtracting(baseSet)
-            .intersection(presentValues)
+        let addedTargets = targetSet.subtracting(baseSet)
+        let movedAddedPresent = addedTargets.intersection(presentValues)
+        // 並び替えの対象で、この編集で追加する要素が最新の並びに
+        // 無い場合、その要素には並べ替えの枠が無いため、このまま
+        // では最後に末尾へ追加されるだけになり、明示的な並び替えが
+        // 効かない。その要素が、最終的な並びの中で既存の要素より
+        // 前に置かれている場合 (末尾への追加では意図どおりに
+        // ならない場合) に限り、並び替えの対象として扱う。追加する
+        // 要素がすべて既存の要素より後ろにある場合は、従来どおり
+        // 末尾への追加で意図どおりになるため、並び替えは行わない
+        // (他の端末の並び順を保つため)。
+        let desiredTargets = desired.filter { targetSet.contains($0) }
+        var addedTargetBeforeKept = false
+        if let lastKeptIndex = desiredTargets.lastIndex(where: {
+            keptSet.contains($0)
+        }) {
+            addedTargetBeforeKept = desiredTargets[..<lastKeptIndex]
+                .contains { addedTargets.contains($0) }
+        }
         if keptInBaseOrder != keptInDesiredOrder || forceDesiredOrder
-            || !movedAddedPresent.isEmpty {
+            || !movedAddedPresent.isEmpty || addedTargetBeforeKept {
+            // 並び替えの対象で、最新の並びにまだ無い追加要素を、
+            // 対象の枠を並べ替える前に結果へ入れておく。入れる位置は
+            // この後の並べ替えで決まるため、ここでは末尾に入れる。
+            for value in desired
+            where addedTargets.contains(value)
+                && !presentValues.contains(value) {
+                result.append(value)
+            }
             // 対象の要素が占めている枠の中でだけ、順序を入れ替える。
             // 枠の位置そのものは動かさないため、対象でない要素 (他の
             // 端末の追加分や文字列でない要素) の位置は変わらない。
