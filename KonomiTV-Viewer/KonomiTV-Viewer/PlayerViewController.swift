@@ -2404,36 +2404,6 @@ final class PlayerViewController: UIViewController {
     /// できなかった場合は、呼び出し側が失敗として知らせる)。
     private func startAVPlayback(asset: AVURLAsset, at seconds: Double) {
         let item = AVPlayerItem(asset: asset)
-        // 【一時的な切り分け用】シミュレータで再生が進まない件の調査のため、
-        // 再生側の状態を接続先サーバーへ送って記録させる。切り分けが
-        // 済んだら外す (smoke-tests ブランチだけの暫定コード)。
-        for delay in [4.0, 9.0, 14.0] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak item] in
-                guard let self, let item, self.player?.currentItem === item else { return }
-                let player = self.player
-                var text = "tcs=\(player?.timeControlStatus.rawValue ?? -1)"
-                text += " reason=\(player?.reasonForWaitingToPlay?.rawValue ?? "nil")"
-                text += " status=\(item.status.rawValue)"
-                text += " err=\(item.error?.localizedDescription ?? "nil")"
-                text += " empty=\(item.isPlaybackBufferEmpty)"
-                text += " keepup=\(item.isPlaybackLikelyToKeepUp)"
-                text += " ranges=\(item.loadedTimeRanges.count)"
-                text += " rate=\(player?.rate ?? -1)"
-                if let event = item.errorLog()?.events.last {
-                    text += " errlog=\(event.errorDomain)/\(event.errorStatusCode)/\(event.errorComment ?? "nil")"
-                }
-                if let event = item.accessLog()?.events.last {
-                    text += " bitrate=\(event.indicatedBitrate)"
-                    text += " bytes=\(event.numberOfBytesTransferred)"
-                }
-                let encoded = text.addingPercentEncoding(
-                    withAllowedCharacters: CharacterSet.alphanumerics) ?? ""
-                if let base = SettingsStore.shared.baseURL,
-                   let url = URL(string: base.absoluteString + "/smokediag?d=" + encoded) {
-                    URLSession.shared.dataTask(with: url).resume()
-                }
-            }
-        }
         // 字幕データの受け取り口を、この再生項目へ付ける。
         attachCaptionMetadataOutput(to: item)
         // 再生が終わったことを知る見張り (次の話の自動再生と、
