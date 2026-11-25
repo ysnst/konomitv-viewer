@@ -2423,8 +2423,8 @@ final class PlayerViewController: UIViewController {
                     text += " errlog=\(event.errorDomain)/\(event.errorStatusCode)/\(event.errorComment ?? "nil")"
                 }
                 if let event = item.accessLog()?.events.last {
-                    text += " segments=\(event.numberOfSegmentsDownloaded)"
-                    text += " stalls=\(event.numberOfStalls)"
+                    text += " bitrate=\(event.indicatedBitrate)"
+                    text += " bytes=\(event.numberOfBytesTransferred)"
                 }
                 let encoded = text.addingPercentEncoding(
                     withAllowedCharacters: CharacterSet.alphanumerics) ?? ""
