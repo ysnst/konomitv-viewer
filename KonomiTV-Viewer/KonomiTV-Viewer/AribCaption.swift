@@ -107,13 +107,18 @@ final class CaptionDisplayEngine {
     /// 既に流し込んだ範囲より前の包みが後から届いた印。
     /// 次の更新で、部品の中身を空にして先頭から流し直す。
     private var needsRefill = false
+    private(set) var playbackGeneration: UInt64 = 0
+    private var timeline = CaptionPlaybackTimeline()
+    private var replayStart: Double?
+    private var crossedReplayStart = false
 
     // MARK: H.265 側の物差し (プレイリストの区切りの長さ)
 
     /// 区切りの番号ごとの開始位置 (区切りの長さの累計)。
     private var segmentStarts: [Double] = []
+    private var segmentEnds: [Double] = []
     /// 物差しが届く前に来た区切りの控え (番号 → 包みと映像の先頭の時刻印)。
-    private var pendingSegments: [Int: (packets: [TSID3Extractor.Packet], videoFirstPTS: Int64?)] = [:]
+    private var pendingSegments: [Int: (packets: [TSID3Extractor.Packet], videoFirstPTS: Int64?, complete: Bool)] = [:]
 
     // MARK: 文字化の部品 (libaribcaption)
 
@@ -256,7 +261,8 @@ final class CaptionDisplayEngine {
     // MARK: - 再生の作り直し
 
     /// 新しい再生が始まるときに、蓄えと部品の中身を空にする。
-    func resetForNewPlayback() {
+    func resetForNewPlayback(at position: Double = 0) {
+        playbackGeneration &+= 1
         // 作り直しのたびに字幕の設定も読み直す (同じ再生画面の間で
         // 変わった設定が、次の再生から効くように)。
         if available { applyCaptionSettings() }
@@ -265,7 +271,12 @@ final class CaptionDisplayEngine {
         feedIndex = 0
         lastPosition = nil
         needsRefill = false
+        timeline.reset()
+        // 途中開始で先頭probeの古い字幕を出さず、0秒開始の最初の字幕は保持する。
+        replayStart = useTVSuperimposeSetting ? -.infinity : max(0, position.isFinite ? position : 0)
+        crossedReplayStart = false
         segmentStarts = []
+        segmentEnds = []
         pendingSegments = [:]
         captionFrameReady = false
         superimposeFrameReady = false
@@ -274,6 +285,24 @@ final class CaptionDisplayEngine {
         superimposePlaneWidth = 0
         superimposePlaneHeight = 0
         flushPipelines()
+    }
+
+    /// 表示と撮影用の各層を即時に無効化する。蓄えた管理データと字幕は復元用に残す。
+    @discardableResult
+    func beginSeek() -> UInt64 {
+        let token = timeline.beginSeek()
+        flushPipelines()
+        feedIndex = 0
+        lastPosition = nil
+        replayStart = nil
+        crossedReplayStart = false
+        needsRefill = false
+        return token
+    }
+
+    /// 再生部品から届いた最新の完了だけで描画を再開する。古い完了は何もしない。
+    func completeSeek(_ token: UInt64) -> Bool {
+        timeline.completeSeek(token)
     }
 
     /// 部品の中身 (読み解きと描画の状態) を空にする。
@@ -329,12 +358,13 @@ final class CaptionDisplayEngine {
             sum += duration
         }
         segmentStarts = starts
+        segmentEnds = zip(starts, durations).map { entry in entry.0 + entry.1 }
         // 物差しより先に届いていた区切りがあれば、ここで流し込む。
         let pending = pendingSegments
         pendingSegments = [:]
         for (sequence, entry) in pending {
             ingestRelaySegment(sequence: sequence, packets: entry.packets,
-                               videoFirstPTS: entry.videoFirstPTS)
+                               videoFirstPTS: entry.videoFirstPTS, complete: entry.complete)
         }
     }
 
@@ -345,13 +375,20 @@ final class CaptionDisplayEngine {
     /// 差は一回り分を考慮して取る)。
     /// 映像の先頭の時刻印が取れていない区切りでは、最初の字幕の包みの
     /// 時刻印を代わりに使う (ずれは最大で包み1つ分ほど)。
-    func ingestRelaySegment(sequence: Int, packets: [TSID3Extractor.Packet], videoFirstPTS: Int64?) {
+    func ingestRelaySegment(sequence: Int, packets: [TSID3Extractor.Packet], videoFirstPTS: Int64?, complete: Bool) {
         guard segmentStarts.indices.contains(sequence) else {
-            pendingSegments[sequence] = (packets, videoFirstPTS)
+            pendingSegments[sequence] = (packets, videoFirstPTS, complete)
             return
         }
-        guard let reference = videoFirstPTS ?? packets.first?.pts90 else { return }
         let base = segmentStarts[sequence]
+        // 空の字幕区間も「消去を含めて受信済み」と扱う。失敗/部分応答にはこの保証がない。
+        if complete {
+            timeline.include(start: base, end: segmentEnds[sequence])
+            if let lastPosition, let knownStart = timeline.replayStart(at: lastPosition), knownStart != replayStart {
+                needsRefill = true
+            }
+        }
+        guard let reference = videoFirstPTS ?? packets.first?.pts90 else { return }
         for packet in packets {
             let offset = Self.ptsDifferenceSeconds(packet.pts90, reference)
             ingest(position: base + offset, payload: packet.payload)
@@ -431,12 +468,28 @@ final class CaptionDisplayEngine {
     @discardableResult
     func update(position: Double) -> Bool {
         ensureCreated()
-        guard available, position.isFinite else { return false }
+        guard available, position.isFinite, !timeline.isSeeking else { return false }
+        let previousPosition = lastPosition
+        // 途中開始の区間が初回更新より先に届いていた場合も、区間内の有効字幕を復元する。
+        if previousPosition == nil, !useTVSuperimposeSetting,
+           let knownStart = timeline.replayStart(at: position, includingUpperBound: segmentStarts.isEmpty) {
+            replayStart = knownStart
+        }
+        let discontinuity = previousPosition.map { position < $0 - 1.5 || position - $0 > 2.0 } ?? false
+        // AVPlayerの受信済み範囲は、シークを挟まない時計の観測で記録する。
+        // HEVCは途中で飛ばしたsegmentを観測だけで受信済みにしない。
+        if segmentStarts.isEmpty, !useTVSuperimposeSetting, let previousPosition, !discontinuity {
+            timeline.include(start: min(previousPosition, position), end: max(previousPosition, position))
+        }
+        // 遅着データとA-Bループ等の位置飛びが重なっても、古い表示範囲を持ち越さない。
+        if discontinuity { replayStart = nil }
         if needsRefill {
             flushPipelines()
             feedIndex = 0
             needsRefill = false
-        } else if let last = lastPosition, position < last - 1.5 || position - last > 2.0 {
+            crossedReplayStart = false
+            if let knownStart = timeline.replayStart(at: position, includingUpperBound: segmentStarts.isEmpty) { replayStart = knownStart }
+        } else if discontinuity {
             // 逆向きの飛び・大きな前向きの飛びは、移動 (シーク等) とみなす。
             // 通常の再生では 0.5 秒ごとの更新で、速度2倍でも進みは約1秒。
             // 逆向きの幅を広めに取るのは、再生部品の時刻の小さな揺れ
@@ -444,10 +497,24 @@ final class CaptionDisplayEngine {
             // (操作での戻しは最小でも5秒なので、1.5秒で十分に拾える)。
             flushPipelines()
             feedIndex = 0
+            replayStart = nil
+            crossedReplayStart = false
+        }
+        if replayStart == nil {
+            replayStart = useTVSuperimposeSetting ? -.infinity : (timeline.replayStart(at: position, includingUpperBound: segmentStarts.isEmpty) ?? position)
         }
         lastPosition = position
         while feedIndex < packets.count, packets[feedIndex].position <= position + 0.05 {
-            feed(packets[feedIndex])
+            let packet = packets[feedIndex]
+            let present = CaptionPlaybackTimeline.shouldPresent(packetPosition: packet.position, replayStart: replayStart ?? position)
+            if present, !crossedReplayStart {
+                // Flushは書式状態を消すが、libaribcaptionのlanguage_infos/DRCSは保持する。
+                // 未取得の穴より前の文字列だけが新しい字幕へ混ざることを防ぐ。
+                if let captionDecoder { aribcc_decoder_flush(captionDecoder) }
+                if let superimposeDecoder { aribcc_decoder_flush(superimposeDecoder) }
+                crossedReplayStart = true
+            }
+            feed(packet, present: present)
             feedIndex += 1
         }
         let ptsMs = Int64((position * 1000).rounded())
@@ -477,7 +544,7 @@ final class CaptionDisplayEngine {
 
     /// 包みを1つ、種類に応じた読み解き側へ渡す。字幕として読み解けたら、
     /// 描画側へ追加する (描画の画面の寸法は、最初の字幕で決める)。
-    private func feed(_ packet: Packet) {
+    private func feed(_ packet: Packet, present: Bool) {
         let isSuperimpose = packet.payload.first == 0x81
         // 設定で文字スーパーを出さないときは、包み自体を流さない。
         if isSuperimpose, !showSuperimpose { return }
@@ -502,7 +569,7 @@ final class CaptionDisplayEngine {
                     captionPlaneHeight = Int(caption.plane_height)
                 }
             }
-            if isSuperimpose ? superimposeFrameReady : captionFrameReady {
+            if present, isSuperimpose ? superimposeFrameReady : captionFrameReady {
                 aribcc_renderer_append_caption(renderer, &caption)
             }
             aribcc_caption_cleanup(&caption)

@@ -76,6 +76,9 @@ final class FullscreenPlayerViewController: UIViewController {
     /// VLCKit 経路で進み具合を 0.5 秒ごとに見るためのタイマー
     /// (AVPlayer 経路の定期観測にあたる)。
     private var progressTimer: Timer?
+    /// 再生の所有元で字幕/実況と位置を共通管理する（AVPlayer経路も同じ）。
+    var onSeek: ((Double) -> Void)?
+    var onScrubBegan: (() -> Void)?
     private var isScrubbing = false
     private var wasPlayingBeforeScrub = false
     private var controlsVisible = true
@@ -787,6 +790,7 @@ final class FullscreenPlayerViewController: UIViewController {
     }
 
     private func seek(to seconds: Double) {
+        if let onSeek { onSeek(seconds); return }
         // VLCKit 経路では、移動の実行と CM自動スキップの判定の基準位置の
         // 更新を呼び出し元へ委ねる (呼び出し元の移動と同じ扱いにするため)。
         if let hooks {
@@ -828,6 +832,7 @@ final class FullscreenPlayerViewController: UIViewController {
     }
 
     @objc private func scrubBegan() {
+        onScrubBegan?()
         isScrubbing = true
         excitementStrip.isHidden = !(hasExcitementData && SettingsStore.shared.showExcitementInFullscreen)
         wasPlayingBeforeScrub = isPlayingNow

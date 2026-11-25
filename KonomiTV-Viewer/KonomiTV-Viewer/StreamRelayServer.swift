@@ -48,8 +48,8 @@ final class StreamRelayServer {
         /// プレイリストを受け取ったとき (区切りの長さの一覧、順番どおり)。
         let onPlaylist: ([Double]) -> Void
         /// 区切りファイルを受け取り終わったとき
-        /// (区切りの番号・字幕の包み・区切りの先頭の映像の時刻印)。
-        let onSegment: (Int, [TSID3Extractor.Packet], Int64?) -> Void
+        /// (区切りの番号・字幕の包み・区切りの先頭の映像の時刻印・完全受信の成否)。
+        let onSegment: (Int, [TSID3Extractor.Packet], Int64?, Bool) -> Void
     }
 
     private var captionTap: CaptionTap?
@@ -682,7 +682,8 @@ private final class RelayConnection: NSObject {
             captionExtractor.finish()
             captionTap.onSegment(captionSegmentSequence,
                                  captionExtractor.captionPackets,
-                                 captionExtractor.videoFirstPTS)
+                                 captionExtractor.videoFirstPTS,
+                                 error == nil && http?.statusCode == 200)
         }
         // 字幕の抜き取り (生放送用): 読みかけを確定させ、残りの包みを渡す。
         if liveCaptionExtractor != nil {

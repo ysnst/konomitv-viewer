@@ -348,6 +348,7 @@ final class PlayerViewController: UIViewController {
     /// 字幕の本体 (包みの蓄え・文字化・描画)。包みの入り口は経路ごとに
     /// 違うが、蓄えた後の扱いは共通 (AribCaption.swift)。
     private let captionEngine = CaptionDisplayEngine()
+    private let captionSeekCoordinator = CaptionSeekCoordinator()
     /// 字幕の重ね物。映像の枠 (surfaceView) の中に入れる。
     /// 全画面 (VLCKit 経路) では枠ごと貸し出されるため、そのまま付いて行く。
     /// AVPlayer 経路の全画面では、映像の層と一緒にこちらも貸し出す。
@@ -1899,6 +1900,15 @@ final class PlayerViewController: UIViewController {
         }
     }
 
+    /// シーク中は通常/全画面で共有する描画と撮影用画像を同時に消す。
+    @discardableResult
+    private func beginCaptionSeek() -> UInt64 {
+        captureController.cancel()
+        let token = captionEngine.beginSeek()
+        captionOverlayView.setImage(nil)
+        return token
+    }
+
     /// 字幕の絵を、いまの再生位置に合わせて更新する。
     /// 進み具合の更新 (0.5秒ごと) と、字幕の包みが届いたときに呼ばれる。
     private func refreshCaptions() {
@@ -2265,7 +2275,7 @@ final class PlayerViewController: UIViewController {
         }
         let item = AVPlayerItem(asset: asset)
         // 字幕データの受け取り口を、この再生項目へ付ける。
-        attachCaptionMetadataOutput(to: item)
+        attachCaptionMetadataOutput(to: item, at: seconds)
         // 再生が終わったことを知る見張り (次の話の自動再生と、
         // 追いかけ再生の先端到達の扱いに使う)。項目を作り直すたびに
         // 見張りも付け替える。
@@ -2360,6 +2370,10 @@ final class PlayerViewController: UIViewController {
     /// 補いとして残す (効くかどうかは libVLC 側の実装次第で、単独では
     /// 分割ファイルまで届かないことが分かっている)。
     private func startVLCPlayback(url: URL, at seconds: Double) -> Bool {
+        // 同じHEVC経路の作り直しはteardownVLCPlaybackを通らないため、旧要求をここでも解放する。
+        captionSeekCoordinator.reset()
+        captionEngine.resetForNewPlayback(at: seconds)
+        captionOverlayView.setImage(nil)
         teardownAVPlayback()
         pipController?.dispose()
         pipController = nil
@@ -2417,20 +2431,21 @@ final class PlayerViewController: UIViewController {
         // 中継は、プレイリストを通すときに区切りの長さを、区切りファイルを
         // 通すときに中身から取り出した字幕の包みを、こちらへ渡してくれる
         // (再生そのものには触れない)。渡し先ではメイン側で受ける。
-        captionEngine.resetForNewPlayback()
         let captionVideoID = program.id
+        let captionPlaybackGeneration = captionEngine.playbackGeneration
         StreamRelayServer.shared.setCaptionTap(StreamRelayServer.CaptionTap(
             pathMarker: "/api/streams/video/\(captionVideoID)/",
             onPlaylist: { [weak self] durations in
                 DispatchQueue.main.async {
-                    self?.captionEngine.ingestRelayPlaylist(durations: durations)
+                    guard let self, self.captionEngine.playbackGeneration == captionPlaybackGeneration else { return }
+                    self.captionEngine.ingestRelayPlaylist(durations: durations)
                 }
             },
-            onSegment: { [weak self] sequence, packets, videoFirstPTS in
+            onSegment: { [weak self] sequence, packets, videoFirstPTS, complete in
                 DispatchQueue.main.async {
-                    guard let self else { return }
+                    guard let self, self.captionEngine.playbackGeneration == captionPlaybackGeneration else { return }
                     self.captionEngine.ingestRelaySegment(
-                        sequence: sequence, packets: packets, videoFirstPTS: videoFirstPTS)
+                        sequence: sequence, packets: packets, videoFirstPTS: videoFirstPTS, complete: complete)
                     self.refreshCaptions()
                 }
             }))
@@ -2460,6 +2475,7 @@ final class PlayerViewController: UIViewController {
 
     /// VLCKit 経路の後片付け。
     private func teardownVLCPlayback() {
+        captionSeekCoordinator.reset()
         // 字幕の抜き取り口も解除する (中継は他の再生と共用ため、
         // 残しておくと関係ない経路でも読み取りが続いてしまう)。
         StreamRelayServer.shared.setCaptionTap(nil)
@@ -2478,18 +2494,6 @@ final class PlayerViewController: UIViewController {
         vlcStateObserver = nil
     }
 
-    /// VLCKit 経路の移動。VLC の位置は全体に対する割合で指定する。
-    /// 全体の長さは VLC が読み取った長さを優先し、取れないときは
-    /// 番組の長さで代用する。
-    private func vlcSeek(to seconds: Double) {
-        guard let vlcPlayer else { return }
-        let length = vlcLengthSeconds
-        let denom = (length.isFinite && length > 0) ? length : effectiveDuration
-        guard denom > 0 else { return }
-        let clamped = max(0, min(seconds, denom))
-        vlcPlayer.position = clamped / denom
-    }
-
     /// VLC が読み取った全体の長さ (秒)。取れないときは NaN。
     private var vlcLengthSeconds: Double {
         guard let vlcPlayer, let media = vlcPlayer.media else { return .nan }
@@ -2501,8 +2505,8 @@ final class PlayerViewController: UIViewController {
     /// 字幕データの受け取り口を、AVPlayer の再生項目へ付ける。
     /// 届いた包みはファイル末尾の受け取り側で字幕の本体へ渡す。
     /// 再生を作り直すたびに、字幕の蓄えも空にし直す。
-    private func attachCaptionMetadataOutput(to item: AVPlayerItem) {
-        captionEngine.resetForNewPlayback()
+    private func attachCaptionMetadataOutput(to item: AVPlayerItem, at seconds: Double) {
+        captionEngine.resetForNewPlayback(at: seconds)
         let output = AVPlayerItemMetadataOutput(identifiers: nil)
         output.setDelegate(self, queue: .main)
         item.add(output)
@@ -2590,6 +2594,8 @@ final class PlayerViewController: UIViewController {
         pipController = nil
         pip?.dispose()
         playbackGeneration += 1
+        captionEngine.resetForNewPlayback()
+        captionOverlayView.setImage(nil)
         commentOverlay.stop()
         cancelAutoplayCountdown()
         fastSeekBackController.invalidate()
@@ -3350,8 +3356,15 @@ final class PlayerViewController: UIViewController {
 #if canImport(VLCKit)
             if vlcPlayer != nil { startPlayback(at: 0); return }
 #endif
+            let repeatGeneration = playbackGeneration
+            // seek自身がイベントを1つ進める。後続操作や画面離脱後の完了で再生しない。
+            let repeatEvent = playbackEndEventID + 1
             seek(to: 0, isUserInitiated: false) { [weak self] in
-                DispatchQueue.main.async { self?.playAtCurrentRate() }
+                DispatchQueue.main.async {
+                    guard let self, !self.didLeaveScreen, self.playbackGeneration == repeatGeneration,
+                          self.playbackEndEventID == repeatEvent else { return }
+                    self.playAtCurrentRate()
+                }
             }
             return
         }
@@ -3734,27 +3747,41 @@ final class PlayerViewController: UIViewController {
         lastObservedPosition = clamped
         // コメントの表示も移動先に合わせる (移動先より前のコメントは流さない)。
         commentOverlay.reset(to: clamped)
-        // 字幕も移動先に合わせる。移動が完了して位置が定まってから
-        // 合わせるため、少し置いてから更新する (進み具合の更新でも
-        // 位置の飛びとして拾われ、そちらでも合わせ直される)。
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-            self?.refreshCaptions()
+        // 固定時間ではなく再生部品の完了で復元する。連続シークの古い完了は失効する。
+        let captionToken = beginCaptionSeek()
+        let playbackToken = playbackGeneration
+        let finished: (Bool) -> Void = { [weak self] mayResumeCaptions in
+            DispatchQueue.main.async {
+                // PiP等の呼び出し元への完了通知は、字幕世代の失効とは別に必ず返す。
+                defer { completion?() }
+                guard mayResumeCaptions, let self, self.playbackGeneration == playbackToken,
+                      self.captionEngine.completeSeek(captionToken) else { return }
+                self.refreshCaptions()
+            }
         }
 #if canImport(VLCKit)
         if let vlcPlayer {
-            if let completion {
-                let offset = min(Double(Int32.max), max(Double(Int32.min), (clamped - currentPosition()) * 1000))
-                if !vlcPlayer.jump(withOffset: Int32(offset), completion: completion) { completion() }
-            } else { vlcSeek(to: clamped) }
+            captionSeekCoordinator.submit(target: clamped, operation: { [weak self, weak vlcPlayer] target, done in
+                guard let self, let vlcPlayer, self.vlcPlayer === vlcPlayer else { return false }
+                // 待機中にも時計が進むので、相対offsetは実行直前に計算する。
+                let current = self.currentPosition()
+                guard current.isFinite else { return false }
+                let offset = min(Double(Int32.max), max(Double(Int32.min), (target - current) * 1000))
+                // 同一位置はVLCの位置変化イベントが発生しないため、自分で完了させる。
+                guard Int32(offset) != 0 else { return false }
+                return vlcPlayer.jump(withOffset: Int32(offset)) {
+                    DispatchQueue.main.async { done() }
+                }
+            }, completion: finished)
             return
         }
 #endif
-        guard let player else { completion?(); return }
+        guard let player else { finished(true); return }
         player.seek(
             to: CMTime(seconds: clamped, preferredTimescale: 600),
             toleranceBefore: CMTime(seconds: 0.5, preferredTimescale: 600),
             toleranceAfter: CMTime(seconds: 0.5, preferredTimescale: 600)
-        ) { _ in completion?() }
+        ) { _ in finished(true) }
     }
 
     @objc private func skipBack() {
@@ -3788,6 +3815,7 @@ final class PlayerViewController: UIViewController {
     }
 
     @objc private func scrubBegan() {
+        beginCaptionSeek()
         isScrubbing = true
         excitementStrip.isHidden = excitementDensity == nil
         wasPlayingBeforeScrub = isCurrentlyPlaying()
@@ -4139,6 +4167,8 @@ final class PlayerViewController: UIViewController {
     @objc private func openPlayerSettings() { showPlayerSettings(from: self) }
 
     private func configureFullscreenControls(_ fullscreen: FullscreenPlayerViewController) {
+        fullscreen.onSeek = { [weak self] position in self?.seek(to: position) }
+        fullscreen.onScrubBegan = { [weak self] in self?.beginCaptionSeek() }
         fullscreen.commentsEnabled = { SettingsStore.shared.showComments }
         fullscreen.commentAvailable = { [weak self] in self?.audioOnly == false }
         fullscreen.onToggleComments = { [weak self] in self?.toggleComments() }
@@ -4456,7 +4486,7 @@ extension PlayerViewController: AVPlayerItemMetadataOutputPushDelegate {
     func metadataOutput(_ output: AVPlayerItemMetadataOutput,
                         didOutputTimedMetadataGroups groups: [AVTimedMetadataGroup],
                         from track: AVPlayerItemTrack?) {
-        guard captionMetadataOutput != nil, !groups.isEmpty else { return }
+        guard output === captionMetadataOutput, !groups.isEmpty else { return }
         var ingested = false
         for group in groups {
             let start = group.timeRange.start.seconds

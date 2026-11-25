@@ -51,6 +51,14 @@ jobs:
             scripts/PaginationTests.swift -o artifacts/tests/pagination-tests
           artifacts/tests/pagination-tests
 
+      - name: Test caption seek state and received intervals
+        run: |
+          mkdir -p artifacts/tests
+          swiftc -parse-as-library \
+            KonomiTV-Viewer/KonomiTV-Viewer/CaptionPlaybackTimeline.swift \
+            scripts/CaptionTimelineTests.swift -o artifacts/tests/caption-timeline-tests
+          artifacts/tests/caption-timeline-tests
+
       - name: Test capture JPEG metadata compatibility
         run: |
           mkdir -p artifacts/tests artifacts/ipa
