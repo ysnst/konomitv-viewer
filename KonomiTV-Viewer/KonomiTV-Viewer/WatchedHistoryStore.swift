@@ -93,7 +93,10 @@ final class WatchedHistoryStore {
         contextObserver = NotificationCenter.default.addObserver(
             forName: .historyContextDidChange, object: nil, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.invalidate() }
+            Task { @MainActor in
+                guard let self, self.contextProvider() != self.context else { return }
+                self.invalidate()
+            }
         }
     }
 

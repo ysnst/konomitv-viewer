@@ -51,7 +51,7 @@ enum AppPalette {
 /// ボタンから開くメニューで切り替える。ボタンの置き場所は、ゴミ箱の
 /// 入口が出るときは見出し行の下の行の右端、出ないときは見出し行の右端。
 /// 検索は Web 版のヘッダーと同じく、ロゴ帯の右端の虫眼鏡から開く欄で
-/// 題名とシリーズ名をその場で絞り込む (絞り込みの扱いはフィルタと同じ)。
+/// サーバー側で検索し、通常の一覧と同じページ送りを使う。
 final class VideoListViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UIGestureRecognizerDelegate {
     /// 1ページの件数。サーバー側の固定値 (PAGE_SIZE = 30) に合わせる。
     private static let pageSize = 30
@@ -84,6 +84,8 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     /// 見出し行 (「録画番組一覧 ○件」と、右端の「ゴミ箱を開く」)。
     private let listHeaderView = UIView()
     private let listTitleLabel = UILabel()
+    private let listBackButton = RippleButton()
+    private var listTitleLeadingConstraint: NSLayoutConstraint?
     private let countLabel = UILabel()
     /// 見出し行の下の行。左端に複数選択の入り口のピルを置く。フィルタの
     /// ボタンは、ゴミ箱の入口が出るときだけこの行の右端に置き、出ない
@@ -258,16 +260,19 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     private var scrollRestoreTicks = 0
     /// スクロール中の保存の間引き用。
     private var lastScrollSaveAt: TimeInterval = 0
-    /// フィルタか検索が1つでも有効か。有効なときは全件取得して
-    /// 端末側で絞り込む (サーバー側のページ分けは使わない)。
-    private var isFilterActive: Bool { unwatchedOnly || protectedOnly || !searchText.isEmpty }
+    /// 改造サーバー向けの既存フィルタだけは従来どおり端末で判定する。
+    /// 通常の検索は本家の検索 API とページ分けを使い、全録画を取得しない。
+    private var isFilterActive: Bool { unwatchedOnly || protectedOnly }
     /// フィルタ中に全件取得して絞り込んだ結果。ページ表示はここから切り出す。
     private var filteredPrograms: [RecordedProgram] = []
     /// 検索の言葉 (前後の空白を除いたもの)。空なら検索していない。
     /// 画面の中だけに持ち、保存はしない (Web 版の一覧の検索欄と同じ)。
     private var searchText = ""
-    /// 絞り込み用に取得した全件の控え。検索の言葉が変わるたびに
-    /// 通信し直さず、この控えから絞り直すために持つ。
+    private var searchDebounceTimer: Timer?
+    private var focusSearchOnAppearance = false
+    private var loadedSearchQuery: String?
+    private let persistsViewState: Bool
+    /// 改造サーバー向けフィルタの控え。検索語が変わったら破棄し、ページ送りだけに使う。
     private var allCollectedPrograms: [RecordedProgram] = []
     /// 全件の控えが今の並び順で使えるか。並び替えや読み直しでは
     /// 並びが変わるため、そのたびに false に戻す。
@@ -294,8 +299,11 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     /// 取りに行かないための重ね防ぎ (サムネイルと同じ)。
     private var logoLoadingIDs: Set<String> = []
 
-    init() {
+    init(opensSearch: Bool = false) {
+        persistsViewState = !opensSearch
         super.init(nibName: nil, bundle: nil)
+        isSearchBarOpen = opensSearch
+        focusSearchOnAppearance = opensSearch
         // この画面ではナビゲーションバーを隠すため見出しには出ない。
         // 押し込んだ先の画面の戻るボタンの文字としてだけ残してある。
         title = "録画番組"
@@ -352,7 +360,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
 
         // 見出し行。Web 版と同じく「録画番組一覧」の右に全件数を出し、
         // 右端にはゴミ箱への入口を置く (出すときだけ)。見出しの横に
-        // Web 版にある戻る印 (＜) は、たつやさんの判断で付けない。
+        // 戻る印はホームから押し込んだ場合だけ出す。単独の先頭画面では従来どおり隠す。
         // その下の行に、左端の選択のピルを置く。フィルタのボタンは
         // 最初はこの行に付けておき、置き場所は refreshHeadContainer で
         // ゴミ箱の入口の出し分けに合わせて決め直す。
@@ -363,6 +371,12 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         listTitleLabel.textColor = AppPalette.text
         listTitleLabel.translatesAutoresizingMaskIntoConstraints = false
         listHeaderView.addSubview(listTitleLabel)
+        listBackButton.setImage(UIImage(systemName: "chevron.left"), for: .normal)
+        listBackButton.tintColor = AppPalette.text
+        listBackButton.accessibilityLabel = "録画ホームに戻る"
+        listBackButton.addTarget(self, action: #selector(backToHome), for: .touchUpInside)
+        listBackButton.translatesAutoresizingMaskIntoConstraints = false
+        listHeaderView.addSubview(listBackButton)
         countLabel.font = .scaledSystemFont(ofSize: 13)
         countLabel.textColor = AppPalette.metaText
         countLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -427,6 +441,14 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         selectFilterRowView.addSubview(selectButton)
         // 前回保存した表示状態 (ページ・並び順・両フィルタ) を復元する。
         restoreViewState()
+        if isSearchBarOpen {
+            // ホームから検索した場合、前回一覧のフィルタやページを持ち込まない。
+            unwatchedOnly = false
+            protectedOnly = false
+            pendingRestorePage = nil
+            pendingScrollRestore = nil
+            searchField.text = searchText
+        }
         updateFilterButtonAppearance()
 
         // 上のページ送りは見出し行の下に置き、先頭まわり一式と一緒にスクロールさせる。
@@ -508,8 +530,13 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
 
         buildBulkBar()
 
+        listTitleLeadingConstraint = listTitleLabel.leadingAnchor.constraint(equalTo: listHeaderView.leadingAnchor, constant: 12)
         NSLayoutConstraint.activate([
-            listTitleLabel.leadingAnchor.constraint(equalTo: listHeaderView.leadingAnchor, constant: 12),
+            listTitleLeadingConstraint!,
+            listBackButton.leadingAnchor.constraint(equalTo: listHeaderView.leadingAnchor, constant: 4),
+            listBackButton.centerYAnchor.constraint(equalTo: listHeaderView.centerYAnchor),
+            listBackButton.widthAnchor.constraint(equalToConstant: 36),
+            listBackButton.heightAnchor.constraint(equalToConstant: 44),
             listTitleLabel.centerYAnchor.constraint(equalTo: listHeaderView.centerYAnchor),
             countLabel.leadingAnchor.constraint(equalTo: listTitleLabel.trailingAnchor, constant: 8),
             countLabel.centerYAnchor.constraint(equalTo: listHeaderView.centerYAnchor),
@@ -851,13 +878,16 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         WatchedHistoryStore.shared.observe(self)
+        let canGoBack = (navigationController?.viewControllers.count ?? 0) > 1
+        listBackButton.isHidden = !canGoBack
+        listTitleLeadingConstraint?.constant = canGoBack ? 44 : 12
         // 先頭画面ではシステムのナビゲーションバー (ページ名の見出し) を隠し、
         // Web 版のスマホ縦と同じく自前のヘッダーだけを出す。
         // 押し込んだ先の再生画面では戻るボタンが要るため、隠すのはこの画面の間だけ。
         navigationController?.setNavigationBarHidden(true, animated: animated)
         // 接続先が変わっていたら読み直す。初回は必ず読む。
         let current = SettingsStore.shared.baseURL?.absoluteString
-        if programs.isEmpty || current != loadedBaseURLString {
+        if programs.isEmpty || current != loadedBaseURLString || searchText != loadedSearchQuery {
             refresh()
         }
         // ゴミ箱まわりの出し分けのため、管理者かどうかも開くたびに取り直す。
@@ -878,6 +908,8 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         // 検索欄を開いたまま離れたら、キーボードだけは閉じる
         // (検索欄と絞り込みは戻ってきたときのために残す)。
         searchField.resignFirstResponder()
+        searchDebounceTimer?.invalidate()
+        searchDebounceTimer = nil
         storageTimer?.invalidate()
         storageTimer = nil
         // なぞり選択中の自動スクロールの刻みが残らないよう、離れるときに
@@ -894,6 +926,18 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
             captureScrollMarker()
             saveViewState()
         }
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if focusSearchOnAppearance {
+            focusSearchOnAppearance = false
+            searchField.becomeFirstResponder()
+        }
+    }
+
+    @objc private func backToHome() {
+        navigationController?.popViewController(animated: true)
     }
 
     @objc private func refresh() {
@@ -961,23 +1005,32 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         // 記録すると、読み込み中に接続先が変わった場合に、前の接続先の
         // 一覧が新しい接続先のものとして扱われてしまうため。
         let baseURLAtStart = SettingsStore.shared.baseURL?.absoluteString
+        let queryAtStart = searchText
         if isFilterActive {
             loadAllForFilter(targetPage: page, baseURLAtStart: baseURLAtStart)
         } else {
             Task { [weak self] in
                 guard let self else { return }
                 do {
-                    var response = try await APIClient.shared.fetchVideos(page: page, order: self.sortOrder)
+                    var response = try await APIClient.shared.fetchVideos(page: page, order: self.sortOrder, searchQuery: queryAtStart)
                     // 復元したページが総ページ数を超えていたら、最後のページを取り直す
                     // (録画が減ってページが無くなっている場合)。
                     let lastPage = max(1, Int(ceil(Double(response.total) / Double(Self.pageSize))))
                     if page > lastPage {
-                        response = try await APIClient.shared.fetchVideos(page: lastPage, order: self.sortOrder)
+                        response = try await APIClient.shared.fetchVideos(page: lastPage, order: self.sortOrder, searchQuery: queryAtStart)
                         self.currentPage = lastPage
                     } else {
                         self.currentPage = page
                     }
+                    guard self.searchText == queryAtStart else {
+                        self.isLoading = false
+                        self.refreshControl.endRefreshing()
+                        self.pendingSearchReload = false
+                        self.applySearchChange()
+                        return
+                    }
                     self.loadedBaseURLString = baseURLAtStart
+                    self.loadedSearchQuery = queryAtStart
                     self.total = response.total
                     self.programs = response.recorded_programs
                     // サーバー側のページ分けで読んだので、全件の控えは使えない。
@@ -1005,10 +1058,11 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         }
     }
 
-    /// フィルタ用に全ページ (Web 版と同じ最大50ページ) を、サーバーの並び順の
-    /// まま取得して絞り込み、指定ページを表示する。
+    /// 既存の改造サーバー向けフィルタは最大50ページまで取得する。
+    /// 検索中は検索結果のページだけを対象とし、通常検索ではこの経路を使わない。
     /// 絞り込みは端末側で、並びはサーバーの並びをそのまま保つ (Web 版と同じ)。
     private func loadAllForFilter(targetPage: Int, baseURLAtStart: String?) {
+        let queryAtStart = searchText
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -1016,19 +1070,26 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
                 var page = 1
                 var allTotal = Int.max
                 while collected.count < allTotal, page <= 50 {
-                    let response = try await APIClient.shared.fetchVideos(page: page, order: self.sortOrder)
+                    let response = try await APIClient.shared.fetchVideos(page: page, order: self.sortOrder, searchQuery: queryAtStart)
+                    guard self.searchText == queryAtStart else { break }
                     allTotal = response.total
                     collected += response.recorded_programs
                     if response.recorded_programs.isEmpty { break }
                     page += 1
                 }
+                guard self.searchText == queryAtStart else {
+                    self.isLoading = false
+                    self.pendingSearchReload = false
+                    self.applySearchChange()
+                    return
+                }
                 self.loadedBaseURLString = baseURLAtStart
-                // 取得した全件は控えておき、検索の言葉が変わったときは
-                // 通信し直さず手元で絞り直せるようにする。
+                self.loadedSearchQuery = queryAtStart
+                // 同じ検索語のフィルタ結果だけを、ページ送り用に保持する。
                 self.allCollectedPrograms = collected
                 self.hasCollectedAllPrograms = true
                 self.filteredPrograms = collected.filter {
-                    self.matchesFilters($0) && self.matchesSearch($0)
+                    self.matchesFilters($0)
                 }
                 // Web 版と同じく、件数表示は絞り込み後の件数にする。
                 self.total = self.filteredPrograms.count
@@ -1242,6 +1303,7 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     /// 欄を閉じる。アプリでは言葉そのものが絞り込みなので、
     /// 絞り込みも解けて全件に戻る。
     @objc private func closeSearch() {
+        searchDebounceTimer?.invalidate()
         guard isSearchBarOpen else { return }
         isSearchBarOpen = false
         searchField.text = ""
@@ -1266,32 +1328,25 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         let newText = (searchField.text ?? "").trimmingCharacters(in: .whitespaces)
         guard newText != searchText else { return }
         searchText = newText
-        applySearchChange()
+        searchDebounceTimer?.invalidate()
+        searchDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
+            self?.applySearchChange()
+        }
     }
 
-    /// 検索の言葉が変わったあとの共通の手続き。読み直しやフィルタの
-    /// 変更と同じく、選択中なら終える。全件の控えが使えるときは
-    /// 通信せず手元で絞り直し、無いときは1ページ目から読み直す。
+    /// 検索はサーバーでページ分けし、前のクエリの全件控えを使い回さない。
     private func applySearchChange() {
+        searchDebounceTimer?.invalidate()
+        searchDebounceTimer = nil
         if isSelectionMode { exitSelectionMode() }
         pendingRestorePage = nil
+        hasCollectedAllPrograms = false
+        allCollectedPrograms = []
         guard !isLoading else {
             pendingSearchReload = true
             return
         }
-        if hasCollectedAllPrograms, isFilterActive {
-            filteredPrograms = allCollectedPrograms.filter {
-                matchesFilters($0) && matchesSearch($0)
-            }
-            total = filteredPrograms.count
-            currentPage = 1
-            showFilteredPage()
-            updatePagination()
-        } else {
-            hasCollectedAllPrograms = false
-            allCollectedPrograms = []
-            loadPage(1)
-        }
+        loadPage(1)
     }
 
     /// 読み込みが終わった時点で、読み込み中に変わった検索が残って
@@ -1324,16 +1379,6 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
         reloadAfterOperation()
     }
 
-    /// 検索の判定。題名とシリーズ名への部分一致 (大文字と小文字は
-    /// 区別しない)。シリーズ名は、題名とは別に持っている番組だけ。
-    private func matchesSearch(_ program: RecordedProgram) -> Bool {
-        guard !searchText.isEmpty else { return true }
-        if program.title.localizedCaseInsensitiveContains(searchText) { return true }
-        if let seriesTitle = program.series_title,
-           seriesTitle.localizedCaseInsensitiveContains(searchText) { return true }
-        return false
-    }
-
     // MARK: - 表示状態の保存と復元
 
     /// 表示状態 (ページ・並び順・両フィルタ) を端末ローカルに保存する。
@@ -1343,6 +1388,8 @@ final class VideoListViewController: UIViewController, UITableViewDataSource, UI
     }
 
     private func saveViewState(page: Int) {
+        // ホームの一時的な検索で、通常一覧のページ・フィルタ・スクロール設定を潰さない。
+        guard persistsViewState, searchText.isEmpty else { return }
         var state: [String: Any] = [
             "page": page,
             "order": sortOrder,
@@ -2393,6 +2440,8 @@ final class VideoCell: UITableViewCell {
     static let reuseID = "VideoCell"
 
     private let cardView = UIView()
+    private var cardTopConstraint: NSLayoutConstraint?
+    private let homeDivider = UIView()
     private let thumbnailView = UIImageView()
     /// このセルがいま表示している番組の ID。サムネイルの読み込みが
     /// 終わったときに、セルが使い回されて別の番組に変わっていたら
@@ -2624,8 +2673,17 @@ final class VideoCell: UITableViewCell {
         thumbnailLeadingConstraint = thumbnailView.leadingAnchor.constraint(
             equalTo: cardView.leadingAnchor, constant: Self.cardContentLeading)
         thumbnailLeadingConstraint?.isActive = true
+        cardTopConstraint = cardView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 10)
+        homeDivider.backgroundColor = AppPalette.pressed
+        homeDivider.translatesAutoresizingMaskIntoConstraints = false
+        homeDivider.isHidden = true
+        cardView.addSubview(homeDivider)
         NSLayoutConstraint.activate([
-            cardView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 10),
+            cardTopConstraint!,
+            homeDivider.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 9),
+            homeDivider.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -9),
+            homeDivider.bottomAnchor.constraint(equalTo: cardView.bottomAnchor),
+            homeDivider.heightAnchor.constraint(equalToConstant: 1),
             cardView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
             cardView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -8),
             cardView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
@@ -2773,6 +2831,10 @@ final class VideoCell: UITableViewCell {
     override func prepareForReuse() {
         super.prepareForReuse()
         progressDuration = 0
+        cardTopConstraint?.constant = 10
+        cardView.layer.cornerRadius = 11
+        cardView.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+        homeDivider.isHidden = true
         thumbnailProgramID = nil
         thumbnailView.image = nil
         logoView.image = nil
@@ -2903,6 +2965,17 @@ final class VideoCell: UITableViewCell {
         unwatchedBottomConstraint?.constant = showsProtected ? -30 : -8
         progressDuration = program.recorded_video.duration
         updateWatchedProgress()
+    }
+
+    /// ホームだけは本家と同じ一つの面にまとめ、既存一覧の既定表示を変えない。
+    func configureHomeGrouping(first: Bool, last: Bool) {
+        cardTopConstraint?.constant = 0
+        cardView.layer.cornerRadius = 8
+        var corners: CACornerMask = []
+        if first { corners.formUnion([.layerMinXMinYCorner, .layerMaxXMinYCorner]) }
+        if last { corners.formUnion([.layerMinXMaxYCorner, .layerMaxXMaxYCorner]) }
+        cardView.layer.maskedCorners = corners
+        homeDivider.isHidden = last
     }
 
     deinit {

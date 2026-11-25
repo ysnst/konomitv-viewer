@@ -237,7 +237,16 @@ final class SyncedSettingsStore {
     }
 
     /// いま効いている設定。端末内の控えから組み立てて保持する。
-    private(set) var current: SyncedClientSettings
+    private(set) var current: SyncedClientSettings {
+        didSet {
+            guard oldValue.mylist != current.mylist else { return }
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .mylistDidChange, object: nil)
+            }
+        }
+    }
+    /// ホームで「変更なし」と「通信失敗」を区別する。未送信変更による取得見送りは失敗ではない。
+    private(set) var lastRefreshFailed = false
 
     private init() {
         current = Self.loadFromLocal()
@@ -965,7 +974,9 @@ final class SyncedSettingsStore {
     /// サーバー側の値を取り込んで、現在の値と違えば差し替える。
     /// 差し替えたかどうかを返す。同期が効いていない・取得に失敗した
     /// ときは何もせず false を返す。
+    @MainActor
     func refreshFromServer() async -> Bool {
+        lastRefreshFailed = false
         // 前回の起動で送れずに端末へ残した変更があれば、ここで
         // 引き継ぐ (条件が合わなければ破棄する)。
         adoptRestoredUnsentIfNeeded()
@@ -1016,6 +1027,7 @@ final class SyncedSettingsStore {
         refreshSequence += 1
         let sequence = refreshSequence
         guard let settings = try? await APIClient.shared.fetchClientSettings() else {
+            if sequence == refreshSequence { lastRefreshFailed = true }
             return false
         }
         // 取り込みの最中に利用者が変更していたら、その変更を古い

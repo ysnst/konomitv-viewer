@@ -76,7 +76,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // 設定画面はその「設定」の入口の先に移った。
         // Web 版の下部ナビには番組表は無く録画予約があるため、それに合わせた
         // (本人の指示、2026-11-23)。番組表は生放送一覧から重ねて開く。
-        let videos = UINavigationController(rootViewController: VideoListViewController())
+        let videos = UINavigationController(rootViewController: VideoHomeViewController())
         let live = UINavigationController(rootViewController: LiveListViewController())
         let reservations = UINavigationController(rootViewController: ReservationListViewController())
         let mypage = UINavigationController(rootViewController: MyPageViewController())
@@ -93,7 +93,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             (controller: live, title: "テレビをみる", image: liveImage,
              makeRoot: { LiveListViewController() }),
             (controller: videos, title: "ビデオをみる", image: videosImage,
-             makeRoot: { VideoListViewController() }),
+             makeRoot: { VideoHomeViewController() }),
             (controller: reservations, title: "録画予約", image: reservationsImage,
              makeRoot: { ReservationListViewController() }),
             (controller: mypage, title: "マイページ", image: mypageImage,

@@ -121,6 +121,23 @@ struct HistoryStoreTests {
         let callsBefore = calls
         let disabledOK = await store.refresh(force: true)
         precondition(disabledOK && calls == callsBefore && store.currentSnapshot.videoIDs.isEmpty)
+        let initial = WatchedHistoryStore.Context(auth: 1, sync: 1, configuration: 1,
+                                                 baseURL: "https://a.example", enabled: true)
+        let transitions = [
+            WatchedHistoryStore.Context(auth: 2, sync: 1, configuration: 1, baseURL: initial.baseURL, enabled: true),
+            WatchedHistoryStore.Context(auth: 1, sync: 2, configuration: 1, baseURL: initial.baseURL, enabled: true),
+            WatchedHistoryStore.Context(auth: 1, sync: 1, configuration: 2, baseURL: initial.baseURL, enabled: true),
+            WatchedHistoryStore.Context(auth: 1, sync: 1, configuration: 1, baseURL: "https://b.example", enabled: true),
+            WatchedHistoryStore.Context(auth: 1, sync: 1, configuration: 1, baseURL: initial.baseURL, enabled: false),
+        ]
+        for transition in transitions {
+            var context = initial
+            let reader = WatchedHistoryStore(contextProvider: { context }, fetch: { settings(20) })
+            let loaded = await reader.refresh()
+            precondition(loaded && reader.currentSnapshot.videoIDs == [1])
+            context = transition
+            precondition(reader.currentSnapshot.videoIDs.isEmpty, "Context change must hide old history before notification")
+        }
         print("HistoryStoreTests passed: ratios, invalid data, ordering, coalescing, stale responses, context changes, retry, disabled sync")
     }
 }

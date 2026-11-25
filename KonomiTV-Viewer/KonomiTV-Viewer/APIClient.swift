@@ -137,8 +137,18 @@ final class APIClient {
     // MARK: - 録画一覧
 
     /// 30件ずつ。並び順はサーバー側の指定 (order = "desc" が新しい順、"asc" が古い順)。
-    func fetchVideos(page: Int, order: String = "desc") async throws -> RecordedProgramsResponse {
-        let request = try request(forPath: "/api/videos?order=\(order)&page=\(page)")
+    func fetchVideos(page: Int, order: String = "desc", searchQuery: String = "") async throws -> RecordedProgramsResponse {
+        var components = URLComponents()
+        components.path = searchQuery.isEmpty ? "/api/videos" : "/api/videos/search"
+        components.queryItems = [URLQueryItem(name: "order", value: order),
+                                 URLQueryItem(name: "page", value: String(page))]
+        if !searchQuery.isEmpty {
+            components.queryItems?.append(URLQueryItem(name: "query", value: searchQuery))
+        }
+        // FastAPI のクエリ解釈では + は空白になるため、リテラルの + は明示的に符号化する。
+        components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+        guard let path = components.string else { throw APIError.invalidResponse }
+        let request = try request(forPath: path)
         let (data, response) = try await session.data(for: request)
         try check(response)
         return try JSONDecoder().decode(RecordedProgramsResponse.self, from: data)
