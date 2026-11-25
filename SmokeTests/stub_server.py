@@ -87,9 +87,10 @@ def playlist_body(session_id):
         "#EXT-X-VERSION:3",
         "#EXT-X-TARGETDURATION:6",
         "#EXT-X-MEDIA-SEQUENCE:0",
+        "#EXT-X-PLAYLIST-TYPE:VOD",
     ]
     for seq in range(3):
-        lines.append("#EXTINF:6.006,")
+        lines.append("#EXTINF:6.000000,")
         lines.append("segment?session_id=%s&sequence=%d" % (session_id, seq))
     lines.append("#EXT-X-ENDLIST")
     lines.append("")
