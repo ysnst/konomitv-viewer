@@ -1,4 +1,5 @@
 import AVFoundation
+import AVKit
 import UIKit
 
 #if canImport(MobileVLCKit)
