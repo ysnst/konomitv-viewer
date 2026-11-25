@@ -370,6 +370,31 @@ final class PlayerViewController: UIViewController {
     private var pendingStartPause = false
     /// 開始の用意を待っている間の知らせ文。
     private static let startLoadingMessage = "読み込んでいます…"
+    /// fMP4 経路 (H.265 を標準の再生部品で再生する経路) の開始の控え。
+    /// 開始に失敗したときの受け皿 (少し待ってからの取り直しと、従来の
+    /// VLC 経路への落ち方) に使う。初期化ファイルの行を確認して fMP4 で
+    /// 始めたときだけ置き、新しい開始のたびに消す。
+    private struct FMP4StartContext {
+        /// 合図 (segment_format=fmp4) つきのプレイリストの URL (取り直し用)。
+        let fmp4URL: URL
+        /// 合図なしのプレイリストの URL (従来の VLC 経路への落ち方用)。
+        let fallbackURL: URL
+        /// 開始位置 (秒)。
+        let seconds: Double
+        /// この開始の通し番号。別の開始に切り替わっていたら、控えは
+        /// 古いものとして扱わない。
+        let startCount: Int
+        /// 取り直しを既に使ったかどうか (取り直しは1回だけ)。
+        var retried: Bool
+    }
+    private var fmp4StartContext: FMP4StartContext?
+    /// fMP4 の開始失敗のあと、少し待ってから取り直すための予約。
+    /// 予約はタイマーだけなので、待っている間も画面の操作は止まらない。
+    private var fmp4RetryWorkItem: DispatchWorkItem?
+    /// 取り直しまでの待ち時間 (秒)。続きの位置の区切りの用意には、
+    /// サーバー側で数秒かかる実測があるため、用意が間に合う程度の
+    /// 間を置く。
+    private static let fmp4RetryDelay: TimeInterval = 3
     /// 開始の後に、利用者が自分で位置を動かしたかどうか。動かして
     /// いたら、遅れて返ってきた続きの位置の確認では移らない。
     private var userSeekedSinceStart = false
@@ -2315,6 +2340,12 @@ final class PlayerViewController: UIViewController {
             retained.leftScreenDuringPiP = false
             retained.stopPlayback()
         }
+        // 新しい開始では、前の開始の fMP4 の控えと取り直しの予約は
+        // 引き継がない (古い開始の失敗の受け皿が、新しい開始を
+        // 邪魔しないようにするため)。
+        fmp4StartContext = nil
+        fmp4RetryWorkItem?.cancel()
+        fmp4RetryWorkItem = nil
         // 新しい開始では、再生はまだ始まっていないものとして扱う
         // (開始前の移動の控えと、その反映の判定に使う)。
         playbackDidStart = false
@@ -2401,7 +2432,7 @@ final class PlayerViewController: UIViewController {
                let fmp4URL = APIClient.shared.playlistURL(
                    videoID: videoID, quality: probeQuality, profile: probeProfile,
                    sessionID: probeSessionID, fmp4: true) {
-                self.startFMP4Playback(url: fmp4URL, at: seconds, startCount: startCount)
+                self.startFMP4Playback(url: fmp4URL, fallbackURL: url, at: seconds, startCount: startCount)
             } else {
                 self.startVLCPlaybackFlow(url: url, at: seconds, startCount: startCount)
             }
@@ -2415,7 +2446,16 @@ final class PlayerViewController: UIViewController {
     /// 再生ボタンで始め直せるようにする)。字幕は、通常画質と同じく
     /// 再生部品の受け取り口 (メタデータ) から受ける (fMP4 の中の
     /// 字幕データは emsg の形で届く想定)。
-    private func startFMP4Playback(url: URL, at seconds: Double, startCount: Int) {
+    /// 開始に失敗したときの受け皿 (取り直しと、従来の VLC 経路への
+    /// 落ち方) のために、合図なしの URL (fallbackURL) と合わせて
+    /// 開始の控えを置く。取り直しの開始では同じ通し番号で呼ばれる
+    /// ため、控えは置き直さず、取り直し済みの印を保つ。
+    private func startFMP4Playback(url: URL, fallbackURL: URL, at seconds: Double, startCount: Int) {
+        if fmp4StartContext?.startCount != startCount {
+            fmp4StartContext = FMP4StartContext(
+                fmp4URL: url, fallbackURL: fallbackURL,
+                seconds: seconds, startCount: startCount, retried: false)
+        }
 #if canImport(MobileVLCKit)
         teardownVLCPlayback()
 #endif
@@ -2444,6 +2484,78 @@ final class PlayerViewController: UIViewController {
         startAVPlayback(asset: APIClient.shared.playerAsset(url: url), at: seconds)
         pendingRelayRetryPosition = nil
         finishStartPlayback(at: seconds)
+    }
+
+    /// fMP4 経路で、再生が始まる前に再生部品の項目が失敗したときの
+    /// 受け皿。続きの位置から開始すると、再生部品の最初の取りに行きは
+    /// 「続きの位置の区切り」になるが、サーバー側でその区切りの用意が
+    /// 間に合わないと 422 が返ることがあり、再生部品はそのまま項目を
+    /// 失敗扱いにして取り直さない (実機で確認済み)。受け皿が無いと、
+    /// そのまま「再生を開始できませんでした。」で行き止まりになる。
+    /// まず少し待ってから再生部品でもう一度だけ始め直し (用意が
+    /// 間に合えば新しい経路のまま開始できる)、それでも駄目なら
+    /// 同じセッション・同じ位置のまま従来の VLC 経路へ落とす。
+    /// 対象は「再生が始まる前」の失敗だけ。再生が始まったあとの失敗と、
+    /// 他の経路 (通常画質・生放送など) の開始失敗は扱わず、今まで
+    /// どおり呼び出し側の失敗表示に任せる。扱えた場合は true を返す。
+    private func handleFMP4StartFailureIfNeeded() -> Bool {
+        guard !playbackDidStart,
+              var context = fmp4StartContext,
+              context.startCount == startPlaybackCount else { return false }
+        if !context.retried {
+            // 取り直しは1回だけ。少し待ってから始める (待つ間は
+            // タイマーの予約だけで、画面の操作は止めない)。
+            context.retried = true
+            fmp4StartContext = context
+            messageLabel.text = "再生の開始に失敗しました。少し待ってからもう一度試します。"
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, !self.didLeaveScreen,
+                      let context = self.fmp4StartContext,
+                      context.startCount == self.startPlaybackCount,
+                      !self.playbackDidStart else { return }
+                self.fmp4RetryWorkItem = nil
+                self.retryFMP4Playback(context: context)
+            }
+            fmp4RetryWorkItem?.cancel()
+            fmp4RetryWorkItem = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.fmp4RetryDelay, execute: work)
+            return true
+        }
+        // 取り直しても駄目なら、従来の VLC 経路へ落とす。落ちたことが
+        // 利用者に伝わるよう、知らせを出してから始める (開始側の
+        // 読み込み表示は、知らせ欄が空でないため上書きしない。再生が
+        // 始まったあとも知らせは残る)。
+        fmp4StartContext = nil
+        let position = pendingPreStartSeek ?? context.seconds
+        pendingPreStartSeek = nil
+        let intentPlaying = playbackIntentPlaying
+        messageLabel.text = "新しい再生方式で開始できなかったため、従来の方式で再生します。"
+        startVLCPlaybackFlow(url: context.fallbackURL, at: position, startCount: context.startCount)
+        if !intentPlaying {
+            // 止めていた場合は、落ちた先でも止めたままにする
+            // (セッション作り直しの復旧と同じ扱い)。
+            pauseEngine()
+            updatePlayPauseIcon()
+        }
+        return true
+    }
+
+    /// fMP4 経路の取り直し。同じ合図つきの URL で、再生部品の項目を
+    /// 作り直して始める。開始位置は、待っている間に利用者が指定した
+    /// 移動先があればそちらを優先する。止めていた場合は、始め直した
+    /// 後も止めたままにする (セッション作り直しの復旧と同じ扱い)。
+    private func retryFMP4Playback(context: FMP4StartContext) {
+        let position = pendingPreStartSeek ?? context.seconds
+        pendingPreStartSeek = nil
+        let intentPlaying = playbackIntentPlaying
+        // 前の失敗の知らせは消し、開始側の読み込み表示に任せる。
+        messageLabel.text = nil
+        startFMP4Playback(url: context.fmp4URL, fallbackURL: context.fallbackURL,
+                          at: position, startCount: context.startCount)
+        if !intentPlaying {
+            pauseEngine()
+            updatePlayPauseIcon()
+        }
     }
 
     /// H.265 / HEVC を VLCKit で再生する開始 (従来の経路)。
@@ -2573,6 +2685,10 @@ final class PlayerViewController: UIViewController {
                 // 古い項目の失敗を今の再生の失敗として表示しない。
                 guard let self, !self.didLeaveScreen,
                       self.player?.currentItem === item else { return }
+                // fMP4 経路の開始失敗には受け皿がある (少し待ってからの
+                // 取り直しと、従来の VLC 経路への落ち方)。そちらで
+                // 扱えたら、ここでは失敗表示にしない。
+                if self.handleFMP4StartFailureIfNeeded() { return }
                 self.messageLabel.text = "再生を開始できませんでした。"
             }
         }
@@ -2889,6 +3005,11 @@ final class PlayerViewController: UIViewController {
 
     private func stopPlayback() {
         playbackGeneration += 1
+        // fMP4 の開始失敗の取り直しの予約と控えも消す (離れたあとに
+        // 古い開始の受け皿が動かないようにするため)。
+        fmp4RetryWorkItem?.cancel()
+        fmp4RetryWorkItem = nil
+        fmp4StartContext = nil
         commentOverlay.stop()
         cancelAutoplayCountdown()
         fastSeekBackController.invalidate()
