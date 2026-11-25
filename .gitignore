@@ -3,3 +3,4 @@ Pods/
 *.xcworkspace/xcuserdata/
 xcuserdata/
 .DS_Store
+artifacts/

@@ -45,7 +45,7 @@ Web 版にはあるものの、このアプリでは対応していないもの�
 署名なしの IPA で配布しているため、App Store のアプリのようには入りません。サイドロード用の入れ物が要ります。ここでは LiveContainer の例です。
 
 1. LiveContainer を iPhone に入れる
-2. このリポジトリの Releases (固定タグ `sideload-latest`) から最新の IPA をダウンロードする
+2. このフォークの Actions の成功したビルドから Artifact `KonomiTV-Viewer-unsigned-ipa` をダウンロードし、中の IPA を取り出す。手動公開した版は Releases からも入手できます
 3. LiveContainer で IPA を開いて入れる
 
 AltStore や SideStore など、他のサイドロードの仕組みでも入ります。
@@ -62,7 +62,11 @@ AltStore や SideStore など、他のサイドロードの仕組みでも入り
 
 ## ビルド
 
-GitHub Actions で未署名 IPA を作ります。main への push で自動でビルドされ、版番号は `0.<ワークフローの実行番号>` で自動で進みます。固定タグ `sideload-latest` のリリースに、常に最新の IPA が1つだけ置かれます。
+GitHub Actions の `Build (unsigned IPA)` は、作業ブランチを含む各ブランチへの push、Pull Request、手動実行で未署名 IPA を作ります。Windows では編集と Git 操作を行い、iOS のビルドは Actions の macOS ランナーで行えます。Mac でビルドする場合は `KonomiTV-Viewer` で `pod install` を実行し、生成された `KonomiTV-Viewer.xcworkspace` を使ってください。
+
+成功した実行の Artifact `KonomiTV-Viewer-unsigned-ipa` には、IPA、`build-info.json`、`checksums.txt`、依存版の `Podfile.lock`、ビルドログが入ります。版番号は `0.<ワークフローの実行番号>`、IPA 名にはコミット SHA の先頭12文字も含まれます。完全な SHA はアプリ内の `build-info.json` と Info.plist の `KonomiTVViewerCommitSHA` にも記録します。取得後は `python scripts/verify-ipa.py <展開先> --expected-sha <完全なSHA>` で、IPA のハッシュと内外の記録を照合できます（Python 3.11 以降）。
+
+ビルドではタグやリリースを変更しません。公開は default branch から `Publish IPA (manual)` を明示的に手動実行したときだけ行います。この処理は対象コミットをビルドし直して検証し、実行ごとに新しい `ipa-<実行ID>-<試行番号>` タグとプレリリースを作ります。既存のタグ・公開済み IPA は移動、上書き、削除しません。新規の手動ワークフローを使うには、ワークフローファイルが default branch に入っている必要があります。
 
 ## ライセンス
 
