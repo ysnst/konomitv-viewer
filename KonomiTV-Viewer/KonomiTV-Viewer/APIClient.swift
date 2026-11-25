@@ -4,6 +4,9 @@ import Foundation
 enum APIError: Error {
     case notConfigured
     case badStatus(Int)
+    /// 送る内容を JSON の形にできなかった。送信自体を行っていない
+    /// ため、サーバーへは届いていないことが明らかな失敗。
+    case encodingFailed
     /// 応答の形が想定と違った (JSON の辞書でないなど)。
     case invalidResponse
     /// サーバー側で保護の仕組みが無効なため切り替えられない。
@@ -358,7 +361,14 @@ final class APIClient {
     ) async throws {
         var request = try request(forPath: "/api/settings/client", method: "PUT", authorized: true)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: settings)
+        // 形にできない場合は送信前の失敗として分ける (送信したのに
+        // 応答が無かった失敗と混ざると、届いていない変更まで
+        // 「届いたかもしれない」扱いになってしまうため)。
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: settings)
+        } catch {
+            throw APIError.encodingFailed
+        }
         let (_, response) = try await session.data(for: request)
         try check(response)
         // 送れた時点で、この端末はサーバーと同期したことになる

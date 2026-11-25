@@ -811,6 +811,13 @@ final class TimeTableSettingsStore {
                 return .success
             } catch let APIError.badStatus(code) where code == 422 {
                 continue  // 取り直して1回だけやり直す。
+            } catch let APIError.badStatus(code) where (500..<600).contains(code) {
+                // サーバー側の都合による失敗 (5xx) は、保存が済んだ
+                // 後に返ってくることもあるため、適用されていないとは
+                // 断定できない。結果が分からないものとして扱い、
+                // 次回の保存で意図と照合して送り直す (共通設定の
+                // 同期と同じ扱い)。
+                return .unknown
             } catch is APIError {
                 // サーバーから応答が返ってきた失敗 (拒否など) と、
                 // 送信前に止まった失敗は、適用されていないことが

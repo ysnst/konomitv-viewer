@@ -283,6 +283,15 @@ final class SyncedSettingsStore {
         /// 結果が分からない送信で生じたかもしれない、サーバー側の
         /// 値と最終的な意図の食い違い (配列の要素単位の控え)。
         var uncertain = UncertainRecord()
+        /// 利用者が明示的に行ったピン留めの並び替えの対象と、その
+        /// 並び (対象の要素を、並び替え後の相対的な順序で並べたもの)。
+        /// 編集を合成すると差分の元が古い値へ戻るため、その編集で
+        /// 追加された要素は差分の元に無く、並び替えの対象から漏れて
+        /// しまう。並び替えは1操作ごとの編集として届くので、編集の
+        /// 単位で対象を記録し、合成しても引き継ぐ。並び替えを
+        /// していない変更では空で、その場合は従来どおり、追加・削除
+        /// だけでは他の端末の並び順を保つ。
+        var pinnedOrderIntent: [String] = []
     }
 
     /// 結果が分からない送信 (サーバーへ届いたかもしれないのに応答が
@@ -375,6 +384,21 @@ final class SyncedSettingsStore {
         entry.type + "#" + String(entry.id)
     }
 
+    /// 1回分の編集が、ピン留めの明示的な並び替えかどうかと、その
+    /// 対象を返す。編集の前後に共通する要素の相対的な順序が変わって
+    /// いれば並び替えで、対象 (共通する要素) を編集後の相対的な
+    /// 順序で返す。追加・削除だけの編集では順序は変わらないため空を
+    /// 返し、その場合は他の端末の並び順を保つ対象になる。
+    fileprivate static func pinnedOrderIntent(
+        from base: SyncedClientSettings, to desired: SyncedClientSettings
+    ) -> [String] {
+        let kept = Set(base.pinnedChannelIDs)
+            .intersection(Set(desired.pinnedChannelIDs))
+        let inBase = base.pinnedChannelIDs.filter { kept.contains($0) }
+        let inDesired = desired.pinnedChannelIDs.filter { kept.contains($0) }
+        return inBase == inDesired ? [] : inDesired
+    }
+
     /// サーバーへの送信の結果。届かなかったことが明らかな失敗と、
     /// 届いたかどうか分からない失敗を区別する (応答が返って
     /// こなかった送信は、サーバー側で保存が済んでいることがある)。
@@ -385,7 +409,9 @@ final class SyncedSettingsStore {
         /// (送信前の取得の失敗、サーバーからの拒否の応答など)。
         case notApplied
         /// 送信が届いたかどうか分からない失敗 (応答が返って
-        /// こなかったもの)。サーバー側に値が残っている可能性がある。
+        /// こなかったものと、サーバー側の都合による失敗 (5xx)。
+        /// 保存が済んだ後に返ってくることがある)。サーバー側に
+        /// 値が残っている可能性がある。
         case unknown
     }
 
@@ -460,6 +486,13 @@ final class SyncedSettingsStore {
         var carriedBase: SyncedClientSettings?
         var carriedUncertainKeys: Set<String> = []
         var carriedUncertain = UncertainRecord()
+        // ピン留めの並び替えの対象は、この編集が並び替えならこの
+        // 編集のものを使う。並び替えでない編集では、まだ送れて
+        // いない変更に並び替えが含まれていれば、その対象を引き継ぐ
+        // (合成で差分の元が古い値へ戻ると、並び替えた要素が差分の
+        // 元に無くなり、対象から漏れてしまうため)。
+        var carriedPinnedOrderIntent = Self.pinnedOrderIntent(
+            from: previous, to: settings)
         if let unsent = unsentSave {
             unsentSave = nil
             if unsent.generation == generation,
@@ -467,6 +500,9 @@ final class SyncedSettingsStore {
                 carriedBase = unsent.base
                 carriedUncertainKeys = unsent.uncertainKeys
                 carriedUncertain = unsent.uncertain
+                if carriedPinnedOrderIntent.isEmpty {
+                    carriedPinnedOrderIntent = unsent.pinnedOrderIntent
+                }
             }
         }
         let base: SyncedClientSettings
@@ -476,16 +512,29 @@ final class SyncedSettingsStore {
             base = pending.base
             carriedUncertainKeys.formUnion(pending.uncertainKeys)
             carriedUncertain.formUnion(pending.uncertain)
+            if carriedPinnedOrderIntent.isEmpty {
+                carriedPinnedOrderIntent = pending.pinnedOrderIntent
+            }
         } else if let carriedBase {
             base = carriedBase
         } else {
             base = previous
         }
+        // 送信中の変更に含まれていた並び替えも、送信待ち・未送信に
+        // 無ければ引き継ぐ (送信中の分は差分の元の引き継ぎ対象では
+        // ないが、並び替えの対象は送信の成否によらず残す必要がある)。
+        if carriedPinnedOrderIntent.isEmpty,
+           let inFlight = inFlightSave,
+           inFlight.generation == generation,
+           inFlight.syncGeneration == syncGeneration {
+            carriedPinnedOrderIntent = inFlight.pinnedOrderIntent
+        }
         pendingSave = PendingSave(
             id: pendingSaveSequence, base: base, desired: settings,
             generation: generation, syncGeneration: syncGeneration,
             uncertainKeys: carriedUncertainKeys,
-            uncertain: carriedUncertain)
+            uncertain: carriedUncertain,
+            pinnedOrderIntent: carriedPinnedOrderIntent)
         syncPersistedRecord()
         guard !isSaving else { return }
         isSaving = true
@@ -519,6 +568,7 @@ final class SyncedSettingsStore {
                 base: item.base, desired: item.desired,
                 uncertainKeys: item.uncertainKeys,
                 uncertain: item.uncertain,
+                pinnedOrderIntent: item.pinnedOrderIntent,
                 expectedGeneration: item.generation,
                 expectedSyncGeneration: item.syncGeneration)
             inFlightSave = nil
@@ -576,7 +626,11 @@ final class SyncedSettingsStore {
                         generation: pending.generation,
                         syncGeneration: pending.syncGeneration,
                         uncertainKeys: item.uncertainKeys.union(pending.uncertainKeys),
-                        uncertain: mergedUncertain)
+                        uncertain: mergedUncertain,
+                        // 並び替えの対象は新しい分を優先し、無ければ
+                        // 失敗した分のものを引き継ぐ。
+                        pinnedOrderIntent: pending.pinnedOrderIntent.isEmpty
+                            ? item.pinnedOrderIntent : pending.pinnedOrderIntent)
                     if consecutiveSaveFailures > 3 {
                         // 試し直しの上限。合成した分は捨てずに未送信
                         // として残し、失敗したことを画面側へ知らせる。
@@ -663,6 +717,9 @@ final class SyncedSettingsStore {
         let desired: SyncedClientSettings
         let uncertainKeys: Set<String>
         let uncertain: UncertainRecord
+        /// 明示的な並び替えの対象と並び (以前の版の控えには無い
+        /// ため、その場合は空として読む)。
+        let pinnedOrderIntent: [String]
     }
 
     /// 端末から読み出した控え。引き継ぐかどうかは、使う時点で
@@ -700,7 +757,11 @@ final class SyncedSettingsStore {
                     generation: composed.generation,
                     syncGeneration: composed.syncGeneration,
                     uncertainKeys: accumulated.uncertainKeys.union(composed.uncertainKeys),
-                    uncertain: uncertain)
+                    uncertain: uncertain,
+                    // 並び替えの対象は新しい分を優先し、無ければ
+                    // 古い分のものを引き継ぐ。
+                    pinnedOrderIntent: composed.pinnedOrderIntent.isEmpty
+                        ? accumulated.pinnedOrderIntent : composed.pinnedOrderIntent)
             } else {
                 result = composed
             }
@@ -729,6 +790,7 @@ final class SyncedSettingsStore {
             "desired": Self.clientSettingsDictionary(from: item.desired),
             "uncertainKeys": Array(item.uncertainKeys),
             "uncertain": Self.uncertainRecordDictionary(from: item.uncertain),
+            "pinnedOrderIntent": item.pinnedOrderIntent,
         ]
         store.unsentSyncedSettingsData =
             try? JSONSerialization.data(withJSONObject: record)
@@ -809,7 +871,8 @@ final class SyncedSettingsStore {
             generation: store.authGeneration,
             syncGeneration: store.syncGeneration,
             uncertainKeys: restored.uncertainKeys,
-            uncertain: restored.uncertain)
+            uncertain: restored.uncertain,
+            pinnedOrderIntent: restored.pinnedOrderIntent)
         syncPersistedRecord()
     }
 
@@ -841,7 +904,8 @@ final class SyncedSettingsStore {
             base: base,
             desired: settings(fromClientSettings: desiredDict, fallback: .defaults),
             uncertainKeys: Set(record["uncertainKeys"] as? [String] ?? []),
-            uncertain: uncertain)
+            uncertain: uncertain,
+            pinnedOrderIntent: record["pinnedOrderIntent"] as? [String] ?? [])
     }
 
     /// 設定一式を、サーバーの利用者設定と同じ形の辞書に写す
@@ -913,7 +977,9 @@ final class SyncedSettingsStore {
                         generation: pending.generation,
                         syncGeneration: pending.syncGeneration,
                         uncertainKeys: unsent.uncertainKeys.union(pending.uncertainKeys),
-                        uncertain: mergedUncertain)
+                        uncertain: mergedUncertain,
+                        pinnedOrderIntent: pending.pinnedOrderIntent.isEmpty
+                            ? unsent.pinnedOrderIntent : pending.pinnedOrderIntent)
                 } else if pendingSave == nil {
                     pendingSave = unsent
                     if !isSaving {
@@ -1157,6 +1223,7 @@ final class SyncedSettingsStore {
     private func saveToServer(
         base: SyncedClientSettings, desired: SyncedClientSettings,
         uncertainKeys: Set<String>, uncertain: UncertainRecord,
+        pinnedOrderIntent: [String],
         expectedGeneration: Int, expectedSyncGeneration: Int
     ) async -> SaveOutcome {
         let box = SaveOutcomeBox()
@@ -1164,6 +1231,7 @@ final class SyncedSettingsStore {
             box.value = await self.saveToServerSerial(
                 base: base, desired: desired,
                 uncertainKeys: uncertainKeys, uncertain: uncertain,
+                pinnedOrderIntent: pinnedOrderIntent,
                 expectedGeneration: expectedGeneration,
                 expectedSyncGeneration: expectedSyncGeneration)
         }
@@ -1176,11 +1244,14 @@ final class SyncedSettingsStore {
     /// 他の端末が先に更新した) が返ったら、1回だけ取り直して、
     /// 同じ差分を新しい最新へ適用し直す。
     /// 失敗は、送信が適用されていないことが分かるもの (送信前の
-    /// 取得の失敗、サーバーからの応答を伴う失敗) と、結果が分から
-    /// ないもの (応答が返ってこなかった失敗) に分けて返す。
+    /// 取得の失敗、サーバーからの拒否の応答) と、結果が分からない
+    /// もの (応答が返ってこなかった失敗と、サーバー側の都合による
+    /// 失敗 (5xx)。保存が済んだ後に返ってくることがあるため) に
+    /// 分けて返す。
     private func saveToServerSerial(
         base: SyncedClientSettings, desired: SyncedClientSettings,
         uncertainKeys: Set<String>, uncertain: UncertainRecord,
+        pinnedOrderIntent: [String],
         expectedGeneration: Int, expectedSyncGeneration: Int
     ) async -> SaveOutcome {
         // 照合は、変更が起きた時点の世代で行う。順番待ちの間に
@@ -1210,6 +1281,7 @@ final class SyncedSettingsStore {
             Self.applyEdits(base: base, desired: desired,
                             uncertainKeys: uncertainKeys,
                             uncertain: uncertain,
+                            pinnedOrderIntent: pinnedOrderIntent,
                             to: &clientSettings)
             clientSettings["last_synced_at"] = Date().timeIntervalSince1970
             do {
@@ -1218,6 +1290,13 @@ final class SyncedSettingsStore {
                 return .success
             } catch let APIError.badStatus(code) where code == 422 {
                 continue  // 取り直して1回だけやり直す。
+            } catch let APIError.badStatus(code) where (500..<600).contains(code) {
+                // サーバー側の都合による失敗 (5xx) は、保存が済んだ
+                // 後に返ってくることもある (中継の都合で 504 が返る
+                // 間に保存が終わっている場合など) ため、適用されて
+                // いないとは断定できない。結果が分からないものとして
+                // 扱い、次回の保存で意図と照合して送り直す。
+                return .unknown
             } catch is APIError {
                 // サーバーから応答が返ってきた失敗 (拒否など) と、
                 // 送信前に止まった失敗は、適用されていないことが
@@ -1332,6 +1411,7 @@ final class SyncedSettingsStore {
     private static func applyEdits(
         base: SyncedClientSettings, desired: SyncedClientSettings,
         uncertainKeys: Set<String>, uncertain: UncertainRecord,
+        pinnedOrderIntent: [String],
         to clientSettings: inout [String: Any]
     ) {
         if base.captionFont != desired.captionFont
@@ -1503,17 +1583,35 @@ final class SyncedSettingsStore {
                 latest: clientSettings["pinned_channel_ids"],
                 base: base.pinnedChannelIDs, desired: desired.pinnedChannelIDs,
                 extraRemoved: extraRemoved, extraAdded: extraAdded,
-                forceDesiredOrder: uncertain.pinnedOrderMayDiffer)
+                forceDesiredOrder: uncertain.pinnedOrderMayDiffer,
+                orderIntent: pinnedOrderIntent)
         }
         if base.mylist != desired.mylist
             || uncertainKeys.contains("mylist") {
             let desiredKeys = Set(desired.mylist.map(Self.mylistKey))
             let extraRemoved = uncertain.addedMylistKeys.subtracting(desiredKeys)
             let extraAdded = uncertain.removedMylistKeys.intersection(desiredKeys)
+            // 削除して登録し直した要素は、新しい登録として扱う
+            // (Web 版も、追加のたびにその時点の時刻で登録する)。
+            // 編集の前後に同じ要素があり、登録した時刻だけが
+            // 変わっている場合は再登録なので、その要素の時刻を
+            // 新しい値へ更新する対象として渡す。
+            var reRegistered: [String: Double] = [:]
+            let baseByKey = Dictionary(
+                base.mylist.map { (Self.mylistKey($0), $0) },
+                uniquingKeysWith: { first, _ in first })
+            for entry in desired.mylist {
+                let entryKey = Self.mylistKey(entry)
+                if let before = baseByKey[entryKey],
+                   before.createdAt != entry.createdAt {
+                    reRegistered[entryKey] = entry.createdAt
+                }
+            }
             clientSettings["mylist"] = mergedMylistEntries(
                 latest: clientSettings["mylist"],
                 base: base.mylist, desired: desired.mylist,
-                extraRemovedKeys: extraRemoved, extraAddedKeys: extraAdded)
+                extraRemovedKeys: extraRemoved, extraAddedKeys: extraAdded,
+                reRegisteredCreatedAt: reRegistered)
         }
     }
 
@@ -1585,9 +1683,14 @@ final class SyncedSettingsStore {
     /// キーワードと同じ考え方で、照合の鍵は種類と番号の組。
     /// 利用者がこの端末で消した登録は復活せず、他の端末が足した
     /// 登録は消えない。
+    /// 削除して登録し直した要素 (reRegisteredCreatedAt に鍵がある
+    /// 要素) は、新しい登録として扱い、最新の値に残っている要素の
+    /// 登録した時刻だけを新しい値へ差し替える (他の項目や、アプリの
+    /// 知らない項目はそのまま残す)。
     private static func mergedMylistEntries(
         latest: Any?, base: [MylistEntry], desired: [MylistEntry],
-        extraRemovedKeys: Set<String> = [], extraAddedKeys: Set<String> = []
+        extraRemovedKeys: Set<String> = [], extraAddedKeys: Set<String> = [],
+        reRegisteredCreatedAt: [String: Double] = [:]
     ) -> [Any] {
         func key(type: String, id: Int) -> String { type + "#" + String(id) }
         let baseKeys = Set(base.map { key(type: $0.type, id: $0.id) })
@@ -1605,7 +1708,14 @@ final class SyncedSettingsStore {
                 }
                 let entryKey = key(type: parsed.type, id: parsed.id)
                 if removedKeys.contains(entryKey) { continue }
-                result.append(raw)
+                if let newCreatedAt = reRegisteredCreatedAt[entryKey],
+                   parsed.createdAt != newCreatedAt {
+                    var updated = entry
+                    updated["created_at"] = newCreatedAt
+                    result.append(updated)
+                } else {
+                    result.append(raw)
+                }
                 presentKeys.insert(entryKey)
             }
         }
@@ -1667,12 +1777,19 @@ final class SyncedSettingsStore {
     /// 最終的な意図の並びを適用する。その送信で並び替えた後に
     /// 利用者が並びを取り消すと、編集前後の順序が同じになって
     /// しまい、サーバーに残った並びを意図どおりに戻せないため。
+    /// 明示的な並び替えの対象 (orderIntent) に含まれる要素は、
+    /// 編集の合成で差分の元に無くなった (その編集で追加された)
+    /// 要素でも、並び替えの対象に含める。追加された要素を明示的に
+    /// 動かした場合に、その移動が合成の対象から漏れて効かなく
+    /// なるのを防ぐため。対象でない追加要素は従来どおり末尾に
+    /// 加わるだけで、他の端末の並び順は保たれる。
     /// サーバー側の値が配列の形でないときは、受け皿として利用者の
     /// 並びそのものを返す。
     private static func mergedPinnedChannelIDs(
         latest: Any?, base: [String], desired: [String],
         extraRemoved: Set<String> = [], extraAdded: Set<String> = [],
-        forceDesiredOrder: Bool = false
+        forceDesiredOrder: Bool = false,
+        orderIntent: [String] = []
     ) -> [Any] {
         guard let rawEntries = latest as? [Any] else { return desired }
         let baseSet = Set(base)
@@ -1681,10 +1798,15 @@ final class SyncedSettingsStore {
         // 意図に無いものは落とす対象に含める。
         let removed = baseSet.subtracting(desiredSet).union(extraRemoved)
         // 並び替えの対象 (編集前からあって編集後も残る要素) と、
-        // 編集後の並びにおける順位。
+        // 編集後の並びにおける順位。明示的に並び替えた対象に
+        // 含まれる要素は、差分の元に無い (追加された) 要素でも
+        // 対象に含める。落とす対象になった要素は除く。
         let keptSet = baseSet.intersection(desiredSet)
+        let targetSet = keptSet
+            .union(Set(orderIntent).intersection(desiredSet))
+            .subtracting(removed)
         var rank: [String: Int] = [:]
-        for (index, value) in desired.enumerated() where keptSet.contains(value) {
+        for (index, value) in desired.enumerated() where targetSet.contains(value) {
             if rank[value] == nil { rank[value] = index }
         }
         // 最新の並びから、この端末で消した要素だけを落とす。
@@ -1696,15 +1818,21 @@ final class SyncedSettingsStore {
         // 相対的な順序が編集前後で変わったかで判定する。変わって
         // いなければ、最新の並び順をそのまま保つ。結果が分からない
         // 送信で並び順が変わったかもしれない場合だけは、編集前後が
-        // 同じでも最終的な意図の並びを適用する。
+        // 同じでも最終的な意図の並びを適用する。差分の元に無い
+        // 要素 (追加された要素) を明示的に動かした場合は、その要素が
+        // 最新の並びの中にあれば、並び替えの対象として扱う。
         let keptInBaseOrder = base.filter { keptSet.contains($0) }
         let keptInDesiredOrder = desired.filter { keptSet.contains($0) }
-        if keptInBaseOrder != keptInDesiredOrder || forceDesiredOrder {
+        let presentValues = Set(result.compactMap { $0 as? String })
+        let movedAddedPresent = targetSet.subtracting(baseSet)
+            .intersection(presentValues)
+        if keptInBaseOrder != keptInDesiredOrder || forceDesiredOrder
+            || !movedAddedPresent.isEmpty {
             // 対象の要素が占めている枠の中でだけ、順序を入れ替える。
             // 枠の位置そのものは動かさないため、対象でない要素 (他の
             // 端末の追加分や文字列でない要素) の位置は変わらない。
             let keptSlots = result.indices.filter {
-                (result[$0] as? String).map { keptSet.contains($0) } ?? false
+                (result[$0] as? String).map { targetSet.contains($0) } ?? false
             }
             let keptValues = keptSlots.compactMap { result[$0] as? String }
             let sortedKept = keptValues.sorted { (rank[$0] ?? 0) < (rank[$1] ?? 0) }
