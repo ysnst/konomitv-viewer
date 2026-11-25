@@ -29,7 +29,7 @@ PROGRAM_1 = {
         "status": "Recorded",
         "duration": 1800.0,
         "file_size": 1408000,
-        "video_codec": "H.264",
+        "video_codec": "H.265",
         "video_resolution_width": 640,
         "video_resolution_height": 360,
     },
