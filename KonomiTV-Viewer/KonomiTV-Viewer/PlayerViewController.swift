@@ -336,6 +336,12 @@ final class PlayerViewController: UIViewController {
     private let bandView = CMSectionBandView()
     /// コメント (ニコニコ実況の過去ログ) を映像の上に流す重ね物。
     private let commentOverlay = JikkyoCommentOverlayView()
+    /// コメントの重ね物を通常画面へ固定する決まり (制約) の控え。
+    /// 全画面へ貸し出すときに外し、戻すときに付け直すために持っておく。
+    private var commentHomeConstraints: [NSLayoutConstraint] = []
+    /// 全画面 (VLCKit 経路) へ貸し出し中に、コメントの重ね物を全画面側へ
+    /// 固定する決まり (制約)。
+    private var commentBorrowConstraints: [NSLayoutConstraint] = []
     /// コメント表示のオン/オフ (操作帯の中。Web 版プレイヤーの操作帯にある
     /// コメント表示の切り替えと同じ置き場所)。
     private let commentButton = RippleButton()
@@ -347,12 +353,17 @@ final class PlayerViewController: UIViewController {
     /// 違うが、蓄えた後の扱いは共通 (AribCaption.swift)。
     private let captionEngine = CaptionDisplayEngine()
     /// 字幕の重ね物。映像の枠 (surfaceView) の中に入れる。
-    /// 全画面 (VLCKit 経路) では枠ごと貸し出されるため、そのまま付いて行く。
-    /// AVPlayer 経路の全画面では、映像の層と一緒にこちらも貸し出す。
+    /// 全画面では、どちらの経路でもコメントの上へ貸し出す
+    /// (VLCKit 経路は映像の枠の貸し出しと一緒に付け替え、
+    /// AVPlayer 経路は映像の層と一緒に貸し出す)。
     private let captionOverlayView = CaptionOverlayView()
     /// 字幕の重ね物を映像の枠へ固定する決まり (制約) の控え。
     /// 全画面へ貸し出すときに外し、戻すときに付け直すために持っておく。
     private var captionHomeConstraints: [NSLayoutConstraint] = []
+    /// 全画面 (VLCKit 経路) へ貸し出し中に、字幕の重ね物を全画面側へ
+    /// 固定する決まり (制約)。AVPlayer 経路では全画面の画面側が
+    /// 決まりを持つため、こちらは VLCKit 経路だけで使う。
+    private var captionBorrowConstraints: [NSLayoutConstraint] = []
     /// 字幕表示のオン/オフ (操作帯の中。Web 版プレイヤーの操作帯にある
     /// 字幕の切り替えと同じ置き場所で、コメント切り替えの隣に置く)。
     private let captionButton = RippleButton()
@@ -1387,6 +1398,16 @@ final class PlayerViewController: UIViewController {
         ]
         NSLayoutConstraint.activate(captionHomeConstraints)
 
+        // コメントの重ね物も、貸し出し・返却で付け外しできるよう
+        // 決まりは別に持つ (映像の枠の外側、操作帯の下いっぱいに広げる)。
+        commentHomeConstraints = [
+            commentOverlay.topAnchor.constraint(equalTo: videoContainer.topAnchor),
+            commentOverlay.bottomAnchor.constraint(equalTo: videoContainer.bottomAnchor),
+            commentOverlay.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
+            commentOverlay.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
+        ]
+        NSLayoutConstraint.activate(commentHomeConstraints)
+
         // 操作帯の高さは控えに持ち、盛り上がりの帯を差し込むときに広げる。
         controlsHeightConstraint = controlsContainer.heightAnchor.constraint(equalToConstant: 88)
         NSLayoutConstraint.activate([
@@ -1394,10 +1415,6 @@ final class PlayerViewController: UIViewController {
             videoContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             videoContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             heightConstraint,
-            commentOverlay.topAnchor.constraint(equalTo: videoContainer.topAnchor),
-            commentOverlay.bottomAnchor.constraint(equalTo: videoContainer.bottomAnchor),
-            commentOverlay.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
-            commentOverlay.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
             bottomGradient.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
             bottomGradient.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
             bottomGradient.bottomAnchor.constraint(equalTo: videoContainer.bottomAnchor),
@@ -3810,6 +3827,17 @@ final class PlayerViewController: UIViewController {
             NSLayoutConstraint.activate(self.captionHomeConstraints)
             self.surfaceView.bringSubviewToFront(self.captionOverlayView)
         }
+        // コメントの重ね物も一緒に貸し出す (全画面側では映像の上・
+        // 字幕の下に重ねる)。これまでは貸し出しの仕組み自体がなく、
+        // 通常画面に残ったまま全画面に覆われて見えなくなっていた。
+        NSLayoutConstraint.deactivate(commentHomeConstraints)
+        fullscreen.borrowedCommentView = commentOverlay
+        fullscreen.onReturnCommentView = { [weak self] in
+            guard let self else { return }
+            // 元の重なり (映像の枠の上・操作帯の下) へ戻す。
+            self.videoContainer.insertSubview(self.commentOverlay, aboveSubview: self.surfaceView)
+            NSLayoutConstraint.activate(self.commentHomeConstraints)
+        }
         fullscreen.onQualitySelected = { [weak self] newQuality in
             self?.userSwitchQuality(newQuality)
         }
@@ -3892,9 +3920,36 @@ final class PlayerViewController: UIViewController {
             surfaceView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
         ]
         NSLayoutConstraint.activate(surfaceViewBorrowConstraints)
-        // 字幕の重ね物は枠の中にあるため一緒に付いて行く。映像の描画が
-        // 字幕より上に来ないよう、枠の中で一番上に保つ。
-        surfaceView.bringSubviewToFront(captionOverlayView)
+        // コメントの重ね物も、映像の枠と一緒に貸し出す (生放送の全画面と
+        // 同じやり方)。これまでは通常画面に残ったまま全画面に覆われて、
+        // 全画面ではコメントが流れなくなっていた。
+        if commentOverlay.superview === videoContainer {
+            NSLayoutConstraint.deactivate(commentHomeConstraints)
+            commentOverlay.removeFromSuperview()
+            container.addSubview(commentOverlay)
+            commentBorrowConstraints = [
+                commentOverlay.topAnchor.constraint(equalTo: container.topAnchor),
+                commentOverlay.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+                commentOverlay.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                commentOverlay.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            ]
+            NSLayoutConstraint.activate(commentBorrowConstraints)
+        }
+        // 字幕の重ね物は枠の中にあるため一緒に付いて行くが、重なりを
+        // 全画面の並び (映像→コメント→字幕) に合わせるため、枠から
+        // 出してコメントの上へ置き直す。
+        if captionOverlayView.superview === surfaceView {
+            NSLayoutConstraint.deactivate(captionHomeConstraints)
+            captionOverlayView.removeFromSuperview()
+            container.addSubview(captionOverlayView)
+            captionBorrowConstraints = [
+                captionOverlayView.topAnchor.constraint(equalTo: container.topAnchor),
+                captionOverlayView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+                captionOverlayView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                captionOverlayView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            ]
+            NSLayoutConstraint.activate(captionBorrowConstraints)
+        }
         // 貸し出し中は、通常画面側のタップ (操作帯の出し入れ) を止める
         // (全画面側のタップと二重に効かないように)。
         surfaceTapRecognizer?.isEnabled = false
@@ -3911,6 +3966,23 @@ final class PlayerViewController: UIViewController {
         videoContainer.sendSubviewToBack(surfaceView)
         NSLayoutConstraint.activate(surfaceViewHomeConstraints)
         surfaceTapRecognizer?.isEnabled = true
+        // コメントの重ね物も通常画面へ戻す (映像の枠の上・操作帯の下)。
+        if commentOverlay.superview !== videoContainer {
+            NSLayoutConstraint.deactivate(commentBorrowConstraints)
+            commentBorrowConstraints = []
+            commentOverlay.removeFromSuperview()
+            videoContainer.insertSubview(commentOverlay, aboveSubview: surfaceView)
+            NSLayoutConstraint.activate(commentHomeConstraints)
+        }
+        // 字幕の重ね物も映像の枠の中へ戻す (枠の中で一番上に保つ)。
+        if captionOverlayView.superview !== surfaceView {
+            NSLayoutConstraint.deactivate(captionBorrowConstraints)
+            captionBorrowConstraints = []
+            captionOverlayView.removeFromSuperview()
+            surfaceView.addSubview(captionOverlayView)
+            NSLayoutConstraint.activate(captionHomeConstraints)
+            surfaceView.bringSubviewToFront(captionOverlayView)
+        }
     }
 #endif
 

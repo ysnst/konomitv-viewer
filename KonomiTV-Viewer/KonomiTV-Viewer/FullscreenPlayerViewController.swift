@@ -52,6 +52,15 @@ final class FullscreenPlayerViewController: UIViewController {
     var onReturnCaptionView: (() -> Void)?
     /// 全画面へ貸し出し中に、字幕の重ね物を固定する決まり (制約)。
     private var captionBorrowConstraints: [NSLayoutConstraint] = []
+    /// コメントの重ね物 (AVPlayer 経路で呼び出し元から借りる。字幕と同じく、
+    /// 流れる表示の更新は呼び出し元が続けるため、こちらは置き場所だけを
+    /// 提供する)。映像の上・字幕の下に重ねる。渡されないときは nil。
+    /// VLCKit 経路では映像の枠と一緒に貸し出されるため、こちらは使わない。
+    var borrowedCommentView: UIView?
+    /// 借りたコメントの重ね物を返すための知らせ先 (全画面を閉じるときに呼ぶ)。
+    var onReturnCommentView: (() -> Void)?
+    /// 全画面へ貸し出し中に、コメントの重ね物を固定する決まり (制約)。
+    private var commentBorrowConstraints: [NSLayoutConstraint] = []
     /// VLCKit 経路のときの受け渡し口。AVPlayer 経路では nil。
     private let hooks: PlaybackHooks?
     private let program: RecordedProgram
@@ -159,11 +168,29 @@ final class FullscreenPlayerViewController: UIViewController {
         // (通常画面の再生画面と同じ扱い)。
         setupFastSeek()
 
-        // 字幕の重ね物を借りている場合は、映像の上・操作類の下に重ねる
+        // コメントの重ね物を借りている場合は、映像の上・操作類の下に重ねる
+        // (流れる表示の更新は呼び出し元が続ける)。
+        if let commentView = borrowedCommentView {
+            commentView.translatesAutoresizingMaskIntoConstraints = false
+            view.insertSubview(commentView, aboveSubview: videoView)
+            commentBorrowConstraints = [
+                commentView.topAnchor.constraint(equalTo: view.topAnchor),
+                commentView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                commentView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                commentView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            ]
+            NSLayoutConstraint.activate(commentBorrowConstraints)
+        }
+
+        // 字幕の重ね物を借りている場合は、コメントの上・操作類の下に重ねる
         // (字幕の絵の更新は呼び出し元が続ける)。
         if let captionView = borrowedCaptionView {
             captionView.translatesAutoresizingMaskIntoConstraints = false
-            view.insertSubview(captionView, aboveSubview: videoView)
+            if let commentView = borrowedCommentView {
+                view.insertSubview(captionView, aboveSubview: commentView)
+            } else {
+                view.insertSubview(captionView, aboveSubview: videoView)
+            }
             captionBorrowConstraints = [
                 captionView.topAnchor.constraint(equalTo: view.topAnchor),
                 captionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -239,6 +266,13 @@ final class FullscreenPlayerViewController: UIViewController {
             captionBorrowConstraints = []
             captionView.removeFromSuperview()
             onReturnCaptionView?()
+        }
+        // コメントの重ね物を呼び出し元へ返す (通常画面でコメントが戻るように)。
+        if let commentView = borrowedCommentView {
+            NSLayoutConstraint.deactivate(commentBorrowConstraints)
+            commentBorrowConstraints = []
+            commentView.removeFromSuperview()
+            onReturnCommentView?()
         }
         if let player, let timeObserver {
             player.removeTimeObserver(timeObserver)
