@@ -272,6 +272,7 @@ final class PlayerViewController: UIViewController {
     /// 優先する。
     private var pendingPlaybackSeek = PendingPlaybackSeek()
     private var playbackReadyForSeek = false
+    private var seekDisplay = SeekDisplayState()
     private var sessionID = UUID().uuidString
     /// 再生を始めるときに決めた回線の区分。この再生の間は固定する
     /// (途中で回線が変わっても画質は変えない)。ただし、再生画面での
@@ -2245,6 +2246,7 @@ final class PlayerViewController: UIViewController {
         stopKeepAlive()
         keepAliveState.start(context: keepAliveContext, isRecovery: isSessionRecovery)
         pendingPlaybackSeek.cancel()
+        seekDisplay.clear()
         guard let url = APIClient.shared.playlistURL(videoID: program.id, quality: quality, profile: profile, sessionID: sessionID) else {
             playbackStart.invalidate()
             messageLabel.text = "接続先が設定されていません。"
@@ -2807,6 +2809,7 @@ final class PlayerViewController: UIViewController {
         keepAliveState.stop()
         pendingPlaybackSeek.cancel()
         playbackReadyForSeek = false
+        seekDisplay.clear()
         historyRegistrationTimer?.invalidate()
         historyRegistrationTimer = nil
         // 離れるときは最後の再生位置を報告する (Web 版が破棄時に報告するのと同じ)。
@@ -3032,6 +3035,13 @@ final class PlayerViewController: UIViewController {
         return program.duration
     }
 
+    /// 表示を飛び先に合わせる控えが効いている間は、その位置を返す。
+    /// 再生部品の実位置が飛び先へ近づいたら (または待ちの期限が
+    /// 過ぎたら) 控えを解いて nil を返す (実位置を表示する)。
+    private func activeSeekDisplayTarget(realPosition: Double) -> Double? {
+        seekDisplay.activeTarget(realPosition: realPosition)
+    }
+
     private func updateProgress() {
         updateCaptureControls()
         pipController?.invalidatePlaybackState()
@@ -3039,11 +3049,9 @@ final class PlayerViewController: UIViewController {
         guard hasActiveEngine else { return }
         let current = currentPosition()
         if current.isFinite {
-            // 再生が始まる前に利用者が移動を指定していたら、表示は
-            // その移動先に合わせる (再生部品の位置はまだ 0 のまま
-            // なので、そのまま出すと、指定したのに 0 へ戻されたように
-            // 見えてしまう)。
-            let displayPosition = (!playbackReadyForSeek ? pendingPlaybackSeek.target : nil) ?? current
+            // 移動先は表示専用。字幕・履歴・自動スキップには下の実位置currentを渡す。
+            let displayPosition = (!playbackReadyForSeek ? pendingPlaybackSeek.target : nil)
+                ?? activeSeekDisplayTarget(realPosition: current) ?? current
             currentTimeLabel.text = TimeFormat.hms(displayPosition)
             if !isScrubbing {
                 let duration = effectiveDuration
@@ -3164,8 +3172,15 @@ final class PlayerViewController: UIViewController {
         }
     }
 
+    private var isPlayingForControls: Bool {
+        // 位置表示とアイコンだけを再生意図へ合わせる。実再生状態の読み取りは変更しない。
+        playbackStart.inFlight ? !playbackStart.pauseRequested
+            : (playbackIntentPlaying && (isCurrentlyPlaying()
+                || activeSeekDisplayTarget(realPosition: currentPosition()) != nil))
+    }
+
     private func updatePlayPauseIcon() {
-        let playing = playbackStart.inFlight ? !playbackStart.pauseRequested : isCurrentlyPlaying()
+        let playing = isPlayingForControls
         let config = UIImage.SymbolConfiguration(pointSize: 40, weight: .regular)
         playPauseButton.setImage(
             UIImage(systemName: playing ? "pause.fill" : "play.fill", withConfiguration: config),
@@ -3994,7 +4009,7 @@ final class PlayerViewController: UIViewController {
             return
         }
         guard hasActiveEngine else { return }
-        if isCurrentlyPlaying() {
+        if isPlayingForControls {
             pauseEngine()
             // 利用者が自分で止めた間は、追いかけ再生の先端追従で
             // 勝手に再開しない。
@@ -4032,6 +4047,12 @@ final class PlayerViewController: UIViewController {
             commentOverlay.reset(to: clamped)
             beginCaptionSeek()
             return
+        }
+        // 再生が始まってからの移動では、再生部品の位置が飛び先へ移る
+        // までの間、表示だけ先に飛び先へ合わせる (古い位置で止まった
+        // ままに見えないようにするため)。
+        if isUserInitiated, playbackDidStart {
+            seekDisplay.begin(target: clamped)
         }
         // CM自動スキップの判定は移動先から見張る
         // (シークで CM 区間の真ん中へ入った直後は発動させないため)。
@@ -4081,6 +4102,7 @@ final class PlayerViewController: UIViewController {
 
     private func applyPendingPlaybackSeek() {
         guard playbackReadyForSeek, let pending = pendingPlaybackSeek.take() else { return }
+        seekDisplay.begin(target: pending.target)
         seek(to: pending.target, isUserInitiated: false, completion: pending.completion)
     }
 
@@ -4141,6 +4163,12 @@ final class PlayerViewController: UIViewController {
         seek(to: target)
         if wasPlayingBeforeScrub, playbackIntentPlaying {
             playAtCurrentRate()
+#if canImport(VLCKit)
+            // バーを動かすために一時的に止めていただけなので、飛び先で
+            // 止まったままになってしまった場合は、スキップと同じく
+            // 再開の対象にする。
+            vlcResumeAfterSeek = true
+#endif
             chaseUserPaused = false
         }
         scheduleHideControls()
@@ -4466,6 +4494,12 @@ final class PlayerViewController: UIViewController {
     @objc private func openPlayerSettings() { showPlayerSettings(from: self) }
 
     private func configureFullscreenControls(_ fullscreen: FullscreenPlayerViewController) {
+        fullscreen.displayTime = { [weak self] in
+            guard let self else { return nil }
+            return (!self.playbackReadyForSeek ? self.pendingPlaybackSeek.target : nil)
+                ?? self.activeSeekDisplayTarget(realPosition: self.currentPosition())
+        }
+        fullscreen.playbackIntentPlaying = { [weak self] in self?.playbackIntentPlaying ?? false }
         fullscreen.onSeek = { [weak self] position in self?.seek(to: position) }
         fullscreen.onPausePlayback = { [weak self] in self?.pauseEngine() }
         fullscreen.onResumePlayback = { [weak self] in self?.playAtCurrentRate() }
@@ -4479,7 +4513,12 @@ final class PlayerViewController: UIViewController {
         fullscreen.onScrubEnded = { [weak self] in
             guard let self else { return }
             self.isScrubbing = false
-            if self.wasPlayingBeforeScrub, self.playbackIntentPlaying { self.playAtCurrentRate() }
+            if self.wasPlayingBeforeScrub, self.playbackIntentPlaying {
+                self.playAtCurrentRate()
+#if canImport(VLCKit)
+                self.vlcResumeAfterSeek = true
+#endif
+            }
         }
         fullscreen.commentsEnabled = { SettingsStore.shared.showComments }
         fullscreen.commentAvailable = { [weak self] in self?.audioOnly == false }
@@ -4629,6 +4668,10 @@ final class PlayerViewController: UIViewController {
             },
             setMuted: { [weak self] muted in
                 self?.setEngineMuted(muted)
+            },
+            displayTime: { [weak self] in
+                guard let self else { return nil }
+                return self.activeSeekDisplayTarget(realPosition: self.currentPosition())
             }
         )
     }

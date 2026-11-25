@@ -29,3 +29,5 @@ keepaliveは初回3秒後、以後5秒、同時一通信。開始世代・セッ
 停止状態の録画開始は、固定libVLC `f7caf7922` の公開 `start-paused` を使う。入力を停止状態で開き、`.paused` の準備通知でも保留シークを適用する。映像や音声を流してから停止する方式ではない。根拠は[input.c](https://github.com/videolan/vlc/blob/f7caf7922/src/input/input.c#L608)、[オプション定義](https://github.com/videolan/vlc/blob/f7caf7922/src/libvlc-module.c#L1968)、[player.c](https://github.com/videolan/vlc/blob/f7caf7922/src/player/player.c#L1193)、[VLCKit addOption](https://github.com/videolan/vlckit/blob/4.0.0-a26/Sources/Media/VLCMedia.m#L288)。固定版との対応は既存フェーズEの依存調査記録による。実機での通知順序は未確認。
 
 独立レビューで、AV完了フラグの伝達、全画面復帰時の保留回復、旧drawableの遅延通知失効を修正した。状態モデルの追加テストはCIに登録し、ローカルPython9件/actionlint/差分チェックは成功。Swift/ReleaseはCIで確認する。
+
+af52d19の表示追従は時刻/バー/操作表示だけに採用し、実位置に2秒以内まで近づくか、単調時刻で20秒経過したら解除する。最新の開始前シークを優先し、停止・作り直しで表示用の目標を破棄する。字幕・履歴・CM・撮影位置・PiPの時計へ表示用位置を渡さない。通常/全画面のボタン表示と押下判定を同じ再生意図へ揃え、シーク待ちの「一時停止」を押しても再生要求にならないよう修正した。これらの境界・期限・連続要求をLifecycleテストへ追加し、独立再レビューで修正必須の指摘がないことを確認した。字幕同期ずれの解消を裏付ける変更ではない。

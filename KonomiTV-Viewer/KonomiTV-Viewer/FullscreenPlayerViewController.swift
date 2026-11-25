@@ -34,6 +34,10 @@ final class FullscreenPlayerViewController: UIViewController {
         var isMuted: () -> Bool
         /// 音を消す・戻す (長押しの高速シーク用)。
         var setMuted: (Bool) -> Void
+        /// 表示用の再生位置 (秒)。移動の確定直後など、再生部品の実位置が
+        /// まだ飛び先へ移っていない間だけ、表示に使う位置を返す。
+        /// 合わせが不要なときは nil (実位置を表示する)。
+        var displayTime: (() -> Double?)? = nil
     }
 
     /// AVPlayer 経路のときの共有プレイヤー。VLCKit 経路では nil。
@@ -83,6 +87,9 @@ final class FullscreenPlayerViewController: UIViewController {
     private var progressTimer: Timer?
     /// 再生の所有元で字幕/実況と位置を共通管理する（AVPlayer経路も同じ）。
     var onSeek: ((Double) -> Void)?
+    /// AVPlayer経路も、位置表示だけを所有元のシーク状態へ揃える。
+    var displayTime: (() -> Double?)?
+    var playbackIntentPlaying: (() -> Bool)?
     var onScrubBegan: (() -> Void)?
     var onScrubEnded: (() -> Void)?
     var onPausePlayback: (() -> Void)?
@@ -707,7 +714,10 @@ final class FullscreenPlayerViewController: UIViewController {
         pipButton.isEnabled = !(pipPending?() ?? false)
         pipButton.setImage(UIImage(systemName: pipActive?() == true ? "pip.exit" : "pip.enter"), for: .normal)
         pipButton.accessibilityValue = pipActive?() == true ? "再生中" : "停止中"
-        let current = currentSeconds
+        // 移動の確定直後は、再生部品の実位置がまだ飛び先へ移っていない
+        // ことがある。その間は表示だけ飛び先に合わせる (呼び出し元が
+        // 表示用の位置を用意していれば、それを使う。通常画面と同じ直し)。
+        let current = displayTime?() ?? hooks?.displayTime?() ?? currentSeconds
         if current.isFinite {
             currentTimeLabel.text = TimeFormat.hms(current)
             if !isScrubbing {
@@ -725,8 +735,13 @@ final class FullscreenPlayerViewController: UIViewController {
         updatePlayPauseIcon()
     }
 
+    private var isPlayingForControls: Bool {
+        let intent = playbackIntentPlaying?() ?? isPlayingNow
+        return intent && (isPlayingNow || (displayTime?() ?? hooks?.displayTime?()) != nil)
+    }
+
     private func updatePlayPauseIcon() {
-        let playing = isPlayingNow
+        let playing = isPlayingForControls
         let config = UIImage.SymbolConfiguration(pointSize: 40, weight: .regular)
         playPauseButton.setImage(
             UIImage(systemName: playing ? "pause.fill" : "play.fill", withConfiguration: config),
@@ -789,7 +804,7 @@ final class FullscreenPlayerViewController: UIViewController {
     }
 
     @objc private func togglePlayPause() {
-        if isPlayingNow {
+        if isPlayingForControls {
             pausePlayback()
         } else {
             resumePlayback()

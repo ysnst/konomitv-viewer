@@ -94,3 +94,30 @@ struct PendingPlaybackSeek {
         old?()
     }
 }
+
+/// シーク直後の表示位置だけを補う。映像・字幕・履歴の時計には使用しない。
+/// 本家af52の2秒以内/20秒上限を、実時計の巻戻りに影響されない単調時刻で判定する。
+struct SeekDisplayState {
+    private var target: Double?
+    private var deadline: TimeInterval?
+
+    mutating func begin(target: Double, now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        guard target.isFinite else { clear(); return }
+        self.target = target
+        deadline = now + 20
+    }
+
+    mutating func clear() {
+        target = nil
+        deadline = nil
+    }
+
+    mutating func activeTarget(realPosition: Double, now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Double? {
+        guard let target else { return nil }
+        if (realPosition.isFinite && abs(realPosition - target) <= 2) || now >= (deadline ?? now) {
+            clear()
+            return nil
+        }
+        return target
+    }
+}

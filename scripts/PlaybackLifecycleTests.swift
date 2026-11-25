@@ -63,6 +63,24 @@ struct PlaybackLifecycleTests {
         pending.cancel()
         pending.cancel()
         precondition(pending.target == nil && completions == [1, 2, 3])
+        var display = SeekDisplayState()
+        display.begin(target: 500, now: 100)
+        precondition(display.activeTarget(realPosition: 10, now: 101) == 500)
+        // NaNや一時的な旧位置は表示だけ補い、元の実位置値を変更しない。
+        precondition(display.activeTarget(realPosition: .nan, now: 102) == 500)
+        precondition(display.activeTarget(realPosition: 497.9, now: 103) == 500)
+        precondition(display.activeTarget(realPosition: 498, now: 104) == nil)
+        // 一度実位置へ合流したら、その後古い位置が届いても表示先を復活させない。
+        precondition(display.activeTarget(realPosition: 10, now: 105) == nil)
+        display.begin(target: 800, now: 110)
+        display.begin(target: 100, now: 115) // 連続シークは最新位置と期限だけ。
+        precondition(display.activeTarget(realPosition: 800, now: 130) == 100)
+        precondition(display.activeTarget(realPosition: 800, now: 135) == nil)
+        display.begin(target: 200, now: 140)
+        display.clear() // 停止・画質変更・別セッションへ持ち越さない。
+        precondition(display.activeTarget(realPosition: 0, now: 141) == nil)
+        display.begin(target: .infinity, now: 150)
+        precondition(display.activeTarget(realPosition: 0, now: 151) == nil)
         print("Playback lifecycle tests passed")
     }
 }
