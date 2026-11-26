@@ -835,8 +835,14 @@ final class PlayerViewController: UIViewController {
         resumeDeferredSessionRecovery()
     }
 
+    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        scrubEnded()
+        super.viewWillTransition(to: size, with: coordinator)
+    }
+
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        scrubEnded()
         if isFullscreen { fullscreenWindowScene = view.window?.windowScene }
         // 映像内ヘッダーはこの画面だけ。標準バーを使う遷移先へ非表示状態を持ち込まない。
         if presentedViewController == nil, navigationController?.topViewController !== self {
@@ -931,7 +937,7 @@ final class PlayerViewController: UIViewController {
 
         seekSlider.addTarget(self, action: #selector(scrubBegan), for: .touchDown)
         seekSlider.addTarget(self, action: #selector(scrubChanged), for: .valueChanged)
-        seekSlider.addTarget(self, action: #selector(scrubEnded), for: [.touchUpInside, .touchUpOutside, .touchCancel])
+        seekSlider.onTrackingEnded = { [weak self] in self?.scrubEnded() }
         stylePlayerSeekSlider(seekSlider)
 
         // シークバーの上に CM 区間の帯を重ねる (帯は操作を受けない)。
@@ -2767,6 +2773,7 @@ final class PlayerViewController: UIViewController {
     }
 
     private func stopPlayback() {
+        clearScrubPresentation()
         playbackStart.invalidate()
         clearStartLoadingMessage()
         captureController.cancel()
@@ -4118,6 +4125,7 @@ final class PlayerViewController: UIViewController {
     }
 
     @objc private func scrubBegan() {
+        guard !isScrubbing else { return }
         beginCaptionSeek()
         isScrubbing = true
         excitementStrip.isHidden = excitementDensity == nil || (isFullscreen && !SettingsStore.shared.showExcitementInFullscreen)
@@ -4125,21 +4133,23 @@ final class PlayerViewController: UIViewController {
         pauseEngine(isUserInitiated: false)
         hideTimer?.invalidate()
         hideTimer = nil
+        scrubChanged()
         // プレビューを出し、タイル画像がまだなら取りに行く (初回だけ)。
         showSeekPreview()
         ensureSpriteLoading()
     }
 
     @objc private func scrubChanged() {
+        guard isScrubbing else { return }
         let target = Double(seekSlider.value) * effectiveDuration
         currentTimeLabel.text = TimeFormat.hms(target)
         updateSeekPreview(target: target)
     }
 
     @objc private func scrubEnded() {
-        isScrubbing = false
-        excitementStrip.isHidden = true
-        seekPreviewView.isHidden = true
+        // touch終了と画面遷移が重なっても、seek確定は一度だけ行う。
+        guard isScrubbing else { return }
+        clearScrubPresentation()
         let target = Double(seekSlider.value) * effectiveDuration
         seek(to: target)
         if wasPlayingBeforeScrub, playbackIntentPlaying {
@@ -4155,6 +4165,13 @@ final class PlayerViewController: UIViewController {
         scheduleHideControls()
     }
 
+    /// 表示だけを終了する。停止処理から呼ぶ場合はseekや再生再開を発行しない。
+    private func clearScrubPresentation() {
+        isScrubbing = false
+        excitementStrip.isHidden = true
+        seekPreviewView.isHidden = true
+    }
+
     // MARK: - シーク中のプレビュー
 
     /// 番組データにタイル情報があるかどうか。無い録画 (解析前・録画中など)
@@ -4168,6 +4185,7 @@ final class PlayerViewController: UIViewController {
 
     /// プレビューを出し、いまの指の位置で中身を合わせる。
     private func showSeekPreview() {
+        guard isScrubbing else { return }
         seekPreviewView.isHidden = false
         // 横位置の計算に使う幅を先に確定させる。
         videoContainer.layoutIfNeeded()
@@ -4178,6 +4196,7 @@ final class PlayerViewController: UIViewController {
     /// 映像の切り出しはタイルが切り替わったときだけ (指の動きのたびには
     /// 行わない)。タイル画像が届いていなければ時刻だけ出す。
     private func updateSeekPreview(target: Double) {
+        guard isScrubbing else { return }
         seekPreviewTimeLabel.text = TimeFormat.hms(target)
         // 横位置: つまみの中心に合わせ、映像の枠からはみ出さない範囲に収める。
         let track = seekSlider.trackRect(forBounds: seekSlider.bounds)
@@ -4279,6 +4298,7 @@ final class PlayerViewController: UIViewController {
     /// 設定を先に閉じ、タブの復元と全画面の非表示状態を競合させない。
     /// 描画先・字幕世代・シーク直列化・各タイマーは既存の所有元に残す。
     private func setFullscreen(_ fullscreen: Bool, restoringOn scene: UIWindowScene? = nil) {
+        scrubEnded()
         guard isFullscreen != fullscreen else { return }
         playerSettingsPanel?.closePanel()
         let windowScene = scene ?? view.window?.windowScene ?? fullscreenWindowScene
@@ -4462,6 +4482,7 @@ final class PlayerViewController: UIViewController {
     }
 
     @objc private func togglePiP() {
+        scrubEnded()
         playerSettingsPanel?.closePanel()
         captureController.cancel()
         guard let pip = pipController, !audioOnly else { return }

@@ -231,6 +231,8 @@ final class PlayerSettingsViewController: UITableViewController {
 /// 見た目はDPlayerの4pt/11pt、操作は映像内の24pt領域で受ける。
 /// 下端基準なので、波形表示や操作行の高さにトラック位置が影響されない。
 final class PlayerSeekSlider: UISlider {
+    // UIControlの終端イベント送信に依存せず、所有元へ終了/取消を一度通知する。
+    var onTrackingEnded: (() -> Void)?
     override init(frame: CGRect) {
         super.init(frame: frame)
         let image = UIGraphicsImageRenderer(size: CGSize(width: 11, height: 11)).image { _ in
@@ -250,14 +252,33 @@ final class PlayerSeekSlider: UISlider {
                       y: rect.midY - 5.5, width: 11, height: 11)
     }
     override func beginTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
-        // トラックの任意位置を押してからドラッグできる。再生への反映は所有元の終了処理で行う。
+        // 任意位置のタップを受けるため、thumb命中を前提とするUISliderの追跡へ
+        // 途中だけ委譲しない。開始を受理し、終了/取消まで同じUIControl追跡を使う。
+        guard isEnabled, trackRect(forBounds: bounds).width > 0 else { return false }
+        updateValue(for: touch)
+        return true
+    }
+
+    override func continueTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
+        updateValue(for: touch)
+        sendActions(for: .valueChanged)
+        return true
+    }
+
+    override func endTracking(_ touch: UITouch?, with event: UIEvent?) {
+        if let touch { updateValue(for: touch) }
+        onTrackingEnded?()
+    }
+
+    override func cancelTracking(with event: UIEvent?) {
+        onTrackingEnded?()
+    }
+
+    private func updateValue(for touch: UITouch) {
         let rect = trackRect(forBounds: bounds)
-        guard rect.width > 0 else { return false }
+        guard rect.width > 0 else { return }
         let ratio = min(1, max(0, (touch.location(in: self).x - rect.minX) / rect.width))
         value = minimumValue + Float(ratio) * (maximumValue - minimumValue)
-        let tracking = super.beginTracking(touch, with: event)
-        sendActions(for: .valueChanged)
-        return tracking
     }
 }
 
