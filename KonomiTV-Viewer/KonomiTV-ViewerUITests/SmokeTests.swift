@@ -128,8 +128,16 @@ final class SmokeTests: XCTestCase {
         let deadline = Date().addingTimeInterval(timeout)
         var baseline: Double?
         while Date() < deadline {
-            let clock = app.staticTexts["live.currentTime." + channel]
-            if clock.exists, let seconds = Double(clock.label) {
+            // 操作帯の非表示とexists→labelの別照会を競合させず、一つのsnapshotで読む。
+            var clockText: String?
+            if let snapshot = try? app.snapshot() {
+                var pending: [any XCUIElementSnapshot] = [snapshot]
+                while let element = pending.popLast() {
+                    if element.identifier == "live.currentTime." + channel { clockText = element.label; break }
+                    pending.append(contentsOf: element.children)
+                }
+            }
+            if let clockText, let seconds = Double(clockText) {
                 print("Live clock sample: channel=\(channel), seconds=\(seconds), baseline=\(String(describing: baseline))")
                 if let baseline, seconds > 0, seconds > baseline { return true }
                 if baseline == nil { baseline = seconds }
