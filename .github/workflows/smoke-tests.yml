@@ -13,7 +13,8 @@ permissions:
 jobs:
   smoke-tests:
     name: Simulator smoke tests
-    runs-on: macos-26-intel
+    # 本家の成功済み実行と同じApple Silicon環境。IPAのIntelビルドとは分離する。
+    runs-on: macos-latest
     timeout-minutes: 45
     env:
       TZ: Asia/Tokyo
@@ -68,6 +69,7 @@ jobs:
 
       # 既存デバイスを借用せず、利用可能な最新 iOS runtime に専用デバイスを作る。
       - name: Create owned simulator
+        timeout-minutes: 12
         run: |
           python3 - <<'PY'
           import json, os, pathlib, subprocess
@@ -95,6 +97,7 @@ jobs:
           xcrun simctl bootstatus "$SIM_UDID" -b
 
       - name: Build for testing (simulator)
+        timeout-minutes: 20
         run: |
           set -o pipefail
           xcodebuild build-for-testing \
@@ -106,6 +109,7 @@ jobs:
             2>&1 | tee artifacts/smoke/build.log
 
       - name: Run smoke tests
+        timeout-minutes: 10
         run: |
           set -o pipefail
           xcodebuild test-without-building \
