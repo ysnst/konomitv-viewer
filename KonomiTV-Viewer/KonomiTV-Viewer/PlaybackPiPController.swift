@@ -194,6 +194,9 @@ final class PlaybackPiPController: NSObject, VLCDrawable, VLCPictureInPictureDra
             guard let self, !self.disposed, !self.rendererRetired, let host = self.videoView else { return }
             view.frame = host.bounds
             view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            // VLCVideoUIView独自のtapはlibVLCのmouseイベントとなり、アプリを通らず停止する。
+            // 描画は保ったまま入力を親surfaceの操作へ集約し、PiPへ渡す映像layerには触れない。
+            view.isUserInteractionEnabled = false
             host.addSubview(view)
         }
     }
