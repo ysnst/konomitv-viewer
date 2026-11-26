@@ -87,8 +87,35 @@ struct FMP4PlaybackTests {
         startupProgressTests()
         startupBudgetTests()
         startupSeekTests()
+        keepAliveAndStartupRecoveryTests()
         print("FMP4 playback state tests passed")
     }
+    static func keepAliveAndStartupRecoveryTests() {
+        var startup = FMP4PlaybackState(position: 900)
+        let first = startup.makeAttempt()
+        var alive = PlaybackKeepAliveState<String>()
+        alive.start(context: "session", isRecovery: false)
+        // 開始監視の失敗とkeep-aliveの3回目失敗が重なっても、二重に再構築しない。
+        for index in 1...3 {
+            let request = alive.request(context: "session")!
+            if index == 3 { precondition(startup.failed(first) == .retry) }
+            let result = alive.complete(request, context: "session", accepted: false, canRecover: startup.didPlay)
+            precondition(result == (index == 3 ? .deferred : .failed))
+        }
+        precondition(!alive.takeDeferredRecovery(context: "session", canRecover: startup.didPlay))
+        precondition(startup.latestPosition == 900)
+        precondition(startup.claimRecovery(canReplace: false) == nil) // scrub/PiP/非表示の保留。
+        precondition(startup.claimRecovery(canReplace: true) == .retry)
+        precondition(!alive.takeDeferredRecovery(context: "session", canRecover: startup.didPlay))
+        let second = startup.makeAttempt()
+        _ = startup.observeStartup(second, position: 900, now: 0, canMonitor: true)
+        _ = startup.observeStartup(second, position: 902.1, now: 3, canMonitor: true)
+        precondition(startup.didPlay)
+        precondition(alive.takeDeferredRecovery(context: "session", canRecover: startup.didPlay))
+        precondition(!alive.takeDeferredRecovery(context: "session", canRecover: startup.didPlay))
+        precondition(startup.failed(first) == .ignored)
+    }
+
     static func startupProgressTests() {
         for initial in [0.0, 900.0] {
             var state = FMP4PlaybackState(position: initial)

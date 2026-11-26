@@ -3113,6 +3113,13 @@ final class PlayerViewController: UIViewController {
             && viewIfLoaded?.window != nil
     }
 
+    /// 開始専用の復旧とセッション全体の復旧で、同じ項目を二重に作り直さない。
+    /// 通信は続け、fMP4の進行確認かVLC復帰が済むまでセッション再構築だけを保留する。
+    private var canRecoverKeepAlive: Bool {
+        canRebuildSession && !routeResolutionPending && !playbackStart.inFlight
+            && (fmp4StartContext?.state.didPlay != false)
+    }
+
     private func sendKeepAlive() {
         let context = keepAliveContext
         guard !didLeaveScreen, let request = keepAliveState.request(context: context) else { return }
@@ -3124,7 +3131,7 @@ final class PlayerViewController: UIViewController {
             DispatchQueue.main.async { [weak self] in
                 guard let self, !self.didLeaveScreen else { return }
                 let result = self.keepAliveState.complete(request, context: self.keepAliveContext,
-                    accepted: accepted, canRecover: self.canRebuildSession)
+                    accepted: accepted, canRecover: self.canRecoverKeepAlive)
                 switch result {
                 case .recover: self.rebuildDeadSession()
                 case .disconnected:
@@ -3138,7 +3145,7 @@ final class PlayerViewController: UIViewController {
 
     private func resumeDeferredSessionRecovery() {
         if resumeDeferredFMP4Recovery() { return }
-        guard keepAliveState.takeDeferredRecovery(context: keepAliveContext, canRecover: canRebuildSession) else { return }
+        guard keepAliveState.takeDeferredRecovery(context: keepAliveContext, canRecover: canRecoverKeepAlive) else { return }
         rebuildDeadSession()
     }
 
@@ -3148,7 +3155,14 @@ final class PlayerViewController: UIViewController {
     /// ままにする。
     private func rebuildDeadSession() {
         let intentPlaying = playbackIntentPlaying
-        let position = pendingPlaybackSeek.target ?? currentPosition()
+        var pendingPosition = fmp4StartContext.flatMap { !$0.state.didPlay ? $0.state.latestPosition : nil }
+#if canImport(VLCKit)
+        // VLC復帰の最初のready前も、まだ0の実時計で指定済みの開始位置を失わない。
+        if pendingPosition == nil, !playbackReadyForSeek {
+            pendingPosition = vlcPendingStartCorrection ?? vlcPendingStartPosition
+        }
+#endif
+        let position = pendingPlaybackSeek.target ?? pendingPosition ?? currentPosition()
         pendingPlaybackSeek.cancel()
         // 古いセッション向けの合図は止める (新しい開始の締めで、新しい
         // セッション向けに仕掛け直される)。
