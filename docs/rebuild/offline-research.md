@@ -1,6 +1,6 @@
 # オフライン保存・再生の技術調査
 
-**調査のみ。保存機能・サーバー変更は実装していない。** 推奨は標準APIによる原ファイル取得（方式A）で、再エンコードを必須にしない。利用中Docker/NASのKonomiTV版・変更点、Amatsukaze出力のコンテナ・字幕/音声の保持状態は未照合である。
+**方式Aはユーザーの基本承認済み。保存機能は未実装、サーバー追加改造は行わない。** 標準APIによる原ファイル取得で進め、再エンコードを必須にしない。利用中Docker/NASのKonomiTV版・変更点、Amatsukaze出力のコンテナ・字幕/音声の保持状態は未照合である。
 
 ## 固定した調査対象
 
@@ -38,10 +38,10 @@ ETagはmtimeとsize由来で、原ファイル全体の内容hashではない。
 
 | 方式 | 互換性・改造 | 負荷/容量/画質 | 音声・字幕・実況 | 再開・認証・PiP・保守 |
 | --- | --- | --- | --- | --- |
-| A 原ファイル | 調査した正式版/開発版に標準APIあり。原則サーバー改造不要 | サーバーは原本読み出し。再encodeのCPU/GPU負荷なし。NAS/I/O・通信量は原本サイズ。画質は維持 | 原本に入った音声/字幕はバイトとして保持。別ファイルや削除済み字幕は取得できない。実況は別JSON | Range/validatorを実測。認証付き原URLを使用。ローカルVLC/PiPを別検証。第一候補 |
+| A 原ファイル | 調査した正式版/開発版に標準APIあり。原則サーバー改造不要 | サーバーは原本読み出し。再encodeのCPU/GPU負荷なし。NAS/I/O・通信量は原本サイズ。画質は維持 | 原本に入った音声/字幕はバイトとして保持。別ファイルや削除済み字幕は取得できない。実況は別JSON | Range/validatorを実測。認証付き原URLを使用。MobileVLCKit 3.7.5のローカル再生とAVPlayer/PiPを別検証。第一候補 |
 | B HLS保存 | 通常API利用だがsession/keep-aliveと全segmentの管理が必要 | 原本保存とは異なりオンデマンドencodeが発生し得る。容量は選択品質、画質変化あり | HLSのtimed ID3字幕を保存できる候補。副音声等は出力設定依存。実況別保存 | segment単位再取得可能だがsession失効/再生成の同一性が課題。AV offline APIは対応HLSに限り、TS-VLC用HLSにそのまま使える保証なし |
 | C 無劣化remux | 原本取得後にローカルでstream copyする案。公開APIだけで全入力形式に対応する汎用変換器は別途選定が必要 | 再encodeなし。ただし一時容量・I/O・電力が必要。追加依存のサイズ/ライセンスも評価 | 音声やARIB字幕が出力コンテナへ収まらない場合がある。MP4化だけで字幕維持とはしない | Apple互換性改善の可能性はあるが、原本/変換物の二重管理。初期必須にしない |
-| D 最小サーバー追加 | 対象版で標準API不足や契約不足が判明した場合だけ | 単純なFileResponseならencode不要。変換を含めれば負荷増 | 原本・sidecarの明示契約が必要 | 認可・path traversal防止・Range・帯域/同時数・監査が必要。今回は不要と判断し実施しない |
+| D 最小サーバー追加 | 対象版で標準API不足や契約不足が判明した場合だけ | 単純なFileResponseならencode不要。変換を含めれば負荷増 | 原本・sidecarの明示契約が必要 | 認可・path traversal防止・Range・帯域/同時数・監査が必要。今回は対象外で、追加改造しない |
 | E 再encode保存 | masterのoffline-streamまたは通常encodeを利用。正式版には前者なし | CPU/GPU・電力・待ち時間増、サイズ調整可能、非可逆変化 | 出力字幕/音声設定を別検証。実況別保存 | KTVODLPはRange再開ではない。原本が再生できない場合の任意代替候補で、必須にしない |
 
 オンラインfMP4経路を保存の前提にしない。本家のネットワークAV時計停止の調査ecc50a8とフォークの失敗は同一原因か不明であり、ローカルMP4へその結論を流用しない。
@@ -56,8 +56,8 @@ ETagはmtimeとsize由来で、原ファイル全体の内容hashではない。
 
 ## iOSとLiveContainer
 
-- VLCの[ローカルpath/URL入力](https://github.com/videolan/vlckit/blob/3d0f0fa7031eab1a67c817c98a495e1c68fc998c/Headers/Public/Media/VLCMedia.h)、AVPlayerの[AVURLAsset](https://developer.apple.com/documentation/avfoundation/avurlasset)が候補。HEVCというcodec名だけで全コンテナの再生可否を決めず、isPlayableと実再生・音声・seekを確認する。
-- PiPはローカル入力でも既存のAVPlayerLayerまたはVLC sample-buffer drawableを使う候補。[Appleのメディア再生設定](https://developer.apple.com/documentation/avfoundation/configuring-your-app-for-media-playback)に従い、背景音声・所有者寿命・復帰を検証する。ローカル原本でのPiP成功は未確認。
+- MobileVLCKit 3.7.5の[ローカルpath/URL入力](https://github.com/videolan/vlckit/blob/a213fd113c5c014556b40765966e77d439f0ddf9/Headers/Public/VLCMedia.h)、AVPlayerの[AVURLAsset](https://developer.apple.com/documentation/avfoundation/avurlasset)が候補。HEVCというcodec名だけで全コンテナの再生可否を決めず、isPlayableと実再生・音声・seekを確認する。
+- ローカルPiPは既存AVPlayerLayerで実現できるか検証する。VLC3には独自PiPを追加せず、ローカルPiPだけのためにVLC4へ更新しない。対応できない原本形式は制約として報告する。[Appleのメディア再生設定](https://developer.apple.com/documentation/avfoundation/configuring-your-app-for-media-playback)に従い、背景音声・所有者寿命・復帰を検証する。ローカル原本でのPiP成功は未確認。
 - [背景URLSession](https://developer.apple.com/documentation/foundation/downloading-files-in-the-background)は通常の署名アプリで別process転送・OS終了後の再接続を扱える。一方、[ユーザーによる強制終了](https://developer.apple.com/documentation/foundation/urlsessionconfiguration/background(withidentifier:))では取消しとなり、自動再起動しない。
 - LiveContainerの[GuestHooks](https://github.com/LiveContainer/LiveContainer/blob/b0f53e8934df325970e9b6ff52932a43b585c424/LiveContainer/Tweaks/NSURLSessionConfiguration%2BGuestHooks.m)にはLiveProcessの背景download対策としてsharedContainerIdentifierをhostのapp groupへ補正する処理がある。「LCでは不可能」とは断定しない。ただし[guest entitlementの制約](https://github.com/LiveContainer/LiveContainer/blob/b0f53e8934df325970e9b6ff52932a43b585c424/README.md#limitations)、HOME/Bundle補正があり、host再起動・別guest中のdelegate配送・container移動の保証は未確認。
 - background転送にguest内の127.0.0.1 relayを使わない。guest停止でrelayも止まるため、正規のorigin HTTPSへ認証付きdownloadTaskを使う案を優先する。背景sessionではredirect callbackの制約があり、foregroundの認証・転送先検査をそのまま保証できない。転送先契約を確認できない場合はforeground方式から始める。
@@ -86,9 +86,9 @@ offline outboxにはaccount/server、操作ID、ローカル位置、同期前�
 ## 実装前の確認・了承事項
 
 1. 利用サーバーの版とdownload/Range/validator、ファイル変更時の挙動、Token・大容量転送条件を照合する。個人の接続先や認証情報を公開資料へ出さない。
-2. 方式Aを基本として進めること、原本の音声/字幕形式、必要容量を確認する。サーバー変更は現時点で不要だが、必要と判明した場合は理由・最小差分・代替案を提示して了承後に行う。
+2. 方式Aの基本承認は取得済み。原本の音声/字幕形式、必要容量、API契約を確認する。サーバー側の追加改造は禁止し、標準APIで実現できない部分は理由・制約・代替案を提示して判断を待つ。
 3. online基盤の実機確認後、前景転送→ローカル再生→字幕/実況/PiP→背景/履歴の順で試す。機内モード、強制終了、再起動、破損、200/206/416、容量不足、認証切れを試験する。
 4. 履歴競合時の利用者選択、account切替時の保存一覧分離・保持/削除方針を確定する。ローカル削除とサーバー録画削除を明確に分ける。
 
-今回は調査・推奨方式の選定までである。対象サーバーへのアクセス試験、アプリ保存・再生、背景転送、オフライン字幕/実況/PiP、履歴競合の実装は未実施。
+方式Aの基本承認により、オンライン基盤の実機ゲート後は実装へ進める。ただし現在は段階1/2の残存条件確認中で、オフライン本実装へは進んでいない。対象サーバーへのアクセス試験、アプリ保存・再生、背景転送、オフライン字幕/実況/PiP、履歴競合の実装は未実施。
 

@@ -5,13 +5,14 @@ KonomiTV サーバー向けの、視聴専用のネイティブ iOS アプリで
 
 ## この再構築ブランチについて
 
-本家 [tatsuya0902/KonomiTV Viewer](https://github.com/tatsuya0902/konomitv-viewer) を土台にした非公式フォークの、段階0の基準確認用ブランチです。本家の完全SHAは `a2de08583aec2ea66c31ba9605acc84e394c5e15`。アプリ・project・依存宣言・本家UI試験は変更せず、公開しないビルドと来歴の確認だけを追加しています。ユーザーが生放送を確認した本家IPAとの同一性は未確認であり、この基準IPAも実機確認が必要です。
+本家 [tatsuya0902/KonomiTV Viewer](https://github.com/tatsuya0902/konomitv-viewer) を土台にした非公式フォークの、段階0の基準確認用ブランチです。本家の完全SHAは `a2de08583aec2ea66c31ba9605acc84e394c5e15`。アプリ・project・依存宣言・本家UI試験は変更せず、公開しないビルド・来歴の確認と、認証・中継の通信契約試験を追加しています。以前確認した本家IPAとの同一性は不明ですが、その後0.34の実機10項目がすべて成功し、段階0は合格しました。
 
-既存mainの実機基準0.26と、旧フォークの0.33・全実装・検証記録は別途維持しています。独自キャプチャは再実装せず、オンライン再生の安定確認後にオフライン保存・再生を追加する計画です。**オフライン機能はまだ実装していません。** 本家にある認証・中継・全画面・AVPlayerのPiPは再利用し、必要な独自差分だけを段階的に接合します。
+既存mainの実機基準0.26と、旧フォークの0.33・全実装・検証記録は別途維持しています。独自キャプチャは再実装せず、オンライン再生の安定確認後にオフライン保存・再生を追加する計画です。**オフライン機能はまだ実装していません。** MobileVLCKit 3.7.5とlibaribcaption 1.1.2、本家の認証・中継・全画面・AVPlayer PiPを維持します。VLC4移行・独自PiPは対象外とし、必要な独自UI・ホーム・一覧機能だけを段階的に復元します。原本取得方式のオフライン保存は基本承認済みです。
 
 - [段階0のビルド・試験結果とIPA](docs/rebuild/stage-0.md)、[実機チェックリスト](docs/testing/rebuild-stage0.md)
 - [機能比較](docs/rebuild/feature-matrix.md)、[実装・検証計画](docs/rebuild/plan.md)
 - [オフライン保存方式・API・LiveContainerの調査](docs/rebuild/offline-research.md)
+- [0.34の実機10項目合格](docs/testing/device-0.34.md)、[段階1・2の残存検証](docs/rebuild/stage-1-2.md)
 - 過去の実機記録：[0.26](docs/testing/device-0.26.md)、[0.33](docs/testing/device-0.33.md)
 
 シーク後の字幕同期ずれ、旧フォークの生放送・切り替え失敗、fMP4/AV単独のsimulator試験失敗を、基準取得だけで解消したとは扱いません。PiP内字幕・実況とL字クロップは必須対象外です。以下は本家から引き継いだ説明です。
