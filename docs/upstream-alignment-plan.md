@@ -32,7 +32,7 @@ keepaliveは初回3秒後、以後5秒、同時一通信。開始世代・セッ
 
 af52d19の表示追従は時刻/バー/操作表示だけに採用し、実位置に2秒以内まで近づくか、単調時刻で20秒経過したら解除する。最新の開始前シークを優先し、停止・作り直しで表示用の目標を破棄する。字幕・履歴・CM・撮影位置・PiPの時計へ表示用位置を渡さない。通常/全画面のボタン表示と押下判定を同じ再生意図へ揃え、シーク待ちの「一時停止」を押しても再生要求にならないよう修正した。これらの境界・期限・連続要求をLifecycleテストへ追加し、独立再レビューで修正必須の指摘がないことを確認した。字幕同期ずれの解消を裏付ける変更ではない。
 
-第2段階のActions実行23はSwift状態テスト通過後にReleaseの構文エラーで失敗した。VLC有無の条件コンパイルをまたいでifの波括弧を開閉していたため、条件をBoolへ分離し、if全体を一つの構文ブロックに修正した。全画面化を混ぜないローカル作業コピーから独立修正を同じ専用リモートブランチへpushし、[実行24](https://github.com/ysnst/konomitv-viewer/actions/runs/45724953304)で再ビルドする。字幕や時計の変更ではない。
+第2段階のActions実行23はSwift状態テスト通過後にReleaseの構文エラーで失敗した。VLC有無の条件コンパイルをまたいでifの波括弧を開閉していたため、条件をBoolへ分離し、if全体を一つの構文ブロックに修正した。全画面化を混ぜないローカル作業コピーから独立修正を同じ専用リモートブランチへpushし、[実行24](https://github.com/ysnst/konomitv-viewer/actions/runs/45724953304)で再ビルドした。字幕や時計の変更ではない。実行24のRelease/全Swiftセットが成功し、IPA 0.24 / build 24を取得・照合した。ビルド元 `4608c924c332568007ab9cefd8d4e06ebe53bf73`、SHA-256 `2894ca96b14fdb967e323ec4c0c325587193b9b11a4ae5f210486510964c0e45`。警告は既存87件、新規0件。JPEG/EXIFのPillow互換照合も成功、実機は未確認。
 
 ## 第3段階の接合判断
 
@@ -42,4 +42,12 @@ af52d19の表示追従は時刻/バー/操作表示だけに採用し、実位�
 
 独立レビューを配置/回転/設定/BMLと、再生寿命/PiP/字幕/撮影に分けた。生放送の隠れたリモコンに通常用の「映像下」制約が残る問題を修正し、映像制約を切り替える前に解除、後で適切な通常/右側配置へ再構成する。再レビューで修正必須指摘なし。実機画面の取得はできず、回転・復帰・BML・全画面中の画質変更・字幕付き撮影の座標は実機未確認。
 
-実行25のRelease/各Swiftテストは成功し、IPA 0.25も取得・照合した。ただし親コンテナに追加したshouldAutorotate転送で非推奨警告が2件増えた。対応対象はiOS16以降であり、[Appleの仕様](https://developer.apple.com/documentation/uikit/uiviewcontroller/shouldautorotate)に従い、新設した2つの転送だけを除去する。既定の回転許可と、supportedInterfaceOrientationsの転送/setNeedsUpdateOfSupportedInterfaceOrientationsによる制御は維持する。最終版はこの修正を再ビルドして別保存する。
+実行25のRelease/各Swiftテストは成功し、IPA 0.25も取得・照合した。ただし親コンテナに追加したshouldAutorotate転送で非推奨警告が2件増えた。対応対象はiOS16以降であり、[Appleの仕様](https://developer.apple.com/documentation/uikit/uiviewcontroller/shouldautorotate)に従い、新設した2つの転送だけを除去した。既定の回転許可と、supportedInterfaceOrientationsの転送/setNeedsUpdateOfSupportedInterfaceOrientationsによる制御は維持する。独立レビュー後、最終版を再ビルドして別保存した。
+
+## 最終検証結果
+
+[実行26](https://github.com/ysnst/konomitv-viewer/actions/runs/45726618175)でIPA **0.26 / build 26**を生成・取得した。ビルド元の完全SHAは `60ae8789dc3ec4e97b7a8853582667fcd90a5e98`、SHA-256は `117f9dc806755770fa1f3395001a0c21e779525418d5a17c7266be4df11c638c`。run headSha、IPA内外build-info、Info.plistのSHA/版/buildが一致した。後続の文書確定コミットはこのIPAのビルド元とは別である。
+
+Python9件、Swift履歴/ページ位置/字幕タイムライン/開始状態/再生寿命・表示状態/JPEG・EXIF、Release、成果物検証が成功。PillowのJPEG復号/XPComment互換照合も成功した。actionlintと差分チェックは成功。最終Xcode警告は基準0.20と同じ87件で、新規0件。Podfile.lock/Bundle ID/VLCKit4.0.0a26を維持し、保存済み旧IPA12個のハッシュ不変を確認した。
+
+0.22、0.24、0.25、0.26を別ディレクトリに残す。0.25は警告原因の除去前の中間成果物で、今回の最終実機確認候補は0.26。main/既存タグ/リリースは変更していない。すべての新版は実機未確認であり、0.20の実機成功を流用しない。実画面の取得・実サーバー/再生/負荷の確認はWindowsでは実施できていない。シーク後の字幕同期ずれは原因未特定のままで、今回の表示追従や構造移植で解消したとは扱わない。
