@@ -3,6 +3,19 @@
 KonomiTV サーバー向けの、視聴専用のネイティブ iOS アプリです。
 個人が趣味で作っている非公式のアプリで、KonomiTV 本体 (tsukumijima さん作) とは別のプロジェクトです。使うには、別途 KonomiTV サーバーが必要です。
 
+## この再構築ブランチについて
+
+本家 [tatsuya0902/KonomiTV Viewer](https://github.com/tatsuya0902/konomitv-viewer) を土台にした非公式フォークの、段階0の基準確認用ブランチです。本家の完全SHAは `a2de08583aec2ea66c31ba9605acc84e394c5e15`。アプリ・project・依存宣言・本家UI試験は変更せず、公開しないビルドと来歴の確認だけを追加しています。ユーザーが生放送を確認した本家IPAとの同一性は未確認であり、この基準IPAも実機確認が必要です。
+
+既存mainの実機基準0.26と、旧フォークの0.33・全実装・検証記録は別途維持しています。独自キャプチャは再実装せず、オンライン再生の安定確認後にオフライン保存・再生を追加する計画です。**オフライン機能はまだ実装していません。** 本家にある認証・中継・全画面・AVPlayerのPiPは再利用し、必要な独自差分だけを段階的に接合します。
+
+- [段階0のビルド・試験結果とIPA](docs/rebuild/stage-0.md)、[実機チェックリスト](docs/testing/rebuild-stage0.md)
+- [機能比較](docs/rebuild/feature-matrix.md)、[実装・検証計画](docs/rebuild/plan.md)
+- [オフライン保存方式・API・LiveContainerの調査](docs/rebuild/offline-research.md)
+- 過去の実機記録：[0.26](docs/testing/device-0.26.md)、[0.33](docs/testing/device-0.33.md)
+
+シーク後の字幕同期ずれ、旧フォークの生放送・切り替え失敗、fMP4/AV単独のsimulator試験失敗を、基準取得だけで解消したとは扱いません。PiP内字幕・実況とL字クロップは必須対象外です。以下は本家から引き継いだ説明です。
+
 ## Web 版 (PWA) があるのに、なぜアプリなのか
 
 KonomiTV は Web ブラウザだけでも見られます。このアプリは、iPhone のブラウザでは足りないところを補うためのものです。
@@ -38,7 +51,7 @@ KonomiTV は Web ブラウザだけでも見られます。このアプリは、
 Web 版にはあるものの、このアプリでは対応していないものが3つあります。
 
 - **X（旧 Twitter）への共有**: その共有は、ブラウザの Cookie をサーバーへ渡すアカウント連携が必要な仕組みのため、対応していません
-- **キャプチャ**: サーバー側が開発版だけの機能のため、まだ対応していません。KonomiTV の正式版に入れば対応します
+- **キャプチャ**: 本家基準に実装はありません。この再構築では独自キャプチャを対象外とし、過去の実装・成功記録は旧フォークに保持します
 - **サーバー全体の設定**: サーバーの管理そのものにあたるため、アプリからは扱いません。サーバー全体の設定など、サーバー側を扱うものは、従来どおり Web ブラウザから行ってください
 
 ## 入れ方 (LiveContainer)
@@ -46,10 +59,10 @@ Web 版にはあるものの、このアプリでは対応していないもの�
 署名なしの IPA で配布しているため、App Store のアプリのようには入りません。サイドロード用の入れ物が要ります。ここでは LiveContainer の例です。
 
 1. LiveContainer を iPhone に入れる
-2. このリポジトリの Releases (固定タグ `sideload-latest`) から最新の IPA をダウンロードする
+2. [段階0のActions](docs/rebuild/stage-0.md)から未署名IPAのArtifactを取得する。このブランチはタグやリリースを公開・更新しない
 3. LiveContainer で IPA を開いて入れる
 
-AltStore や SideStore など、他のサイドロードの仕組みでも入ります。
+未署名IPAを通常のiOSへそのままインストールすることはできません。AltStoreやSideStore等では、その仕組みに応じた署名・導入が必要です。今回の基準版での個別動作は未確認です。
 
 ## 使い方
 
@@ -59,11 +72,11 @@ AltStore や SideStore など、他のサイドロードの仕組みでも入り
 
 ## 変更履歴
 
-版ごとの変更点は [CHANGELOG.md](CHANGELOG.md) にまとめています。固定リリースのページにも、最新版の変更点の要約が載ります。
+本家の版ごとの変更点は [CHANGELOG.md](CHANGELOG.md) に残しています。再構築の差分と検証は [段階別計画](docs/rebuild/plan.md) を参照してください。
 
 ## ビルド
 
-GitHub Actions で未署名 IPA を作ります。main への push で自動でビルドされ、版番号は `0.<ワークフローの実行番号>` で自動で進みます。固定タグ `sideload-latest` のリリースに、常に最新の IPA が1つだけ置かれます。
+GitHub ActionsのBuild (unsigned IPA)を専用ブランチで実行し、`0.<実行番号>`の未署名IPAをArtifactへ保存します。ビルドSHA・本家基準SHA・アプリtree・版/build・SHA-256をIPA内外で照合します。アプリtreeは本家と一致することをCIのGit比較で確認し、版番号と来歴だけをpackaging時に追加します。タグ・リリースは変更しません。取得後は `python scripts/verify-ipa.py <展開先> --expected-sha <ビルドSHA> --expected-upstream-sha a2de08583aec2ea66c31ba9605acc84e394c5e15` で来歴を照合できます。
 
 ## ライセンス
 
