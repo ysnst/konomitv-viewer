@@ -2,7 +2,17 @@ name: Relay contracts (shared)
 
 on:
   workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: macos-latest
+        required: false
   workflow_dispatch:
+    inputs:
+      runner:
+        type: choice
+        options: [macos-latest, macos-26-intel]
+        default: macos-latest
 
 permissions:
   contents: read
@@ -10,7 +20,7 @@ permissions:
 jobs:
   contracts:
     name: Actual upstream relay HTTP contracts
-    runs-on: macos-latest
+    runs-on: ${{ inputs.runner || 'macos-latest' }}
     timeout-minutes: 10
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer

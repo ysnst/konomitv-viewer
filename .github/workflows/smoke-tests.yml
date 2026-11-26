@@ -9,6 +9,11 @@ on:
         description: Optional original 0.26 ref for a separate before-fix comparison
         type: string
         default: ''
+      runner:
+        description: Test host (select Intel when arm64 hosted capacity is unavailable)
+        type: choice
+        options: [macos-latest, macos-26-intel]
+        default: macos-latest
   push:
     branches-ignore: [main]
 
@@ -18,10 +23,13 @@ permissions:
 jobs:
   relay-contracts:
     uses: ./.github/workflows/relay-tests.yml
+    with:
+      runner: ${{ inputs.runner || 'macos-latest' }}
 
   smoke-tests:
     name: Stage A native VLC input smoke
-    runs-on: macos-latest
+    # 容量不足時は試験だけIntelへ切り替え、比較する両版を同じhostで実行する。
+    runs-on: ${{ inputs.runner || 'macos-latest' }}
     timeout-minutes: 45
     env:
       TZ: Asia/Tokyo
