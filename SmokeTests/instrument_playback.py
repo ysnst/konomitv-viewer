@@ -30,11 +30,12 @@ METHOD = r'''
             let errors = (item.errorLog()?.events.suffix(3) ?? []).map { "\($0.errorDomain):\($0.errorStatusCode)" }.joined(separator: ",")
             let error = item.error as NSError?
             let underlying = error?.userInfo[NSUnderlyingErrorKey] as? NSError
-            engine += " itemStatus=\(item.status.rawValue) error=\(error?.domain ?? "nil"):\(error?.code ?? 0) underlying=\(underlying?.domain ?? "nil"):\(underlying?.code ?? 0) errors=\(errors) waiting=\(player?.reasonForWaitingToPlay?.rawValue ?? "nil") empty=\(item.isPlaybackBufferEmpty) full=\(item.isPlaybackBufferFull) likely=\(item.isPlaybackLikelyToKeepUp) duration=\(item.duration.seconds) size=\(item.presentationSize) rendered=\(playerLayer?.isReadyForDisplay ?? false) loaded=\(item.loadedTimeRanges.map { $0.timeRangeValue.start.seconds.description + ":" + $0.timeRangeValue.duration.seconds.description })"
+            engine += " itemID=\(ObjectIdentifier(item)) itemStatus=\(item.status.rawValue) error=\(error?.domain ?? "nil"):\(error?.code ?? 0) underlying=\(underlying?.domain ?? "nil"):\(underlying?.code ?? 0) errors=\(errors) waiting=\(player?.reasonForWaitingToPlay?.rawValue ?? "nil") empty=\(item.isPlaybackBufferEmpty) full=\(item.isPlaybackBufferFull) likely=\(item.isPlaybackLikelyToKeepUp) duration=\(item.duration.seconds) size=\(item.presentationSize) rendered=\(playerLayer?.isReadyForDisplay ?? false) loaded=\(item.loadedTimeRanges.map { $0.timeRangeValue.start.seconds.description + ":" + $0.timeRangeValue.duration.seconds.description })"
         }
         if let timebase = player?.currentItem?.timebase {
             engine += " baseRate=\(CMTimebaseGetRate(timebase)) baseEffectiveRate=\(CMTimebaseGetEffectiveRate(timebase)) baseTime=\(CMTimebaseGetTime(timebase).seconds) hostTime=\(CMClockGetTime(CMClockGetHostTimeClock()).seconds)"
         }
+        engine += " fmp4Confirmed=\(fmp4StartContext?.state.didPlay ?? false) recoveryPending=\(fmp4StartContext?.state.awaitingRecovery ?? false)"
         let children = surfaceView.subviews.map {
             "\(type(of: $0)):input=\($0.isUserInteractionEnabled):gestures=\(($0.gestureRecognizers ?? []).map { String(describing: type(of: $0)) })"
         }.joined(separator: ";")
@@ -54,6 +55,7 @@ METHOD = r'''
 '''
 
 def instrument(text):
+    has_fmp4 = "private var fmp4StartContext:" in text
     anchors = {
         "    private func playAtCurrentRate() {": 'play-request',
         "    private func pauseEngine(isUserInitiated: Bool = true) {": 'pause-request',
@@ -70,11 +72,19 @@ def instrument(text):
         if event == 'pause-request':
             extra = '\n        smokeDiagnostic("pause-stack " + Thread.callStackSymbols.prefix(8).joined(separator: " | "))'
         text = text.replace(anchor, anchor + f'\n        smokeDiagnostic("{event}")' + extra)
+    if has_fmp4:
+        anchor = '        if action == .ignored { return true }'
+        if text.count(anchor) != 1:
+            raise ValueError('Expected accepted fMP4 failure guard')
+        text = text.replace(anchor, anchor + '\n        smokeDiagnostic("fmp4-start-failure")')
     anchor = '            guard source === vlcPlayer else { return }'
     if text.count(anchor) != 1:
         raise ValueError('Expected VLC state guard')
     text = text.replace(anchor, anchor + '\n            self.smokeDiagnostic("vlc-notification \\(state)")')
-    return text.replace('    private func playAtCurrentRate() {', METHOD + '\n    private func playAtCurrentRate() {', 1)
+    method = METHOD
+    if not has_fmp4:
+        method = '\n'.join(line for line in method.split('\n') if 'fmp4Confirmed=' not in line)
+    return text.replace('    private func playAtCurrentRate() {', method + '\n    private func playAtCurrentRate() {', 1)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

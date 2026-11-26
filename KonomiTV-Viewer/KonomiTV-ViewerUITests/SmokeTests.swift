@@ -150,30 +150,29 @@ final class SmokeTests: XCTestCase {
     private func tapControlsButton(_ label: String, timeout: TimeInterval) {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            // 複数のexists/frame取得で自動非表示の期限を消費しない。同じsnapshotの座標を使う。
-            if let snapshot = try? app.snapshot(),
-               let windowFrame = snapshot.children.first(where: { $0.elementType == .window })?.frame {
-                var pending: [any XCUIElementSnapshot] = [snapshot]
-                var button: CGRect?
-                while let element = pending.popLast() {
-                    if element.elementType == .button, element.label == label, element.isEnabled {
-                        button = element.frame
-                        break
-                    }
-                    pending.append(contentsOf: element.children)
+            // 期限切れ直前の操作帯へ遅れて座標を送らず、自然な非表示を同じ期限内で確認する。
+            guard let snapshot = try? app.snapshot() else { continue }
+            var pending: [any XCUIElementSnapshot] = [snapshot]
+            var visible = false
+            while let element = pending.popLast() {
+                if element.elementType == .button, element.label == label,
+                   element.frame.width > 0, element.frame.height > 0 {
+                    visible = true
+                    break
                 }
-                if let button, button.width > 0, button.height > 0, windowFrame.contains(button),
-                   app.buttons[label].isHittable {
-                    print("Tap control: window=\(windowFrame), button=\(button)")
-                    app.windows.firstMatch.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
-                        dx: button.midX - windowFrame.minX, dy: button.midY - windowFrame.minY)).tap()
-                    return
-                }
+                pending.append(contentsOf: element.children)
             }
+            if visible {
+                Thread.sleep(forTimeInterval: 0.4)
+                continue
+            }
+            // 再表示後は追加照会を挟まない。native tapが最新ボタンの解決と操作可否を確認する。
             tapVideoArea()
-            Thread.sleep(forTimeInterval: 0.4)
+            print("Tap freshly revealed native control: \(label)")
+            app.buttons[label].tap()
+            return
         }
-        XCTFail("Control did not become hittable")
+        XCTFail("Controls did not auto-hide before tapping the requested button")
     }
 
     private func tapVideoArea() {
