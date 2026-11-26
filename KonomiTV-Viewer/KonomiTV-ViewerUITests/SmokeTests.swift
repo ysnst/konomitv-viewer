@@ -86,7 +86,9 @@ final class SmokeTests: XCTestCase {
         let deadline = Date().addingTimeInterval(timeout)
         var baseline: Int?
         while Date() < deadline {
-            if timeLabel.exists, let seconds = playbackSeconds(timeLabel.label) {
+            // exists確認とlabel取得の間に自動非表示が入るため、同じsnapshotの値を読む。
+            // 取得中に消えた場合は期限内で再表示し、空文字を成功として扱わない。
+            if let snapshot = try? timeLabel.snapshot(), let seconds = playbackSeconds(snapshot.label) {
                 if let baseline = baseline, seconds > 0 && seconds > baseline { return true }
                 if baseline == nil { baseline = seconds }
             } else {

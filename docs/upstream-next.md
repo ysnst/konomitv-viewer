@@ -8,9 +8,11 @@
 
 後続更新は`integration/upstream-next`で扱い、新しい実機確認・了承まではmainへ統合しない。0.26の成功を後続版へ流用せず、字幕同期ずれの原因解消とも扱わない。
 
+導入手順に残っていた0.20へのリンクも0.26へ統一し、文書1コミットだけを追加fast-forwardした。最終main・切り戻し基準は`12b75d7992909c0ad9aed91faaed5753c9548a09`。アプリの内容は最初の統合後と同じで、新しい再生経路は含まない。
+
 ## 調査した14コミット
 
-取得時の本家mainは`8d333ab3c1f81d69a16c2810a34ec0dae4c0840a`、共通祖先は`3cf89e3fe9f5732a05d06e9d6b823635923ab70c`。mainは本家に対して53 ahead / 14 behind。件数は最新取得時の履歴から数えた。
+取得時の本家mainは`8d333ab3c1f81d69a16c2810a34ec0dae4c0840a`、共通祖先は`3cf89e3fe9f5732a05d06e9d6b823635923ab70c`。最初の統合後main（22c8a563）は本家に対して53 ahead / 14 behind、導入リンクの文書修正後main（12b75d79）は54 ahead / 14 behind。件数は取得時の履歴から数えた。
 
 | 完全SHA | 変更内容 | 主な対象・注意 |
 | --- | --- | --- |
@@ -62,3 +64,19 @@ UI試験は最初macos-26-intel/Xcode26.6で実行したが、初回起動に約
 - retry成功時に専用の失敗表示を消し、失敗項目が残った場合も最新位置から手動再試行できるようにする。
 
 route判定、0秒/途中開始、一度だけのretry→fallback、重複通知/古い試行、最新seek、PiP保留/relay中再保留、認証/開始世代のFoundationテストを追加した。ローカルPython9件・fixture3件・actionlint・差分チェックは成功。独立再レビューの修正必須指摘なし。SwiftとReleaseはCIで確認し、実際のfMP4字幕/スーパー/撮影/PiP/同じセッションでのTS復帰は[実機チェックリスト](testing/upstream-next.md)で未確認として扱う。
+
+## 生成したIPAと品質確認
+
+| 段階・版/build | ビルド元の完全SHA | Actions・SHA-256 |
+| --- | --- | --- |
+| A: 0.27 / 27（再生経路変更前） | `1256f686f3989ab339bf003e9052be0e17acd0c2` | [実行27](https://github.com/ysnst/konomitv-viewer/actions/runs/45738941562) / `1baa62091d70e323af5a9ce90ea5aafc4990ae5edcc9db3dd6b1882c05415ce6` |
+| B: 0.28 / 28（fMP4接合） | `34d926c97628a2f3bfc2e465ec08b1eecd42ba47` | [実行28](https://github.com/ysnst/konomitv-viewer/actions/runs/45740355971) / `87bf92901667fe2d9eef454a84cad3271888e78e32d7354b4991618b18ca23db` |
+| B: 0.29 / 29（UI試験環境調整） | `ee300e0b6daccfe3595f711f792fe607bc2c666c` | [実行29](https://github.com/ysnst/konomitv-viewer/actions/runs/45742195471) / `a3d2d03600d774564c06de0aeb8a7d4273a8ff10407526e04193530e0a9bea2e` |
+
+3版ともReleaseと既存Python9件・Swift履歴/ページ位置/字幕タイムライン/非同期開始/ライフサイクル/撮影メタデータが成功。Bでは追加のfMP4状態テストも成功。各IPAを別ディレクトリへ取得し、内外の来歴、run/Info.plistの完全SHA・版・build、未署名、Bundle ID、Podfile.lock、JPEG・EXIF/Pillowを照合した。0.29のアプリコードは0.28と同じで、その後の文書コミットもIPAのビルド元とは区別する。
+
+各Release警告は86件、新規0件。比較基準87件に対してNo App Category警告1件が減った（SDKROOT明記取り込み後に観測）。既存警告は解消済みとは扱わない。既存16個のIPAをハッシュ・サイズで再照合し、0.26を含め変更なし。依存ライブラリ、Bundle ID、字幕Gの処理、共通PiP、撮影生成/保存、生放送プレイヤーも基準mainから変更していない。
+
+UI試験の最初のIntel実行2回は環境の待機が長いため中止し、いずれも専用プロセス終了・ポート解放・専用simulator削除をログで確認した。ARMでの[実行3](https://github.com/ysnst/konomitv-viewer/actions/runs/45742195452)はビルド成功後、時刻ラベルのexists確認とlabel読み取りの間に操作帯が自動非表示となり失敗した。失敗画面にはfixture映像と実況が表示されているが、再生全体の成功とは扱わない。
+
+テスト側だけを[Apple公開APIのsnapshot](https://developer.apple.com/documentation/xcuiautomation/xcuielementsnapshotproviding/snapshot%28%29)で同時点の属性を読む形へ修正した。取得中に要素が消えた場合は期限内で操作帯を再表示し、厳密な時刻解析と各状態の時計増加の条件は緩めない。この変更はアプリコード・IPA 0.29の内容を変えない。再実行はUI試験だけを起動し、不要なIPAを作らない。
