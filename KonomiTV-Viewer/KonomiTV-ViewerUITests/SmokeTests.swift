@@ -1,0 +1,170 @@
+import XCTest
+
+/// native入力と実VLC時計を確認する。字幕画像・実サーバー・実機PiPの試験とは区別する。
+final class SmokeTests: XCTestCase {
+    private var app: XCUIApplication!
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .portrait
+        app = XCUIApplication()
+        app.launchArguments = ["-viewer_url", "http://127.0.0.1:18080",
+                               "-viewer_video_data_saver_mode", "YES", "-viewer_video_data_saver_mode_cellular", "YES",
+                               "-viewer_show_captions", "YES", "-viewer_show_comments", "YES",
+                               "-viewer_repeat_video_playback", "NO", "-stage_a_diagnostics"]
+        if name.contains("CancelTracking") { app.launchArguments += ["-stage_a_cancel_contract"] }
+        app.launch()
+    }
+    override func tearDownWithError() throws {
+        let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        image.name = "final-state"
+        image.lifetime = .keepAlways
+        add(image)
+        app?.terminate()
+        app = nil
+    }
+    func testRecordedNativeSeekAndTap() throws {
+        openRecording()
+        XCTAssertTrue(waitForClock(timeout: 40), "Actual VLC clock did not advance")
+        tapVideo()
+        XCTAssertTrue(waitForClock(timeout: 15), "Video tap paused actual playback")
+        // thumbから離れた操作領域上部でも開始/終了が揃うこと。
+        performSeek(targetRatio: 0.25) { self.seekPoint(0.25, y: 0.2).tap() }
+        performSeek(targetRatio: 0.7) { self.seekPoint(0.7).tap() }
+        performSeek(targetRatio: 0.6) {
+            self.seekPoint(0.3).press(forDuration: 0.2, thenDragTo: self.seekPoint(0.6))
+        }
+        performSeek(targetRatio: 0.5) {
+            let start = self.seekPoint(0.5)
+            start.press(forDuration: 0.2, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -80)))
+        }
+        tapControl("全画面")
+        XCTAssertTrue(waitForGeometry(landscape: true), "Fullscreen did not settle")
+        performSeek(targetRatio: 0.35) { self.seekPoint(0.35).tap() }
+        tapControl("全画面を解除")
+        XCTAssertTrue(waitForGeometry(landscape: false), "Portrait did not return")
+        XCTAssertTrue(waitForClock(timeout: 15), "Recorded playback stopped after fullscreen")
+    }
+    func testSliderCancelTrackingContract() throws {
+        // 公開API cancelTrackingを直接呼ぶ別契約。実OSのtouchCancelが起きたという主張はしない。
+        openRecording()
+        XCTAssertTrue(waitForClock(timeout: 40), "Cancel contract stopped actual playback")
+        XCTAssertTrue(waitForSeekEnd(begin: 1, end: 1), "cancelTracking did not finish owner scrub state")
+    }
+    func testLiveNativeVideoTap() throws {
+        let tab = app.descendants(matching: .any)["テレビをみる"].firstMatch
+        XCTAssertTrue(tab.waitForExistence(timeout: 30))
+        tab.tap()
+        let channel = app.staticTexts["段階A生放送"].firstMatch
+        XCTAssertTrue(channel.waitForExistence(timeout: 30))
+        channel.tap()
+        XCTAssertTrue(waitForClock(timeout: 40), "Live VLC clock did not advance")
+        tapVideo()
+        XCTAssertTrue(waitForClock(timeout: 15), "Live video tap stopped playback")
+        tapControl("全画面")
+        XCTAssertTrue(waitForGeometry(landscape: true), "Live fullscreen did not settle")
+        tapVideo()
+        XCTAssertTrue(waitForClock(timeout: 15), "Fullscreen live video tap stopped playback")
+        tapControl("全画面を解除")
+        XCTAssertTrue(waitForGeometry(landscape: false), "Live portrait did not return")
+        XCTAssertTrue(waitForClock(timeout: 15), "Live playback stopped after fullscreen")
+    }
+    private func openRecording() {
+        let card = app.staticTexts["スモークテスト番組"].firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 30))
+        card.tap()
+    }
+    private func snapshot(_ identifier: String) -> (CGRect, String)? {
+        guard let tree = try? app.snapshot() else { return nil }
+        var pending: [any XCUIElementSnapshot] = [tree]
+        while let item = pending.popLast() {
+            if item.identifier == identifier { return (item.frame, item.label) }
+            pending.append(contentsOf: item.children)
+        }
+        return nil
+    }
+    private func waitForClock(timeout: TimeInterval) -> Bool {
+        var first: Double?
+        var previous: Double?
+        var increases = 0
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let (_, label) = snapshot("stage.video"), let timeField = label.split(separator: " ").first, let actual = Double(timeField.dropFirst(5)), actual.isFinite {
+                print("Actual clock sample: \(actual)")
+                if let previous, actual > previous { increases += 1 }
+                if let first, actual >= first + 1, increases >= 2 { return true }
+                if first == nil { first = actual }
+                previous = actual
+            }
+            Thread.sleep(forTimeInterval: 0.4)
+        }
+        return false
+    }
+    private func seekCounts() -> (Int, Int)? {
+        guard let (_, label) = snapshot("stage.video") else { return nil }
+        let fields = Dictionary(uniqueKeysWithValues: label.split(separator: " ").compactMap { field -> (String, String)? in
+            let pair = field.split(separator: "=", maxSplits: 1)
+            return pair.count == 2 ? (String(pair[0]), String(pair[1])) : nil
+        })
+        guard let begin = Int(fields["begin"] ?? ""), let end = Int(fields["end"] ?? "") else { return nil }
+        return (begin, end)
+    }
+    private func waitForSeekEnd(begin: Int, end: Int) -> Bool {
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if let (_, state) = snapshot("stage.video"),
+               state.hasSuffix("scrub=false preview=false density=false begin=\(begin) end=\(end)") { return true }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        return false
+    }
+    private func performSeek(targetRatio: CGFloat, action: () -> Void) {
+        revealSlider()
+        guard let counts = seekCounts() else { XCTFail("Tracking counters unavailable"); return }
+        action()
+        XCTAssertTrue(waitForSeekEnd(begin: counts.0 + 1, end: counts.1 + 1), "Native seek did not begin/end exactly once or left UI visible")
+        let deadline = Date().addingTimeInterval(15)
+        var reached = false
+        while Date() < deadline {
+            if let (_, label) = snapshot("stage.video"), let timeField = label.split(separator: " ").first, let actual = Double(timeField.dropFirst(5)), abs(actual - Double(targetRatio) * 180) <= 6 {
+                reached = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        // fixtureの閉GOPは6秒間隔。表示専用の先行位置でなく実時計が移動したことを確認する。
+        XCTAssertTrue(reached, "Actual engine clock did not reach the seek target")
+        XCTAssertTrue(waitForClock(timeout: 15), "Playback did not continue after seek")
+    }
+    private func tapControl(_ name: String) {
+        let button = app.buttons[name]
+        if !button.isHittable { tapVideo() }
+        button.tap()
+    }
+    private func waitForGeometry(landscape: Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+            let window = app.windows.firstMatch.frame
+            // 通常の映像も16:9。向きはwindowで判断し、映像の占有率で復帰を区別する。
+            if let (video, _) = snapshot("stage.video"), video.width > 0, video.height > 0,
+               (window.width > window.height) == landscape, window.contains(video),
+               (video.height > window.height * 0.65) == landscape { return true }
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        return false
+    }
+    private func tapVideo() {
+        guard let (video, _) = snapshot("stage.video") else { XCTFail("Video geometry missing"); return }
+        let window = app.windows.firstMatch
+        let origin = window.frame.origin
+        window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: video.minX + video.width * 0.08 - origin.x, dy: video.midY - origin.y)).tap()
+    }
+    private func revealSlider() {
+        if !app.sliders["stage.seekSlider"].isHittable { tapVideo() }
+        XCTAssertTrue(app.sliders["stage.seekSlider"].isHittable, "Seek slider did not become operable")
+    }
+    private func seekPoint(_ ratio: CGFloat, y: CGFloat = 0.92) -> XCUICoordinate {
+        let slider = app.sliders["stage.seekSlider"]
+        // 見た目の細いtrackへ実際に触る。thumbの現在位置に合わせて不具合を回避しない。
+        return slider.coordinate(withNormalizedOffset: CGVector(dx: ratio, dy: y))
+    }
+}

@@ -1,0 +1,251 @@
+name: Smoke Tests
+
+# 段階Aの実入力を使い捨て観測checkoutで試験する。Release本体へ観測を含めない。
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      application_ref:
+        description: Optional original 0.26 ref for a separate before-fix comparison
+        type: string
+        default: ''
+  push:
+    branches-ignore: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  relay-contracts:
+    uses: ./.github/workflows/relay-tests.yml
+
+  smoke-tests:
+    name: Stage A native VLC input smoke
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      TZ: Asia/Tokyo
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Checkout playback source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.application_ref || github.sha }}
+          path: app-source
+          persist-credentials: false
+
+      # 比較元へも同じテストtargetと観測だけを付ける。engineや修正はコピーしない。
+      - name: Prepare independent test harness
+        run: |
+          mkdir -p artifacts/smoke app-source/KonomiTV-Viewer/KonomiTV-ViewerUITests
+          cp KonomiTV-Viewer/KonomiTV-Viewer.xcodeproj/project.pbxproj app-source/KonomiTV-Viewer/KonomiTV-Viewer.xcodeproj/project.pbxproj
+          cp KonomiTV-Viewer/KonomiTV-Viewer.xcodeproj/xcshareddata/xcschemes/SmokeTests.xcscheme app-source/KonomiTV-Viewer/KonomiTV-Viewer.xcodeproj/xcshareddata/xcschemes/SmokeTests.xcscheme
+          cp KonomiTV-Viewer/KonomiTV-ViewerUITests/SmokeTests.swift app-source/KonomiTV-Viewer/KonomiTV-ViewerUITests/SmokeTests.swift
+          python3 SmokeTests/instrument_stage_a.py app-source
+          git -C app-source rev-parse HEAD > artifacts/smoke/source-sha.log
+          git rev-parse HEAD > artifacts/smoke/harness-sha.log
+          xcodebuild -version | tee artifacts/smoke/xcode-version.log
+          python3 -m unittest discover -s SmokeTests -p 'test_*.py' -v 2>&1 | tee artifacts/smoke/fixture-tests.log
+
+      - name: Start owned stub server
+        run: |
+          python3 - <<'PY'
+          import pathlib, socket, subprocess, sys, time, urllib.request
+          directory = pathlib.Path('artifacts/smoke')
+          with socket.socket() as probe:
+              if probe.connect_ex(('127.0.0.1', 18080)) == 0:
+                  raise SystemExit('Refusing to start: port 18080 is already occupied')
+          with (directory / 'stub-server.log').open('wb') as log:
+              process = subprocess.Popen([sys.executable, '-u', 'SmokeTests/stub_server.py', '18080'],
+                                         stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+          (directory / 'stub.pid').write_text(str(process.pid))
+          for _ in range(30):
+              if process.poll() is not None:
+                  raise SystemExit('Stub server exited before readiness')
+              try:
+                  with urllib.request.urlopen('http://127.0.0.1:18080/api/videos', timeout=1) as response:
+                      if response.status == 200 and process.poll() is None:
+                          print('Stub server is ready.')
+                          break
+              except OSError:
+                  pass
+              time.sleep(1)
+          else:
+              raise SystemExit('Stub server readiness timed out')
+          PY
+
+      - name: Install original CocoaPods dependencies
+        working-directory: app-source/KonomiTV-Viewer
+        run: |
+          set -o pipefail
+          pod install 2>&1 | tee ../../artifacts/smoke/pod-install.log
+          cp Podfile.lock ../../artifacts/smoke/Podfile.lock
+
+      - name: Create owned simulator
+        timeout-minutes: 12
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          def simctl(*args):
+              return subprocess.check_output(['xcrun', 'simctl', *args], text=True)
+          runtimes = [r for r in json.loads(simctl('list', 'runtimes', '-j'))['runtimes']
+                      if r.get('isAvailable') and r['identifier'].startswith('com.apple.CoreSimulator.SimRuntime.iOS-')]
+          if not runtimes:
+              raise SystemExit('No available iOS simulator runtime')
+          runtime = max(runtimes, key=lambda r: tuple(map(int, r['version'].split('.'))))
+          # 利用可能な既存定義の deviceType を選ぶが、そのデバイス自体は操作しない。
+          devices = json.loads(simctl('list', 'devices', 'available', '-j'))['devices'].get(runtime['identifier'], [])
+          phones = [d for d in devices if d['name'].startswith('iPhone') and d.get('deviceTypeIdentifier')]
+          if not phones:
+              raise SystemExit('No compatible iPhone device type for latest iOS runtime')
+          udid = simctl('create', 'SmokeTests-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'],
+                        phones[0]['deviceTypeIdentifier'], runtime['identifier']).strip()
+          pathlib.Path('artifacts/smoke/simulator.udid').write_text(udid)
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write('SIM_UDID=' + udid + '\n')
+          print('Created simulator ' + udid)
+          PY
+          SIM_UDID=$(cat artifacts/smoke/simulator.udid)
+          xcrun simctl boot "$SIM_UDID"
+          xcrun simctl bootstatus "$SIM_UDID" -b
+
+      - name: Build Stage A native tests
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          xcodebuild build-for-testing \
+            -workspace app-source/KonomiTV-Viewer/KonomiTV-Viewer.xcworkspace \
+            -scheme SmokeTests -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath artifacts/smoke/DerivedData \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            2>&1 | tee artifacts/smoke/build.log
+
+      - name: Run Stage A native smoke tests
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          xcodebuild test-without-building \
+            -workspace app-source/KonomiTV-Viewer/KonomiTV-Viewer.xcworkspace \
+            -scheme SmokeTests -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath artifacts/smoke/DerivedData \
+            -resultBundlePath artifacts/smoke/SmokeTestResults.xcresult \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            2>&1 | tee artifacts/smoke/test.log
+
+      - name: Collect bounded playback observations
+        if: always()
+        run: |
+          if [ -n "$SIM_UDID" ]; then
+            container=$(xcrun simctl get_app_container "$SIM_UDID" jp.tatsuya0902.konomitv.viewer data 2>/dev/null || true)
+            if [ -n "$container" ] && [ -f "$container/Documents/stage-a.jsonl" ]; then
+              cp "$container/Documents/stage-a.jsonl" artifacts/smoke/playback.jsonl
+            fi
+          fi
+
+      - name: Verify exercised engines and tracking termination
+        if: success()
+        run: |
+          python3 - <<'PY'
+          import json, pathlib
+          rows = [json.loads(line) for line in pathlib.Path('artifacts/smoke/playback.jsonl').read_text().splitlines()]
+          for kind in ('recorded', 'live'):
+              assert any(row['kind'] == kind and row['playing'] and row['video'] and row['time'] > 0 for row in rows), kind + ' VLC progress missing'
+          recorded = [row for row in rows if row['kind'] == 'recorded']
+          assert any(row['event'] == 'scrub-began' and row['preview'] and row['density'] for row in recorded), 'Seek UI was never displayed'
+          ends = [row for row in recorded if row['event'] in ('scrub-ended', 'cancel-contract')]
+          assert len(ends) >= 5 and any(row['event'] == 'cancel-contract' for row in ends)
+          assert all(not row['scrub'] and not row['preview'] and not row['density'] for row in ends), 'Tracking termination left seek UI active'
+          assert any(row['event'] == 'sprite-loaded' and not row['scrub'] and not row['preview'] and not row['density'] for row in recorded), 'Late sprite completion was not observed after seek ended'
+          PY
+
+      - name: Export test attachments
+        if: always()
+        run: |
+          set -o pipefail
+          if [ -d artifacts/smoke/SmokeTestResults.xcresult ]; then
+            xcrun xcresulttool export attachments \
+              --path artifacts/smoke/SmokeTestResults.xcresult \
+              --output-path artifacts/smoke/attachments \
+              2>&1 | tee artifacts/smoke/attachment-export.log
+          fi
+
+      - name: Clean up owned resources
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, signal, socket, subprocess, time
+          directory = pathlib.Path('artifacts/smoke')
+          failures = []
+          pid_file = directory / 'stub.pid'
+          if pid_file.exists():
+              pid = int(pid_file.read_text())
+              try:
+                  group = os.getpgid(pid)
+              except ProcessLookupError:
+                  group = None
+              if group not in (None, pid):
+                  failures.append('Refusing to signal unexpected process group')
+              else:
+                  if group is not None:
+                      os.killpg(pid, signal.SIGTERM)
+                  for _ in range(50):
+                      try:
+                          os.killpg(pid, 0)
+                      except ProcessLookupError:
+                          break
+                      time.sleep(0.1)
+                  else:
+                      try:
+                          os.killpg(pid, signal.SIGKILL)
+                      except ProcessLookupError:
+                          pass
+                      time.sleep(0.5)
+                  try:
+                      os.killpg(pid, 0)
+                      failures.append('Stub process group still exists')
+                  except ProcessLookupError:
+                      print('Owned stub process group has exited.')
+              with socket.socket() as probe:
+                  if probe.connect_ex(('127.0.0.1', 18080)) == 0:
+                      failures.append('Stub port 18080 is still occupied')
+                  else:
+                      print('Stub port 18080 is free.')
+          device_file = directory / 'simulator.udid'
+          if device_file.exists():
+              udid = device_file.read_text().strip()
+              subprocess.run(['xcrun', 'simctl', 'shutdown', udid], check=False)
+              if subprocess.run(['xcrun', 'simctl', 'delete', udid]).returncode:
+                  failures.append('Owned simulator could not be deleted')
+              else:
+                  devices = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'devices', '-j'], text=True))
+                  if any(d['udid'] == udid for group in devices['devices'].values() for d in group):
+                      failures.append('Owned simulator still exists after deletion')
+                  else:
+                      print('Owned simulator deleted: ' + udid)
+          if failures:
+              raise SystemExit('; '.join(failures))
+          PY
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-results-stage-a
+          path: |
+            artifacts/smoke/*.jsonl
+            artifacts/smoke/*.log
+            artifacts/smoke/Podfile.lock
+            artifacts/smoke/*.pid
+            artifacts/smoke/*.udid
+            artifacts/smoke/SmokeTestResults.xcresult
+            artifacts/smoke/attachments
+          if-no-files-found: warn

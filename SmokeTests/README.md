@@ -1,0 +1,13 @@
+# 段階Aの独立試験
+
+アプリの再生経路は0.26を使い、fMP4・復旧・エンジンの実装を取り込まない。TSの固定素材は180秒・640×360・30fps・HEVC映像のみ、全30区間の時刻が連続した合成素材を再利用する。通常IPAにはfixtureや診断を同梱しない。
+
+UI試験はnativeの映像タップ、シークトラックの任意位置タップ、ドラッグ、領域外リリースを使う。実VLC時計が進み、シーク終了時にpreview・密度グラフ・scrub状態が消えることを確認する。生放送もHLSで代用せず、終端長なしのchunked MPEG-TSを素材尺に合わせて送る。
+
+使い捨てCI checkoutだけへAXと上限付きJSONログを追加する。描画・シーク処理を置換しない。別のcancelTracking契約では実UIKit overrideを直接呼び、所有元の終了処理への結線を検証する。OSが実際にtouchCancelを発生させたという保証はなく、実OS取消しは実機未確認として残す。
+
+手動Smoke Testsのapplication_refを0.26の完全SHAに指定すると、同じtesttarget・fixture・AXで修正前を別実行できる。期待失敗を成功へ変換せず、修正後の結果とは別のrunとして保存する。原本のアプリtarget・依存設定は維持し、UITest targetと独立schemeだけを追加する。
+
+HTTP中継契約はmacOSで実StreamRelayServerとTSID3Extractorを直接コンパイルして検証する。設定供給だけを最小stubにし、CF相当の合成ヘッダー、200/206/416、相対/MAP URI、取消し・次要求・終了後ポートを確認する。本物のCloudflare Access・実サーバー・実機HEVC/PiPの成功とは区別する。
+
+すべてのCIは専用fixtureプロセス群・専用simulatorを終了し、ポート解放・simulator削除を確認する。既存の履歴・字幕・ページ位置・撮影・IPA検証テストは変更しない。
