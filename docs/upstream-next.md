@@ -80,3 +80,7 @@ route判定、0秒/途中開始、一度だけのretry→fallback、重複通知
 UI試験の最初のIntel実行2回は環境の待機が長いため中止し、いずれも専用プロセス終了・ポート解放・専用simulator削除をログで確認した。ARMでの[実行3](https://github.com/ysnst/konomitv-viewer/actions/runs/45742195452)はビルド成功後、時刻ラベルのexists確認とlabel読み取りの間に操作帯が自動非表示となり失敗した。失敗画面にはfixture映像と実況が表示されているが、再生全体の成功とは扱わない。
 
 テスト側だけを[Apple公開APIのsnapshot](https://developer.apple.com/documentation/xcuiautomation/xcuielementsnapshotproviding/snapshot%28%29)で同時点の属性を読む形へ修正した。取得中に要素が消えた場合は期限内で操作帯を再表示し、厳密な時刻解析と各状態の時計増加の条件は緩めない。この変更はアプリコード・IPA 0.29の内容を変えない。再実行はUI試験だけを起動し、不要なIPAを作らない。
+
+[実行4](https://github.com/ysnst/konomitv-viewer/actions/runs/45743960933)では通常/全画面の時計増加は通過したが、復帰後の時計増加に失敗した。録画を確認すると全画面終了前の操作帯再表示タップ付近で一時停止になっており、横向きAX座標（874×402）と縦向きevent orientationの組合せが保存されていた。アプリの全画面処理に停止呼び出しはなく、アプリの不具合と断定する根拠にはしない。
+
+テストでは、まず全画面ボタンによる横長window/映像の配置確定を確認し、その後に自動操作端末の向きを同期する。解除後もボタン状態・情報タブの復帰を確認してから端末を縦へ戻す。通常画面は端末の向きに追従する契約を保ち、画面内の映像座標が安定するまで次の座標操作をしない。[端末と画面の左右対応](https://developer.apple.com/documentation/UIKit/UIInterfaceOrientation)に従い、テスト側だけに向き・window/映像の寸法を出力する。時計が止まった後に再生を押して成功扱いにする処理は追加していない。

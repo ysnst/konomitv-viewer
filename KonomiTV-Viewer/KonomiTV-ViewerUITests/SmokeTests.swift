@@ -7,6 +7,7 @@ final class SmokeTests: XCTestCase {
 
     override func setUpWithError() throws {
         continueAfterFailure = false
+        XCUIDevice.shared.orientation = .portrait
         app = XCUIApplication()
         // 既存の設定キーだけで HEVC 経路を選ぶ。通信種別や保存済み設定に依存させない。
         app.launchArguments += [
@@ -26,6 +27,7 @@ final class SmokeTests: XCTestCase {
         }
         app?.terminate()
         app = nil
+        XCUIDevice.shared.orientation = .portrait
     }
 
     func testRecordedPlaybackAndFullscreenOverlays() throws {
@@ -41,12 +43,23 @@ final class SmokeTests: XCTestCase {
         let enterButton = app.buttons["全画面"]
         tapControlsButton(enterButton, timeout: 20)
         let exitButton = app.buttons["全画面を解除"]
+        // まずボタン自身による画面回転を確認し、端末の回転操作で不具合を隠さない。
+        XCTAssertTrue(waitForVideoGeometry(landscape: true, timeout: 15), "Fullscreen geometry did not settle")
+        // appの横向きと自動操作側の物理的な向きを合わせ、再表示タップの座標変換を揃える。
+        // interfaceのLandscape Rightに対するdevice orientationはLandscape Leftになる。
+        XCUIDevice.shared.orientation = .landscapeLeft
+        XCTAssertTrue(waitForVideoGeometry(landscape: true, timeout: 15), "Landscape automation geometry did not settle")
         XCTAssertTrue(waitForExistenceWithControls(exitButton, timeout: 15), "Fullscreen did not open")
         assertOverlays()
         XCTAssertTrue(waitForPlaybackToAdvance(timeout: 15), "Playback clock did not advance in fullscreen")
         attachScreenshot("03-fullscreen")
 
         tapControlsButton(exitButton, timeout: 20)
+        // 通常画面は端末の向きに追従するため、横向きのままで解除状態を先に確かめる。
+        XCTAssertTrue(enterButton.waitForExistence(timeout: 15), "Fullscreen did not close")
+        XCTAssertTrue(app.staticTexts["番組情報"].waitForExistence(timeout: 15), "Info tabs did not return")
+        XCUIDevice.shared.orientation = .portrait
+        XCTAssertTrue(waitForVideoGeometry(landscape: false, timeout: 15), "Portrait automation geometry did not settle")
         XCTAssertTrue(waitForExistenceWithControls(enterButton, timeout: 15), "Normal view did not return")
         assertOverlays()
         XCTAssertTrue(waitForPlaybackToAdvance(timeout: 15), "Playback clock did not advance after returning")
@@ -56,6 +69,28 @@ final class SmokeTests: XCTestCase {
     private func assertOverlays() {
         XCTAssertTrue(app.otherElements["player.commentOverlay"].waitForExistence(timeout: 15), "Comment overlay missing")
         XCTAssertTrue(app.otherElements["player.captionOverlay"].exists, "Caption overlay missing")
+    }
+
+    /// windowと映像が実際に画面内へ収まり、連続したsnapshotで寸法が一致するまで待つ。
+    private func waitForVideoGeometry(landscape: Bool, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        var previous: (CGRect, CGRect)?
+        while Date() < deadline {
+            if let window = try? app.windows.firstMatch.snapshot().frame,
+               let video = try? app.otherElements["player.captionOverlay"].snapshot().frame,
+               window.width > 0, window.height > 0, video.width > 0, video.height > 0,
+               (window.width > window.height) == landscape, window.contains(video) {
+                if let previous = previous, previous.0 == window, previous.1 == video {
+                    print("Settled video geometry: landscape=\(landscape), device=\(XCUIDevice.shared.orientation.rawValue), window=\(window), video=\(video)")
+                    return true
+                }
+                previous = (window, video)
+            } else {
+                previous = nil
+            }
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        return false
     }
 
     /// 空文字や任意のラベルを再生成功とみなさず、m:ss / h:mm:ss の数値だけを読む。
@@ -128,6 +163,9 @@ final class SmokeTests: XCTestCase {
     private func tapVideoArea() {
         let overlay = app.otherElements["player.captionOverlay"]
         if overlay.exists {
+            let window = try? app.windows.firstMatch.snapshot().frame
+            let video = try? overlay.snapshot().frame
+            print("Reveal controls: device=\(XCUIDevice.shared.orientation.rawValue), window=\(String(describing: window)), video=\(String(describing: video)), normalized=(0.5,0.12)")
             overlay.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
         }
     }
