@@ -19,7 +19,7 @@ RECORD = r'''
         captionOverlayView.accessibilityIdentifier = "stage.video"
         seekSlider.accessibilityIdentifier = "stage.seekSlider"
         seekSlider.accessibilityLabel = "scrub=\(isScrubbing) preview=\(!seekPreviewView.isHidden) density=\(!excitementStrip.isHidden) begin=\(stageBeginCount) end=\(stageEndCount)"
-        captionOverlayView.accessibilityLabel = "time=\(actual.isFinite ? actual : -1) " + (seekSlider.accessibilityLabel ?? "")
+        captionOverlayView.accessibilityLabel = "time=\(actual.isFinite ? actual : -1) controls=\(controlsVisible) " + (seekSlider.accessibilityLabel ?? "")
         seekPreviewView.isAccessibilityElement = true
         seekPreviewView.accessibilityIdentifier = "stage.preview"
         excitementStrip.isAccessibilityElement = true

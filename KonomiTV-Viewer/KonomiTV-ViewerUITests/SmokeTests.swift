@@ -3,6 +3,8 @@ import XCTest
 /// native入力と実VLC時計を確認する。字幕画像・実サーバー・実機PiPの試験とは区別する。
 final class SmokeTests: XCTestCase {
     private var app: XCUIApplication!
+    private var preparedSeekFrame = CGRect.zero
+    private var preparedWindowOrigin = CGPoint.zero
     override func setUpWithError() throws {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .portrait
@@ -99,15 +101,6 @@ final class SmokeTests: XCTestCase {
         }
         return false
     }
-    private func seekCounts() -> (Int, Int)? {
-        guard let (_, label) = snapshot("stage.video") else { return nil }
-        let fields = Dictionary(uniqueKeysWithValues: label.split(separator: " ").compactMap { field -> (String, String)? in
-            let pair = field.split(separator: "=", maxSplits: 1)
-            return pair.count == 2 ? (String(pair[0]), String(pair[1])) : nil
-        })
-        guard let begin = Int(fields["begin"] ?? ""), let end = Int(fields["end"] ?? "") else { return nil }
-        return (begin, end)
-    }
     private func waitForSeekEnd(begin: Int, end: Int) -> Bool {
         let deadline = Date().addingTimeInterval(5)
         while Date() < deadline {
@@ -118,8 +111,7 @@ final class SmokeTests: XCTestCase {
         return false
     }
     private func performSeek(targetRatio: CGFloat, action: () -> Void) {
-        revealSlider()
-        guard let counts = seekCounts() else { XCTFail("Tracking counters unavailable"); return }
+        guard let counts = prepareSeekInput() else { XCTFail("Tracking geometry/counters unavailable"); return }
         action()
         XCTAssertTrue(waitForSeekEnd(begin: counts.0 + 1, end: counts.1 + 1), "Native seek did not begin/end exactly once or left UI visible")
         let deadline = Date().addingTimeInterval(15)
@@ -158,13 +150,43 @@ final class SmokeTests: XCTestCase {
         let origin = window.frame.origin
         window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: video.minX + video.width * 0.08 - origin.x, dy: video.midY - origin.y)).tap()
     }
-    private func revealSlider() {
-        if !app.sliders["stage.seekSlider"].isHittable { tapVideo() }
-        XCTAssertTrue(app.sliders["stage.seekSlider"].isHittable, "Seek slider did not become operable")
+    private func prepareSeekInput() -> (Int, Int)? {
+        // 自動非表示3.5秒を止めず、同じsnapshotで状態と座標を確定して直ちに入力する。
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            guard let tree = try? app.snapshot() else { continue }
+            var pending: [any XCUIElementSnapshot] = [tree]
+            var slider: CGRect?
+            var window: CGRect?
+            var video: (CGRect, String)?
+            while let item = pending.popLast() {
+                if item.elementType == .window, window == nil { window = item.frame }
+                if item.identifier == "stage.seekSlider" { slider = item.frame }
+                if item.identifier == "stage.video" { video = (item.frame, item.label) }
+                pending.append(contentsOf: item.children)
+            }
+            guard let window, let video else { continue }
+            if let slider, slider.width > 0, slider.height > 0, video.1.contains("controls=true ") {
+                let fields = Dictionary(uniqueKeysWithValues: video.1.split(separator: " ").compactMap { field -> (String, String)? in
+                    let pair = field.split(separator: "=", maxSplits: 1)
+                    return pair.count == 2 ? (String(pair[0]), String(pair[1])) : nil
+                })
+                if let begin = Int(fields["begin"] ?? ""), let end = Int(fields["end"] ?? "") {
+                    preparedSeekFrame = slider
+                    preparedWindowOrigin = window.origin
+                    return (begin, end)
+                }
+            }
+            let point = CGVector(dx: video.0.minX + video.0.width * 0.08 - window.minX, dy: video.0.midY - window.minY)
+            app.windows.firstMatch.coordinate(withNormalizedOffset: .zero).withOffset(point).tap()
+        }
+        return nil
     }
+
     private func seekPoint(_ ratio: CGFloat, y: CGFloat = 0.92) -> XCUICoordinate {
-        let slider = app.sliders["stage.seekSlider"]
-        // 見た目の細いtrackへ実際に触る。thumbの現在位置に合わせて不具合を回避しない。
-        return slider.coordinate(withNormalizedOffset: CGVector(dx: ratio, dy: y))
+        // Sliderを再検索せず、直前の同一snapshotの絶対座標を使う。
+        let point = CGVector(dx: preparedSeekFrame.minX + preparedSeekFrame.width * ratio - preparedWindowOrigin.x,
+                             dy: preparedSeekFrame.minY + preparedSeekFrame.height * y - preparedWindowOrigin.y)
+        return app.windows.firstMatch.coordinate(withNormalizedOffset: .zero).withOffset(point)
     }
 }
