@@ -50,7 +50,7 @@ HEVCのネイティブ再生、各種認証、設定・視聴履歴・マイリ�
 
 [今回の再検証](docs/testing/device-0.26-recheck.md)は31項目中29成功・1失敗・1未確認。生放送・連続チャンネル切替、HEVC/PiP、録画↔生放送、読み込み中退出、認証・履歴・独自ホーム/一覧が成功しました。生放送の映像tap停止と、tap seek後のプレビュー/密度残留を段階Aで修正しています。新版の成功結果は実機確認後に追記します。
 
-段階Aの確認用候補は **0.36 / build 36**。生放送映像tapとseek表示残留を修正し、[Release](https://github.com/ysnst/konomitv-viewer/actions/runs/45813722359)と[UI/relay試験](https://github.com/ysnst/konomitv-viewer/actions/runs/45817268258)が成功しました。**新版は実機未確認**です。[来歴・実機チェックリスト](docs/testing/stage-a.md)を参照し、0.26を切り戻し基準として維持します。
+段階Aの確認用候補は **0.37 / build 37**。[Release・IPA取得](https://github.com/ysnst/konomitv-viewer/actions/runs/45823604597)は成功。0.36のHEVC PiPは[実機成功へ訂正](docs/testing/device-0.36.md)され、今回はシーク後の再生継続だけを修正しました。**0.37は実機未確認**です。[調査結果](docs/seek-resume-0.36.md)と[来歴・実機チェックリスト](docs/testing/stage-a.md)を参照し、0.26を切り戻し基準として維持します。
 
 キャプチャ除去・5ボタン化は撤回し、**既存キャプチャと6ボタンを維持**します。本家0.34案は代替経路として保留。fMP4等の後続変更を一括移植せず、[開発計画](docs/development-0.26.md)に従います。オフライン保存は原本方式Aを基本承認済みですが未実装で、段階Aの実機確認後に進めます。
 

@@ -1,10 +1,21 @@
-# 0.26開発・段階Aの次版実機チェック
+# 0.26開発・段階Aの実機チェック
 
-候補は **0.36 / build 36**。ビルド元 `eef1a0793ecc53247b30fc86993df20ef3b0660e`、SHA-256 `ad723d6315a5a18a72be4ec2d99ef505925ac731393b0fc8361d98ef24e41cb8`。
+候補は **0.37 / build 37**。ビルド元 `358bd8ac4efa1e00cb63efcedc070b0494d78049`、SHA-256 `54f4534a9034097c3c580861cd5fb3089646c06a1abfd519d1f5ce7bd7492232`。[IPA取得先（Actions artifact）](https://github.com/ysnst/konomitv-viewer/actions/runs/45823604597)。未署名IPAの利用には署名または対応した実行環境が必要。
 
-[Release成功](https://github.com/ysnst/konomitv-viewer/actions/runs/45813722359)、[UI/relay成功](https://github.com/ysnst/konomitv-viewer/actions/runs/45817268258)。UI3件/失敗0、通常/全画面live tap、録画の上部tap・track tap・drag・領域外終了・全画面seekと復帰・直接cancel契約を確認。遅着spriteも非表示。UI試験harnessは別コミットだがアプリ本体はIPA元と同一。実OSによるtouchCancelやPiPの実機成功を意味しない。
+[0.36の実機訂正](device-0.36.md)：HEVC録画PiPは**成功**、失敗報告と修正指示を撤回。シーク後の再生継続は失敗。今回の修正はスクラブ専用の内部停止・先行再生の除去のみで、PiPは回帰対象。調査・修正理由と未確定事項は[調査文書](../seek-resume-0.36.md)を参照。
 
-Release警告87件・新規0。既存Swift6群、Python9件、合成HTTP fixture2件、実relay HTTP契約、JPEG/EXIF・Pillow、actionlint/diffが成功。0.35は途中案がnative seek試験で不十分だったため不採用で、既存成果物として保存した。**全項目は新版として実機未確認**。0.26の31件を新版へ転記しない。0.26の既存IPA・LiveContainer containerを削除せず、既存データ保持も別に確認する。
+Releaseは成功、警告87件・新規0。内部来歴/版/SHA-256/lock一致。UI試験の最終結果は確認中。**0.37は全項目実機未確認**。旧版の成功を新版へ転記しない。段階Aの実機合格までB以降に進めない。0.26/0.35/0.36と既存LiveContainer containerを保持し、既存データを初期化しない。
+
+## 今回の重点確認
+
+- [ ] 再生中の短tap/drag後、再生ボタンを追加操作せず映像・音声が継続する。
+- [ ] 一時停止中のtap/drag後は一時停止を維持し、再生操作で移動先から再開する。
+- [ ] 前方/後方/短距離/長距離/連続seek、通常/全画面で同じ動作。
+- [ ] 操作中・seek完了待ちの再生/一時停止を最後の利用者操作どおりに反映する。
+- [ ] preview/密度は終了・取消で消え、遅着画像で復活しない。
+- [ ] HEVC PiPの開始/継続/復帰を回帰確認。0.36の成功と新版の結果を分ける。
+
+## 既存機能の回帰
 
 - [ ] 生放送を開始し映像/音声を確認。映像tapで操作帯だけ切り替わり再生継続。
 - [ ] 通常/全画面で複数回tap、操作帯の自動非表示/再表示、一時停止/再開。

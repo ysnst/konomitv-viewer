@@ -55,4 +55,4 @@ UIイベントの内部通知順序は実装確認だけでは保証せずnative
 
 候補0.36/build36、source `eef1a0793ecc53247b30fc86993df20ef3b0660e`。Release/Swift各群・UI3件・HTTP/relay・Python・JPEG/EXIF/Pillow・lintが成功。警告は87件/新規0。UI試験基盤のSDK・geometry・局名・AX再探索の不備は個別に修正し、アプリコードと区別した。途中0.35はseek終了欠落で不採用・保存。
 
-実機結果はまだない。[次のチェックリスト](testing/stage-a.md)でAを確認し、完了前にB〜Fの変更を重ねない。0.34案と旧main/branch/IPAは保存したまま。
+0.36のHEVC PiPは実機成功へ訂正された。シーク後の再生継続は失敗報告があり、段階Aで内部pause/先行playを除去した0.37を生成した。PiP処理は修正対象外。[追加報告](testing/device-0.36.md)と[調査結果](seek-resume-0.36.md)を参照。[次のチェックリスト](testing/stage-a.md)でAを確認し、完了前にB〜Fの変更を重ねない。0.34案と旧main/branch/IPAは保存したまま。
