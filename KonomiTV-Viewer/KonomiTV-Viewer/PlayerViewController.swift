@@ -2493,6 +2493,7 @@ final class PlayerViewController: UIViewController {
     /// 復旧で現在のAV項目を置き換えてよい状態。PiP所有者と停止意図はそのまま保持する。
     private var canRebuildFMP4: Bool {
         canRebuildSession && fmp4OwnerVisible && fmp4ApplicationActive && !isScrubbing
+            && !fastSeekBackController.isFastSeeking && !fastSeekForwardController.isFastSeeking
     }
 
     private func cancelFMP4StartWatchdog() {
@@ -3418,7 +3419,13 @@ final class PlayerViewController: UIViewController {
         )
         // 止まっている間は操作帯を出したままにする (Web 版も停止中は消えない)。
         if !playing {
+            hideTimer?.invalidate()
+            hideTimer = nil
             setControlsVisible(true)
+        } else if controlsVisible, hideTimer?.isValid != true {
+            // 非同期開始時はfinishStartPlaybackでまだplayingでなく、予約できない場合がある。
+            // 実再生を確認した更新で一度だけ補い、進捗更新ごとに既存の期限を延長しない。
+            scheduleHideControls()
         }
     }
 
@@ -3458,7 +3465,10 @@ final class PlayerViewController: UIViewController {
     private func scheduleHideControls() {
         hideTimer?.invalidate()
         hideTimer = nil
-        guard isCurrentlyPlaying(), !isScrubbing, presentedViewController == nil, playerSettingsPanel == nil else { return }
+        // 長押しも操作中として扱い、途中でボタンの入力判定を消さない。
+        guard isCurrentlyPlaying(), !isScrubbing,
+              !fastSeekBackController.isFastSeeking, !fastSeekForwardController.isFastSeeking,
+              presentedViewController == nil, playerSettingsPanel == nil else { return }
         hideTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in
             self?.setControlsVisible(false)
         }
@@ -3800,8 +3810,15 @@ final class PlayerViewController: UIViewController {
                 self.hideTimer?.invalidate()
                 self.hideTimer = nil
                 self.setControlsVisible(true)
+                self.refreshFMP4StartWatchdog()
             }
-            controller.onEnd = { [weak self] in self?.scheduleHideControls() }
+            controller.onEnd = { [weak self] in
+                guard let self else { return }
+                self.scheduleHideControls()
+                // 両方向の最後の長押しを離した後、開始監視と保留復旧を再評価する。
+                self.refreshFMP4StartWatchdog()
+                _ = self.resumeDeferredFMP4Recovery()
+            }
         }
     }
 

@@ -77,7 +77,8 @@ final class FastSeekController {
 
     private let direction: Int
     private var timer: Timer?
-    private var isFastSeeking = false
+    // 操作帯の持ち主は両方向の終了を確認する。開始・終了の変更はこのクラスだけが行う。
+    private(set) var isFastSeeking = false
     private var wasMutedBefore = false
 
     /// - Parameter direction: 1 = 早送り、-1 = 巻き戻し。
