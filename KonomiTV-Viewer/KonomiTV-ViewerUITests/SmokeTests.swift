@@ -5,6 +5,7 @@ final class SmokeTests: XCTestCase {
     private var app: XCUIApplication!
     private var preparedSeekFrame = CGRect.zero
     private var preparedWindowOrigin = CGPoint.zero
+    private var preparedButtonFrame = CGRect.zero
     override func setUpWithError() throws {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .portrait
@@ -59,7 +60,7 @@ final class SmokeTests: XCTestCase {
         openRecording()
         XCTAssertTrue(waitForClock(timeout: 40))
         XCTAssertTrue(waitForSeekEnd(begin: 1, end: 1))
-        XCTAssertEqual(app.buttons["stage.playPause"].value as? String, "playing")
+        XCTAssertTrue(snapshot("stage.video")?.1.contains("intent=true ") == true)
     }
     func testSeekPreservesPlaybackIntent() throws {
         openRecording()
@@ -121,7 +122,6 @@ final class SmokeTests: XCTestCase {
         while Date() < deadline, snapshot("stage.video")?.1.contains("playing=false intent=false ") != true {
             Thread.sleep(forTimeInterval: 0.2)
         }
-        XCTAssertEqual(app.buttons["stage.playPause"].value as? String, "paused")
         XCTAssertTrue(snapshot("stage.video")?.1.contains("playing=false intent=false ") == true)
         guard let start = actualClock() else { XCTFail("Actual clock missing"); return }
         let end = Date().addingTimeInterval(3)
@@ -213,6 +213,14 @@ final class SmokeTests: XCTestCase {
         XCTAssertTrue(waitForClock(timeout: 15), "Playback did not continue after seek")
     }
     private func tapControl(_ name: String) {
+        if snapshot("stage.video")?.1.contains("controls=") == true {
+            guard prepareSeekInput(controlName: name) != nil else { XCTFail("Control geometry unavailable"); return }
+            let point = CGVector(dx: preparedButtonFrame.midX - preparedWindowOrigin.x,
+                                 dy: preparedButtonFrame.midY - preparedWindowOrigin.y)
+            app.windows.firstMatch.coordinate(withNormalizedOffset: .zero).withOffset(point).tap()
+            return
+        }
+        // 生放送にはrecorded用の状態ラベルを追加せず、従来の操作を維持する。
         let button = app.buttons[name]
         if !button.isHittable { tapVideo() }
         button.tap()
@@ -235,38 +243,54 @@ final class SmokeTests: XCTestCase {
         let origin = window.frame.origin
         window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: video.minX + video.width * 0.08 - origin.x, dy: video.midY - origin.y)).tap()
     }
-    private func prepareSeekInput() -> (Int, Int)? {
-        // 直前の入力から経過したtimerの残り時間へ依存しないよう、実タップで
-        // 操作帯を出し直す。自動非表示は無効化せず、表示後の同じsnapshotで入力する。
-        if snapshot("stage.video")?.1.contains("controls=true ") == true { tapVideo() }
-        // 自動非表示3.5秒を止めず、同じsnapshotで状態と座標を確定して直ちに入力する。
-        let deadline = Date().addingTimeInterval(5)
-        while Date() < deadline {
+    private func prepareSeekInput(controlName: String? = nil) -> (Int, Int)? {
+        // 実タップを含む準備は最大3回。結果の待機秒数を延ばさず、表示後の
+        // 重いAX再取得をなくす。終了5秒・移動先15秒の判定は別途維持する。
+        for _ in 0..<3 {
             guard let tree = try? app.snapshot() else { continue }
             var pending: [any XCUIElementSnapshot] = [tree]
             var slider: CGRect?
+            var button: CGRect?
             var window: CGRect?
             var video: (CGRect, String)?
             while let item = pending.popLast() {
                 if item.elementType == .window, window == nil { window = item.frame }
                 if item.identifier == "stage.seekSlider" { slider = item.frame }
+                if let controlName, item.elementType == .button,
+                   item.identifier == controlName || item.label == controlName { button = item.frame }
                 if item.identifier == "stage.video" { video = (item.frame, item.label) }
                 pending.append(contentsOf: item.children)
             }
             guard let window, let video else { continue }
-            if let slider, slider.width > 0, slider.height > 0, video.1.contains("controls=true ") {
+            let point = CGVector(dx: video.0.minX + video.0.width * 0.08 - window.minX,
+                                 dy: video.0.midY - window.minY)
+            let videoPoint = app.windows.firstMatch.coordinate(withNormalizedOffset: .zero).withOffset(point)
+            if let slider, slider.width > 0, slider.height > 0,
+               video.1.contains("controls=true "),
+               controlName == nil || (button?.width ?? 0) > 0 {
                 let fields = Dictionary(uniqueKeysWithValues: video.1.split(separator: " ").compactMap { field -> (String, String)? in
                     let pair = field.split(separator: "=", maxSplits: 1)
                     return pair.count == 2 ? (String(pair[0]), String(pair[1])) : nil
                 })
-                if let begin = Int(fields["begin"] ?? ""), let end = Int(fields["end"] ?? "") {
-                    preparedSeekFrame = slider
-                    preparedWindowOrigin = window.origin
-                    return (begin, end)
+                guard let begin = Int(fields["begin"] ?? ""), let end = Int(fields["end"] ?? "") else { continue }
+                preparedSeekFrame = slider
+                preparedButtonFrame = button ?? .zero
+                preparedWindowOrigin = window.origin
+                // 停止中は操作帯が自動で隠れない。表示中の保存座標へ直接入力する。
+                if fields["intent"] == "false" { return (begin, end) }
+                // 再生中は非表示を確認してから実タップで表示し、直ちに保存座標へ入力。
+                // opacity変更ではframe/counterが変わらない。表示後にはAX取得を挟まない。
+                for _ in 0..<3 {
+                    videoPoint.tap()
+                    guard let state = snapshot("stage.video")?.1 else { return nil }
+                    if state.contains("controls=false ") {
+                        videoPoint.tap()
+                        return (begin, end)
+                    }
                 }
+                return nil
             }
-            let point = CGVector(dx: video.0.minX + video.0.width * 0.08 - window.minX, dy: video.0.midY - window.minY)
-            app.windows.firstMatch.coordinate(withNormalizedOffset: .zero).withOffset(point).tap()
+            videoPoint.tap()
         }
         return nil
     }

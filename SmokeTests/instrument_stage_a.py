@@ -133,6 +133,9 @@ def instrument_recorded(text):
     anchor = '\n                self.refreshCaptions()\n'
     assert text.count(anchor) == 1
     text = text.replace(anchor, '\n#if DEBUG && targetEnvironment(simulator)\n                self.stageSeekCompletions += 1\n                self.stageState("seek-completed")\n#endif\n' + anchor, 1)
+    anchor = '        controlsVisible = visible'
+    assert text.count(anchor) == 1
+    text = text.replace(anchor, anchor + '\n        stageState("controls-changed")', 1)
     anchor = '            self.spriteLoadState = .loaded'
     assert text.count(anchor) == 1
     text = text.replace(anchor, anchor + '\n            self.stageState("sprite-loaded")', 1)
