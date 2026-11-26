@@ -352,6 +352,10 @@ final class PlayerViewController: UIViewController {
     private var fmp4StartContext: FMP4StartContext?
     private var playlistProbeTask: Task<Void, Never>?
     private var fmp4RetryWorkItem: DispatchWorkItem?
+    private var fmp4StartWatchdog: Timer?
+    private var fmp4WatchdogGeneration: UInt64 = 0
+    private var fmp4OwnerVisible = false
+    private var fmp4ApplicationActive = true
     private var routeResolutionPending = false
     private static let fmp4RetryMessage = "再生の開始に失敗しました。少し待ってからもう一度試します。"
     /// 開始の後に、利用者が自分で位置を動かしたかどうか。動かして
@@ -652,6 +656,12 @@ final class PlayerViewController: UIViewController {
         PlaybackPiPController.stopCurrentPlayback()
         buildLayout()
         setupHeaderClock()
+        fmp4ApplicationActive = UIApplication.shared.applicationState == .active
+        // AVの時計が止まっていても、非アクティブ中の時間は開始監視へ加算しない。
+        NotificationCenter.default.addObserver(self, selector: #selector(fmp4ApplicationWillResignActive),
+            name: UIApplication.willResignActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(fmp4ApplicationDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification, object: nil)
         captureController.onStateChanged = { [weak self] in self?.updateCaptureControls() }
         captureController.onError = { [weak self] message in self?.showCaptureError(message) }
         captureController.onResult = { [weak self] message in self?.showCaptureError(message) }
@@ -845,11 +855,15 @@ final class PlayerViewController: UIViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        fmp4OwnerVisible = true
+        refreshFMP4StartWatchdog()
         resumeDeferredSessionRecovery()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        fmp4OwnerVisible = false
+        refreshFMP4StartWatchdog()
         if isFullscreen { fullscreenWindowScene = view.window?.windowScene }
         // 映像内ヘッダーはこの画面だけ。標準バーを使う遷移先へ非表示状態を持ち込まない。
         if presentedViewController == nil, navigationController?.topViewController !== self {
@@ -1824,6 +1838,7 @@ final class PlayerViewController: UIViewController {
     /// AVPlayer の play() は速度が 1倍に戻るため、再生の開始はここへ集約する
     /// (VLCKit 経路でも、再生を始めてから速度を合わせる順番は同じにする)。
     private func playAtCurrentRate() {
+        defer { refreshFMP4StartWatchdog() }
         playbackIntentPlaying = true
         // 明示的に再生する操作が来たら、開始待ちへの「止める」印は消す
         // (開始の用意ができたときに、そのまま再生が始まるように)。
@@ -1856,6 +1871,7 @@ final class PlayerViewController: UIViewController {
 
     /// 再生を止める (再生の仕組みによらない)。
     private func pauseEngine(isUserInitiated: Bool = true) {
+        defer { refreshFMP4StartWatchdog() }
         if isUserInitiated { playbackIntentPlaying = false }
 #if canImport(VLCKit)
         // 利用者が止めたら、移動後の自動再開の印は消す
@@ -2332,7 +2348,7 @@ final class PlayerViewController: UIViewController {
             guard let self, !self.didLeaveScreen,
                   self.acceptsPlaybackRequest(request) else { return }
             if initialResolution, !self.playbackStart.complete(request, context: .current) { return }
-            if !initialResolution, !self.canRebuildSession {
+            if !initialResolution, !self.canRebuildFMP4 {
                 self.fmp4StartContext?.state.deferClaimedRecovery(.retry)
                 self.routeResolutionPending = false
                 return
@@ -2355,6 +2371,7 @@ final class PlayerViewController: UIViewController {
             self.startAVPlayback(asset: asset, at: position, request: request, fmp4Attempt: attempt)
             self.pendingRelayRetryPosition = nil
             self.finishStartPlayback(at: position)
+            self.refreshFMP4StartWatchdog()
         }
         if SettingsStore.shared.avPlaybackRequiresRelay {
             showStartLoadingMessage()
@@ -2371,7 +2388,7 @@ final class PlayerViewController: UIViewController {
             guard let self, !self.didLeaveScreen,
                   self.acceptsPlaybackRequest(request) else { return }
             if initialResolution, !self.playbackStart.complete(request, context: .current) { return }
-            if !initialResolution, !self.canRebuildSession {
+            if !initialResolution, !self.canRebuildFMP4 {
                 self.fmp4StartContext?.state.deferClaimedRecovery(.fallback)
                 self.routeResolutionPending = false
                 return
@@ -2415,6 +2432,7 @@ final class PlayerViewController: UIViewController {
     }
 
     private func cancelFMP4Start() {
+        cancelFMP4StartWatchdog()
         playlistProbeTask?.cancel()
         playlistProbeTask = nil
         fmp4RetryWorkItem?.cancel()
@@ -2430,6 +2448,7 @@ final class PlayerViewController: UIViewController {
               acceptsPlaybackRequest(context.request) else { return false }
         guard let action = fmp4StartContext?.state.failed(attempt) else { return false }
         if action == .ignored { return true }
+        cancelFMP4StartWatchdog()
         captureController.cancel()
         player?.pause() // 準備失敗の停止は、利用者の再生/停止意図を書き換えない。
         playbackReadyForSeek = false
@@ -2459,7 +2478,7 @@ final class PlayerViewController: UIViewController {
     private func resumeDeferredFMP4Recovery() -> Bool {
         guard fmp4RetryWorkItem == nil, !didLeaveScreen, let context = fmp4StartContext,
               acceptsPlaybackRequest(context.request),
-              let action = fmp4StartContext?.state.claimRecovery(canReplace: canRebuildSession) else { return false }
+              let action = fmp4StartContext?.state.claimRecovery(canReplace: canRebuildFMP4) else { return false }
         let position = pendingPlaybackSeek.target ?? context.state.latestPosition
         if action == .retry {
             startAVPlaybackFlow(url: context.fmp4URL, at: position, request: context.request,
@@ -2469,6 +2488,55 @@ final class PlayerViewController: UIViewController {
             startVLCPlaybackFlow(url: context.fallbackURL, at: position, request: context.request, initialResolution: false)
         }
         return true
+    }
+
+    /// 復旧で現在のAV項目を置き換えてよい状態。PiP所有者と停止意図はそのまま保持する。
+    private var canRebuildFMP4: Bool {
+        canRebuildSession && fmp4OwnerVisible && fmp4ApplicationActive && !isScrubbing
+    }
+
+    private func cancelFMP4StartWatchdog() {
+        fmp4StartWatchdog?.invalidate()
+        fmp4StartWatchdog = nil
+        // invalidate前にmainへ届いた発火も、新しい期限/試行へ作用させない。
+        fmp4WatchdogGeneration &+= 1
+    }
+
+    /// 上流a2de085の「playingでも進まない」開始失敗を、既存の一度だけの復旧へつなぐ。
+    /// 一時停止/seek/PiP/非表示中は有効時間を止め、再開時には残り時間だけを予約する。
+    private func refreshFMP4StartWatchdog() {
+        cancelFMP4StartWatchdog()
+        guard let context = fmp4StartContext, let attempt = context.state.currentAttempt,
+              let item = player?.currentItem, acceptsPlaybackRequest(context.request),
+              context.state.accepts(attempt), !context.state.didPlay else { return }
+        let canMonitor = playbackIntentPlaying && !playbackStart.pauseRequested && canRebuildFMP4
+        // ready前の保留seekでも開始待機は有界にする。位置差による成功判定だけを止める。
+        guard let remaining = fmp4StartContext?.state.observeStartup(attempt,
+            position: currentPosition(), now: ProcessInfo.processInfo.systemUptime, canMonitor: canMonitor,
+            canConfirmProgress: pendingPlaybackSeek.target == nil) else { return }
+        if remaining <= 0 {
+            _ = handleFMP4StartFailure(item: item, attempt: attempt)
+            return
+        }
+        let generation = fmp4WatchdogGeneration
+        fmp4StartWatchdog = Timer.scheduledTimer(withTimeInterval: remaining, repeats: false) { [weak self, weak item] _ in
+            guard let self, let item, self.fmp4WatchdogGeneration == generation,
+                  self.player?.currentItem === item,
+                  self.fmp4StartContext?.state.accepts(attempt) == true,
+                  self.acceptsPlaybackRequest(context.request) else { return }
+            self.refreshFMP4StartWatchdog()
+        }
+    }
+
+    @objc private func fmp4ApplicationWillResignActive() {
+        fmp4ApplicationActive = false
+        refreshFMP4StartWatchdog()
+    }
+
+    @objc private func fmp4ApplicationDidBecomeActive() {
+        fmp4ApplicationActive = true
+        refreshFMP4StartWatchdog()
+        _ = resumeDeferredFMP4Recovery()
     }
 
     /// 中継の用意を待つ間、知らせ欄が空いていれば読み込み中を出す
@@ -2581,6 +2649,7 @@ final class PlayerViewController: UIViewController {
                     if let fmp4Attempt, self.fmp4StartContext?.state.accepts(fmp4Attempt) != true { return }
                     self.playbackReadyForSeek = true
                     self.applyPendingPlaybackSeek()
+                    self.refreshFMP4StartWatchdog()
                 } else if item.status == .failed {
                     if self.handleFMP4StartFailure(item: item, attempt: fmp4Attempt) { return }
                     self.messageLabel.text = "再生を開始できませんでした。"
@@ -2626,9 +2695,9 @@ final class PlayerViewController: UIViewController {
                     if let fmp4Attempt, self.fmp4StartContext?.state.accepts(fmp4Attempt) != true { return }
                     self.updatePlayPauseIcon()
                     self.updateNowPlaying()
+                    defer { self.refreshFMP4StartWatchdog() }
                     if currentPlayer.timeControlStatus == .playing {
                         self.playbackDidStart = true
-                        if let fmp4Attempt { self.fmp4StartContext?.state.markPlaying(fmp4Attempt) }
                         if self.messageLabel.text == "再生を開始できませんでした。"
                             || self.messageLabel.text == Self.fmp4RetryMessage {
                             self.messageLabel.text = nil
@@ -2642,7 +2711,19 @@ final class PlayerViewController: UIViewController {
             }
         }
         if seconds > 0 {
-            player?.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
+            // 初期位置合わせの待機も開始監視の対象。ただし完了前の位置差で成功とは判定しない。
+            let startupSeek = fmp4StartContext?.state.beginSeek(to: seconds, initial: true)
+            player?.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) { [weak self, weak item] completed in
+                DispatchQueue.main.async {
+                    guard let self, let item, let startupSeek, let fmp4Attempt,
+                          self.player?.currentItem === item,
+                          self.fmp4StartContext?.state.accepts(fmp4Attempt) == true,
+                          self.acceptsPlaybackRequest(request) else { return }
+                    self.fmp4StartContext?.state.completeSeek(startupSeek, completed: completed, position: self.currentPosition(),
+                        now: ProcessInfo.processInfo.systemUptime)
+                    self.refreshFMP4StartWatchdog()
+                }
+            }
         }
         if let layer = playerLayer {
             pipController?.dispose()
@@ -2841,6 +2922,7 @@ final class PlayerViewController: UIViewController {
 
     /// AVPlayer 経路の後片付け。
     private func teardownAVPlayback() {
+        cancelFMP4StartWatchdog()
         if player != nil { pipController?.dispose(); pipController = nil }
         if let itemEndObserver {
             NotificationCenter.default.removeObserver(itemEndObserver)
@@ -3179,6 +3261,7 @@ final class PlayerViewController: UIViewController {
         pipController?.invalidatePlaybackState()
         updatePiPButton()
         guard hasActiveEngine else { return }
+        refreshFMP4StartWatchdog()
         let current = currentPosition()
         if current.isFinite {
             // 移動先は表示専用。字幕・履歴・自動スキップには下の実位置currentを渡す。
@@ -4201,11 +4284,25 @@ final class PlayerViewController: UIViewController {
         commentOverlay.reset(to: clamped)
         // 固定時間ではなく再生部品の完了で復元する。連続シークの古い完了は失効する。
         let captionToken = beginCaptionSeek()
+        let startupRequest = fmp4StartContext?.request
+        let startupAttempt = fmp4StartContext?.state.currentAttempt
+        let startupItem = player?.currentItem
+        let startupSeek = fmp4StartContext?.state.beginSeek(to: clamped)
+        refreshFMP4StartWatchdog()
         let playbackToken = playbackGeneration
-        let finished: (Bool) -> Void = { [weak self] mayResumeCaptions in
+        let finished: (Bool) -> Void = { [weak self, weak startupItem] mayResumeCaptions in
             DispatchQueue.main.async {
                 // PiP等の呼び出し元への完了通知は、字幕世代の失効とは別に必ず返す。
                 defer { completion?() }
+                if let self, let startupRequest, let startupAttempt, let startupItem, let startupSeek,
+                   self.playbackGeneration == playbackToken,
+                   self.player?.currentItem === startupItem,
+                   self.fmp4StartContext?.state.accepts(startupAttempt) == true,
+                   self.acceptsPlaybackRequest(startupRequest) {
+                    self.fmp4StartContext?.state.completeSeek(startupSeek, completed: mayResumeCaptions, position: self.currentPosition(),
+                        now: ProcessInfo.processInfo.systemUptime)
+                    self.refreshFMP4StartWatchdog()
+                }
                 guard mayResumeCaptions, let self, self.playbackGeneration == playbackToken,
                       self.captionEngine.completeSeek(captionToken) else { return }
                 self.refreshCaptions()
@@ -4296,6 +4393,11 @@ final class PlayerViewController: UIViewController {
     }
 
     @objc private func scrubEnded() {
+        defer {
+            refreshFMP4StartWatchdog()
+            // scrub中に到着した開始失敗の復旧は、操作終了後に最新位置から再評価する。
+            _ = resumeDeferredFMP4Recovery()
+        }
         isScrubbing = false
         excitementStrip.isHidden = true
         seekPreviewView.isHidden = true
@@ -4593,6 +4695,7 @@ final class PlayerViewController: UIViewController {
                self.navigationController == nil { self.didLeaveScreen = true; self.stopPlayback() }
             self.pipWasActive = active
             self.updatePiPButton()
+            self.refreshFMP4StartWatchdog()
             DispatchQueue.main.async { [weak self] in self?.resumeDeferredSessionRecovery() }
         }
         pip.onRestoreInterface = { [weak self] in
