@@ -7,9 +7,10 @@ Python の標準機能だけで書いてある (追加の部品は要らない)�
 実在のサーバー情報・認証情報は一切含まない。番組名なども
 テスト専用の作り物。
 
-使い方: python3 stub_server.py [ポート番号]  (既定 18080)
+使い方: python3 stub_server.py [ポート番号] [--fmp4]  (既定 18080、TSのみ)
 """
 
+import argparse
 import json
 import os
 import sys
@@ -23,6 +24,10 @@ with open(os.path.join(MEDIA_DIR, "index.m3u8"), encoding="utf-8") as stream:
     PLAYLIST_LINES = stream.read().splitlines()
 SEGMENT_FILES = [line for line in PLAYLIST_LINES if line and not line.startswith("#")]
 SEGMENT_COUNT = len(SEGMENT_FILES)
+FMP4_MEDIA_DIR = os.path.join(HERE, "media-fmp4")
+with open(os.path.join(FMP4_MEDIA_DIR, "index.m3u8"), encoding="utf-8") as stream:
+    FMP4_PLAYLIST_LINES = stream.read().splitlines()
+FMP4_SEGMENT_FILES = [line for line in FMP4_PLAYLIST_LINES if line and not line.startswith("#")]
 FIXTURE_DURATION = sum(float(line.split(":", 1)[1].split(",", 1)[0])
                        for line in PLAYLIST_LINES if line.startswith("#EXTINF:"))
 
@@ -86,13 +91,17 @@ STORAGE_STATUS = {
 EMPTY_CHANNELS = {"GR": [], "BS": [], "CS": [], "CATV": [], "SKY": [], "BS4K": []}
 
 
-def playlist_body(session_id):
+def playlist_body(session_id, fmp4=False):
     """実際の分割尺と連続タイムスタンプを保持し、URIだけAPI形式へ置き換える。"""
     lines = []
     seq = 0
-    for line in PLAYLIST_LINES:
-        if line and not line.startswith("#"):
-            lines.append("segment?session_id=%s&sequence=%d" % (session_id, seq))
+    source = FMP4_PLAYLIST_LINES if fmp4 else PLAYLIST_LINES
+    format_query = "&segment_format=fmp4" if fmp4 else ""
+    for line in source:
+        if line.startswith("#EXT-X-MAP:"):
+            lines.append('#EXT-X-MAP:URI="init?session_id=%s&segment_format=fmp4"' % session_id)
+        elif line and not line.startswith("#"):
+            lines.append("segment?session_id=%s&sequence=%d%s" % (session_id, seq, format_query))
             seq += 1
         else:
             lines.append(line)
@@ -188,18 +197,26 @@ class Handler(BaseHTTPRequestHandler):
                 video_id = None
             if video_id in PROGRAMS:
                 kind = parts[5]
+                # 対応を明示した仮サーバーだけfMP4を返す。形式指定なしのTS経路は残す。
+                fmp4 = (getattr(self.server, "supports_fmp4", False)
+                        and query.get("segment_format") == ["fmp4"])
                 if kind == "playlist":
                     session_id = query.get("session_id", ["smoke"])[0]
-                    self._send(200, playlist_body(session_id),
+                    self._send(200, playlist_body(session_id, fmp4=fmp4),
                                "application/vnd.apple.mpegurl")
+                    return
+                if kind == "init" and fmp4:
+                    self._send_file(os.path.join(FMP4_MEDIA_DIR, "init.mp4"), "video/mp4")
                     return
                 if kind == "segment":
                     try:
                         seq = int(query.get("sequence", ["0"])[0])
                     except ValueError:
                         seq = -1
-                    if 0 <= seq < SEGMENT_COUNT:
-                        self._send_file(os.path.join(MEDIA_DIR, SEGMENT_FILES[seq]), "video/MP2T")
+                    files = FMP4_SEGMENT_FILES if fmp4 else SEGMENT_FILES
+                    directory = FMP4_MEDIA_DIR if fmp4 else MEDIA_DIR
+                    if 0 <= seq < len(files):
+                        self._send_file(os.path.join(directory, files[seq]), "video/mp4" if fmp4 else "video/MP2T")
                     else:
                         self._send_json(404, {"detail": "not found"})
                     return
@@ -232,8 +249,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 18080
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("port", type=int, nargs="?", default=18080)
+    parser.add_argument("--fmp4", action="store_true", help="Enable opt-in fMP4 fixture responses")
+    args = parser.parse_args()
+    port = args.port
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server.supports_fmp4 = args.fmp4
     print("Stub server listening on http://127.0.0.1:%d" % port, flush=True)
     try:
         server.serve_forever()

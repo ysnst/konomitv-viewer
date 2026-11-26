@@ -9,7 +9,7 @@ METHOD = r'''
         guard ProcessInfo.processInfo.arguments.contains("-viewer_playback_diagnostics"),
               smokeDiagnosticCount < 400 else { return }
         smokeDiagnosticCount += 1
-        var engine = "av rate=\(player?.rate ?? 0)"
+        var engine = "av ready=\(player?.currentItem?.status == .readyToPlay) playing=\(player?.timeControlStatus == .playing) rate=\(player?.rate ?? 0)"
 #if canImport(VLCKit)
         if let vlcPlayer {
             engine = "vlc state=\(vlcPlayer.state) playing=\(vlcPlayer.isPlaying) id=\(ObjectIdentifier(vlcPlayer))"

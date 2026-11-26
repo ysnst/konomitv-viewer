@@ -9,6 +9,11 @@ on:
         description: Compare 0.27 playback with the current source
         type: boolean
         default: false
+      route:
+        description: Fixed media container to exercise
+        type: choice
+        options: [ts, fmp4]
+        default: ts
   push:
     branches-ignore: [main]
 
@@ -26,6 +31,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     env:
+      SMOKE_ROUTE: ${{ inputs.route || 'ts' }}
       TZ: Asia/Tokyo
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
@@ -46,10 +52,14 @@ jobs:
         run: |
           mkdir -p artifacts/smoke
           cp KonomiTV-Viewer/KonomiTV-ViewerUITests/SmokeTests.swift app-source/KonomiTV-Viewer/KonomiTV-ViewerUITests/SmokeTests.swift
+          if [ "$SMOKE_ROUTE" = fmp4 ] && [ "${{ matrix.revision }}" != current ]; then
+            echo 'fMP4 routing is absent from the baseline; run comparisons with TS.' >&2
+            exit 1
+          fi
           python3 SmokeTests/instrument_playback.py app-source
           git rev-parse HEAD > artifacts/smoke/harness-sha.log
           git -C app-source rev-parse HEAD > artifacts/smoke/source-sha.log
-          shasum -a 256 SmokeTests/instrument_playback.py SmokeTests/media/* > artifacts/smoke/fixture-hashes.log
+          shasum -a 256 SmokeTests/instrument_playback.py SmokeTests/media/* SmokeTests/media-fmp4/* > artifacts/smoke/fixture-hashes.log
 
       - name: Prepare diagnostics
         run: |
@@ -63,13 +73,16 @@ jobs:
       - name: Start stub server
         run: |
           python3 - <<'PY'
-          import pathlib, socket, subprocess, sys, time, urllib.request
+          import os, pathlib, socket, subprocess, sys, time, urllib.request
           directory = pathlib.Path('artifacts/smoke')
           with socket.socket() as probe:
               if probe.connect_ex(('127.0.0.1', 18080)) == 0:
                   raise SystemExit('Refusing to start: port 18080 is already occupied')
           with (directory / 'stub-server.log').open('wb') as log:
-              process = subprocess.Popen([sys.executable, '-u', 'SmokeTests/stub_server.py', '18080'],
+              command = [sys.executable, '-u', 'SmokeTests/stub_server.py', '18080']
+              if os.environ['SMOKE_ROUTE'] == 'fmp4':
+                  command.append('--fmp4')
+              process = subprocess.Popen(command,
                                          stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
           (directory / 'stub.pid').write_text(str(process.pid))
           for _ in range(30):
@@ -161,6 +174,22 @@ jobs:
             fi
           fi
 
+      - name: Verify exercised engine
+        if: success()
+        run: |
+          python3 - <<'PY'
+          import os, pathlib
+          directory = pathlib.Path('artifacts/smoke')
+          log = (directory / 'playback.log').read_text()
+          if os.environ['SMOKE_ROUTE'] == 'fmp4':
+              assert any('tick av ready=true playing=true rate=' in line and 'rate=0.0 ' not in line for line in log.splitlines()), 'Ready and playing AVPlayer was not observed'
+              assert 'tick vlc state=' not in log, 'Unexpected VLC fallback'
+              network = (directory / 'stub-server.log').read_text()
+              assert '/init?' in network and 'segment_format=fmp4' in network
+          else:
+              assert 'tick vlc state=' in log, 'VLC route was not observed'
+          PY
+
       # 画像は UI テストが app.screenshot() で採取した attachment だけを取り出す。
       - name: Export test attachments
         if: always()
@@ -234,7 +263,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smoke-test-results-${{ matrix.revision }}
+          name: smoke-test-results-${{ matrix.revision }}-${{ inputs.route || 'ts' }}
           path: |
             artifacts/smoke/*.log
             artifacts/smoke/*.pid

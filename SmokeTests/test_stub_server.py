@@ -79,6 +79,62 @@ class StubContractTests(unittest.TestCase):
         self.fetch('/api/streams/video/1/720p-hevc/keep-alive', method='PUT')
         self.fetch('/api/videos/1/watched', method='POST', body=b'{"position": 2}')
 
+    def test_unsupported_fmp4_request_keeps_ts_route(self):
+        path = '/api/streams/video/1/720p-hevc/playlist?session_id=contract&segment_format=fmp4'
+        _, body = self.fetch(path)
+        self.assertNotIn(b'#EXT-X-MAP:', body)
+        with self.assertRaises(HTTPError) as error:
+            self.fetch('/api/streams/video/1/720p-hevc/init?segment_format=fmp4')
+        self.assertEqual(error.exception.code, 404)
+        error.exception.close()
+
+    def test_fmp4_map_fragments_and_same_session_ts_fallback(self):
+        self.server.supports_fmp4 = True
+        try:
+            path = '/api/streams/video/1/720p-hevc/playlist?session_id=contract&segment_format=fmp4'
+            _, body = self.fetch(path)
+            playlist = body.decode('utf-8')
+            self.assertIn('#EXT-X-ENDLIST', playlist)
+            self.assertNotIn('#EXT-X-DISCONTINUITY', playlist)
+            init_line = next(line for line in playlist.splitlines() if line.startswith('#EXT-X-MAP:'))
+            init_uri = init_line.split('URI="', 1)[1].split('"', 1)[0]
+            headers, init = self.fetch(urljoin(path, init_uri))
+            self.assertEqual(headers['Content-Type'], 'video/mp4')
+            self.assertEqual(init, (Path(stub_server.FMP4_MEDIA_DIR) / 'init.mp4').read_bytes())
+            self.assertIn(b'ftyp', init)
+            self.assertIn(b'hvc1', init)
+            segments = [line for line in playlist.splitlines() if line and not line.startswith('#')]
+            self.assertEqual(len(segments), 30)
+            durations = [float(line.split(':', 1)[1].split(',', 1)[0])
+                         for line in playlist.splitlines() if line.startswith('#EXTINF:')]
+            self.assertAlmostEqual(sum(durations), stub_server.FIXTURE_DURATION, places=6)
+            hashes = set()
+            for index, relative in enumerate(segments):
+                self.assertIn('segment_format=fmp4', relative)
+                headers, fragment = self.fetch(urljoin(path, relative))
+                self.assertEqual(headers['Content-Type'], 'video/mp4')
+                self.assertEqual(fragment, (Path(stub_server.FMP4_MEDIA_DIR) / ('seg%d.m4s' % index)).read_bytes())
+                self.assertIn(b'moof', fragment)
+                self.assertIn(b'mdat', fragment)
+                hashes.add(hashlib.sha256(fragment).digest())
+            self.assertEqual(len(hashes), 30)
+            for sequence in ('-1', '30', 'invalid'):
+                with self.subTest(sequence=sequence):
+                    with self.assertRaises(HTTPError) as error:
+                        self.fetch('/api/streams/video/1/720p-hevc/segment?segment_format=fmp4&sequence=' + sequence)
+                    self.assertEqual(error.exception.code, 404)
+                    error.exception.close()
+            # 同じセッションでも形式指定なしは従来のTSへ直接戻せる。
+            fallback_path = '/api/streams/video/1/720p-hevc/playlist?session_id=contract'
+            _, fallback = self.fetch(fallback_path)
+            self.assertNotIn(b'#EXT-X-MAP:', fallback)
+            first = next(line for line in fallback.decode().splitlines() if line and not line.startswith('#'))
+            headers, stream = self.fetch(urljoin(fallback_path, first))
+            self.assertEqual(headers['Content-Type'], 'video/MP2T')
+            self.assertEqual(stream, (Path(stub_server.MEDIA_DIR) / 'seg0.ts').read_bytes())
+        finally:
+            self.server.supports_fmp4 = False
+
     def test_unknown_resource_fails(self):
         for path in ('/unknown', '/api/videos/999', '/api/streams/video/999/720p-hevc/playlist',
                      '/api/streams/video/1/720p-hevc/segment?sequence=-1',
