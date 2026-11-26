@@ -901,6 +901,11 @@ private final class RelayConnection: NSObject {
     /// プレイリスト内の URL (行の URL と、タグの URI="..." の両方) を、
     /// 元のサーバー基準で絶対化してから中継経由に書き換える。
     /// これで分割ファイルも中継を通り、合言葉付きで取られる。
+    /// fMP4 形式のプレイリストにある初期化ファイルの行
+    /// (#EXT-X-MAP:URI="init?...") も、タグの URI としてこの書き換えの
+    /// 対象になる (初期化ファイルも、分割ファイルと同じく合言葉付きで
+    /// 取られる必要があるため)。書き換えは rewriteTagLine が URI="..."
+    /// の中身に対して行い、行の種類は問わない。
     private func rewritePlaylist(_ body: Data) -> Data {
         guard let originURL, let text = String(data: body, encoding: .utf8) else { return body }
         let lines = text.components(separatedBy: "\n").map { rawLine -> String in

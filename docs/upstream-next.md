@@ -46,3 +46,17 @@ fMP4のemsg/ID3がAVPlayerのmetadata outputへ届く形式・時刻、HEVCフ�
 独立レビューで、18秒fixtureが画面遷移中に終了する問題と、存在するが押せない操作帯を再表示しない問題を修正した。素材の再エンコードは行わず、3つの既存HEVC segmentをdiscontinuityで区切って180秒のfixtureにする。番組の尺も合わせる。専用サーバー/シミュレーターだけを終了し、ポート/デバイスの解放を確認するworkflowとした。macos-26-intel/Xcode26.6を使い、既存IPA workflowと版番号生成には触れない。
 
 ローカルでPython既存9件、新しいHTTP契約テスト3件（全30segment/404/サーバー終了とポート再利用）、actionlint、workflow内Python構文、差分チェックが成功。独立再レビューの修正必須指摘なし。Swift/Release/実シミュレーターはCIで別途確認する。シミュレーターのoverlay存在確認が成功しても、実字幕の描画や実況コメントの流動まで確認済みとしない。
+
+## 段階B: fMP4選択と開始前復旧
+
+後半3件を通常mergeし、AV専用PiP/旧MobileVLCKitへ戻す競合部分を、現在の共通PiPとVLCKit4へ接合した。metadata受信・撮影は既存AVの処理を使い、Gのシーク直列化、字幕世代、開始・認証世代、実時計を保持する。新たなエンジン設定UI、字幕トグル時の強制再接続、サーバー改造は加えない。本家のCHANGELOG版番号は本家の履歴であり、フォークのIPA番号や実機確認結果へ読み替えない。
+
+独立レビューで次を修正した。
+
+- probe中/relay中の最新seekを、readyで保留要求を消費した後も保持する。
+- 失敗したAV項目のmetadata出力と撮影を直ちに失効し、古い字幕の再投入を防ぐ。
+- retry/fallbackのrelay完了直前にもPiP/表示状態を確認し、遅れて始まったPiPの所有者を破棄しない。
+- 接続/認証変更時に現在要求の待機だけを解除し、旧世代から新要求を取り消さない。
+- retry成功時に専用の失敗表示を消し、失敗項目が残った場合も最新位置から手動再試行できるようにする。
+
+route判定、0秒/途中開始、一度だけのretry→fallback、重複通知/古い試行、最新seek、PiP保留/relay中再保留、認証/開始世代のFoundationテストを追加した。ローカルPython9件・fixture3件・actionlint・差分チェックは成功。独立再レビューの修正必須指摘なし。SwiftとReleaseはCIで確認し、実際のfMP4字幕/スーパー/撮影/PiP/同じセッションでのTS復帰は[実機チェックリスト](testing/upstream-next.md)で未確認として扱う。

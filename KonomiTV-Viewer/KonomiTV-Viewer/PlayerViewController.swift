@@ -180,8 +180,9 @@ private func programMarkChipImage(_ mark: String, baseFont: UIFont) -> UIImage {
 }
 
 /// 録画番組の再生画面。HLS を再生する。
-/// 再生の仕組みは画質で出し分ける: 通常 (H.264) は AVPlayer、
-/// H.265 / HEVC の画質のときだけ VLCKit。サーバーは録画の映像を
+/// 通常(H.264)はAVPlayer。HEVCは認証付きprobeでEXT-X-MAPを確認できれば
+/// fMP4/AVPlayerを試し、未対応または開始前の再試行失敗時は従来のVLCKitを使う。
+/// 既存サーバーは録画の映像を
 /// MPEG-TS の分割ファイルで送っており、AVPlayer は HEVC を MP4 形式の
 /// 分割でしか映像として出せない (TS に入った HEVC は音だけ出て映像が
 /// 出ない) ため。VLCKit は TS に入った HEVC を読み解ける。
@@ -341,6 +342,18 @@ final class PlayerViewController: UIViewController {
     private var playbackStart = PlaybackStartState<WatchedHistoryStore.Context>()
     /// 開始の用意を待っている間の知らせ文。
     private static let startLoadingMessage = "読み込んでいます…"
+    private typealias PlaybackRequest = PlaybackStartState<WatchedHistoryStore.Context>.Request
+    private struct FMP4StartContext {
+        let request: PlaybackRequest
+        let fmp4URL: URL
+        let fallbackURL: URL
+        var state: FMP4PlaybackState
+    }
+    private var fmp4StartContext: FMP4StartContext?
+    private var playlistProbeTask: Task<Void, Never>?
+    private var fmp4RetryWorkItem: DispatchWorkItem?
+    private var routeResolutionPending = false
+    private static let fmp4RetryMessage = "再生の開始に失敗しました。少し待ってからもう一度試します。"
     /// 開始の後に、利用者が自分で位置を動かしたかどうか。動かして
     /// いたら、遅れて返ってきた続きの位置の確認では移らない。
     private var userSeekedSinceStart = false
@@ -2259,11 +2272,12 @@ final class PlayerViewController: UIViewController {
     /// できなかった場合は、直接再生に落ちず失敗として知らせ、
     /// 再生ボタンで始め直せるようにする。
     private func startPlayback(at seconds: Double, isSessionRecovery: Bool = false) {
+        cancelFMP4Start()
         captureController.cancel()
         if pipController?.isActive != true, pipController?.isPending != true { PlaybackPiPController.stopCurrentPlayback() }
         startPlaybackCount += 1
-        let startCount = startPlaybackCount
         let startRequest = playbackStart.begin(context: .current)
+        updatePiPButton()
         // 新しい開始では、再生はまだ始まっていないものとして扱う
         // (開始前の移動の控えと、その反映の判定に使う)。
         playbackDidStart = false
@@ -2281,66 +2295,180 @@ final class PlayerViewController: UIViewController {
         // 新しい開始が来たら、前の開始待ちへの「止める」印は引き継がない
         // (この開始の後に来た止める操作だけが、この開始に効く)。
         playbackStart.pauseRequested = !playbackIntentPlaying
+        if isHEVCQuality(quality, profile: profile),
+           let fmp4URL = APIClient.shared.playlistURL(videoID: program.id, quality: quality,
+               profile: profile, sessionID: sessionID, fmp4: true) {
+            showStartLoadingMessage()
+            let context = WatchedHistoryStore.Context.current
+            let id = program.id, selectedQuality = quality, selectedProfile = profile, session = sessionID
+            playlistProbeTask = Task { [weak self] in
+                guard let self, !Task.isCancelled,
+                      self.acceptsPlaybackRequest(startRequest) else { return }
+                let playlist = await APIClient.shared.fetchPlaylist(videoID: id, quality: selectedQuality,
+                    profile: selectedProfile, sessionID: session, fmp4: true, expectedContext: context)
+                guard !Task.isCancelled, !self.didLeaveScreen,
+                      self.acceptsPlaybackRequest(startRequest) else { return }
+                self.playlistProbeTask = nil
+                if FMP4PlaybackState.route(playlist: playlist) == .avPlayer {
+                    self.fmp4StartContext = FMP4StartContext(request: startRequest,
+                        fmp4URL: fmp4URL, fallbackURL: url, state: FMP4PlaybackState(position: seconds))
+                    self.startAVPlaybackFlow(url: fmp4URL, at: seconds, request: startRequest,
+                        initialResolution: true, isFMP4: true)
+                } else {
+                    self.startVLCPlaybackFlow(url: url, at: seconds, request: startRequest, initialResolution: true)
+                }
+            }
+            return
+        }
+        startAVPlaybackFlow(url: url, at: seconds, request: startRequest, initialResolution: true, isFMP4: false)
+    }
+
+    /// 中継の解決は初回だけ開始待ちを完了させる。内部再試行は同じ開始世代のまま照合する。
+    private func startAVPlaybackFlow(url: URL, at seconds: Double, request: PlaybackRequest,
+                                     initialResolution: Bool, isFMP4: Bool) {
+        guard !didLeaveScreen, acceptsPlaybackRequest(request) else { return }
+        routeResolutionPending = true
+        let begin: (URL?) -> Void = { [weak self] relayedURL in
+            guard let self, !self.didLeaveScreen,
+                  self.acceptsPlaybackRequest(request) else { return }
+            if initialResolution, !self.playbackStart.complete(request, context: .current) { return }
+            if !initialResolution, !self.canRebuildSession {
+                self.fmp4StartContext?.state.deferClaimedRecovery(.retry)
+                self.routeResolutionPending = false
+                return
+            }
+            self.routeResolutionPending = false
+            self.clearStartLoadingMessage()
+            if SettingsStore.shared.avPlaybackRequiresRelay, relayedURL == nil {
+                self.pendingRelayRetryPosition = seconds
+                self.messageLabel.text = "中継の用意ができず、再生を開始できませんでした。再生ボタンでもう一度お試しください。"
+                return
+            }
+            let position = self.pendingPlaybackSeek.target ?? (isFMP4 ? self.fmp4StartContext?.state.latestPosition : nil) ?? seconds
+            if isFMP4 { self.fmp4StartContext?.state.noteSeek(to: position) }
+            let attempt = isFMP4 ? self.fmp4StartContext?.state.makeAttempt() : nil
+            if isFMP4, attempt == nil { return }
 #if canImport(VLCKit)
-        if isHEVCQuality(quality, profile: profile) {
-            // H.265 / HEVC は VLCKit 経路で、中継経由が前提。用意を
-            // 非同期に待ってから始める。
-            showStartLoadingMessage()
-            StreamRelayServer.shared.relayURL(for: url) { [weak self] relayedURL in
-                guard let self, !self.didLeaveScreen,
-                      self.startPlaybackCount == startCount,
-                      self.playbackStart.complete(startRequest, context: .current) else { return }
-                self.clearStartLoadingMessage()
-                if relayedURL == nil, SettingsStore.shared.vlcPlaybackRequiresRelay {
-                    // 中継が必須の構成で用意ができなかった (失敗の扱いは
-                    // 上のコメントのとおり)。開始位置を控えておく。
-                    self.messageLabel.text = "中継の用意ができず、再生を開始できませんでした。再生ボタンでもう一度お試しください。"
-                    self.playbackStart.pauseRequested = false
-                    self.pendingRelayRetryPosition = seconds
-                    return
-                }
-                guard self.startVLCPlayback(url: url, relayedURL: relayedURL, at: seconds) else {
-                    self.pendingRelayRetryPosition = seconds
-                    return
-                }
-                self.pendingRelayRetryPosition = nil
-                self.finishStartPlayback(at: seconds)
-            }
-            return
-        }
-        teardownVLCPlayback()
-#else
-        if isHEVCQuality(quality, profile: profile) {
-            // VLCKit が組み込まれていないビルドでは HEVC を映像として
-            // 出せない (AVPlayer では音だけになる)。その旨だけ知らせる。
-            messageLabel.text = "このビルドには H.265 / HEVC 再生の部品が組み込まれていません。"
-        }
+            self.teardownVLCPlayback()
 #endif
-        if SettingsStore.shared.avPlaybackRequiresRelay {
-            // 中継が必須の方式では、中継の URL を非同期に解決してから
-            // 始める。用意できなかった場合は失敗として知らせる。
-            showStartLoadingMessage()
-            StreamRelayServer.shared.relayURL(for: url) { [weak self] relayedURL in
-                guard let self, !self.didLeaveScreen,
-                      self.startPlaybackCount == startCount,
-                      self.playbackStart.complete(startRequest, context: .current) else { return }
-                self.clearStartLoadingMessage()
-                guard let relayedURL else {
-                    self.messageLabel.text = "中継の用意ができず、再生を開始できませんでした。再生ボタンでもう一度お試しください。"
-                    self.playbackStart.pauseRequested = false
-                    self.pendingRelayRetryPosition = seconds
-                    return
-                }
-                self.startAVPlayback(asset: AVURLAsset(url: relayedURL), at: seconds)
-                self.pendingRelayRetryPosition = nil
-                self.finishStartPlayback(at: seconds)
-            }
-            return
+            let asset = relayedURL.map { AVURLAsset(url: $0) } ?? APIClient.shared.playerAsset(url: url)
+            self.startAVPlayback(asset: asset, at: position, request: request, fmp4Attempt: attempt)
+            self.pendingRelayRetryPosition = nil
+            self.finishStartPlayback(at: position)
         }
-        guard playbackStart.complete(startRequest, context: .current) else { return }
-        startAVPlayback(asset: APIClient.shared.playerAsset(url: url), at: seconds)
-        pendingRelayRetryPosition = nil
-        finishStartPlayback(at: seconds)
+        if SettingsStore.shared.avPlaybackRequiresRelay {
+            showStartLoadingMessage()
+            StreamRelayServer.shared.relayURL(for: url, completion: begin)
+        } else { begin(nil) }
+    }
+
+    private func startVLCPlaybackFlow(url: URL, at seconds: Double, request: PlaybackRequest, initialResolution: Bool) {
+        guard !didLeaveScreen, acceptsPlaybackRequest(request) else { return }
+#if canImport(VLCKit)
+        routeResolutionPending = true
+        showStartLoadingMessage()
+        StreamRelayServer.shared.relayURL(for: url) { [weak self] relayedURL in
+            guard let self, !self.didLeaveScreen,
+                  self.acceptsPlaybackRequest(request) else { return }
+            if initialResolution, !self.playbackStart.complete(request, context: .current) { return }
+            if !initialResolution, !self.canRebuildSession {
+                self.fmp4StartContext?.state.deferClaimedRecovery(.fallback)
+                self.routeResolutionPending = false
+                return
+            }
+            self.routeResolutionPending = false
+            self.clearStartLoadingMessage()
+            if relayedURL == nil, SettingsStore.shared.vlcPlaybackRequiresRelay {
+                self.pendingRelayRetryPosition = seconds
+                self.messageLabel.text = "中継の用意ができず、再生を開始できませんでした。再生ボタンでもう一度お試しください。"
+                return
+            }
+            let position = self.pendingPlaybackSeek.target ?? seconds
+            self.captureController.cancel()
+            self.playbackReadyForSeek = false
+            guard self.startVLCPlayback(url: url, relayedURL: relayedURL, at: position) else {
+                self.pendingRelayRetryPosition = position
+                return
+            }
+            self.fmp4StartContext = nil
+            self.pendingRelayRetryPosition = nil
+            self.finishStartPlayback(at: position)
+        }
+#else
+        if initialResolution { _ = playbackStart.complete(request, context: .current) }
+        clearStartLoadingMessage()
+        messageLabel.text = "このビルドには H.265 / HEVC 再生の部品が組み込まれていません。"
+#endif
+    }
+
+    private func acceptsPlaybackRequest(_ request: PlaybackRequest) -> Bool {
+        guard !didLeaveScreen else { return false }
+        if playbackStart.invalidateIfContextChanged(request, context: .current) {
+            cancelFMP4Start()
+            pendingPlaybackSeek.cancel()
+            pendingRelayRetryPosition = nil
+            clearStartLoadingMessage()
+            if messageLabel.text == Self.fmp4RetryMessage { messageLabel.text = nil }
+            return false
+        }
+        return playbackStart.isCurrent(request, context: .current)
+    }
+
+    private func cancelFMP4Start() {
+        playlistProbeTask?.cancel()
+        playlistProbeTask = nil
+        fmp4RetryWorkItem?.cancel()
+        fmp4RetryWorkItem = nil
+        fmp4StartContext = nil
+        routeResolutionPending = false
+    }
+
+    /// 初回と再試行の各AV項目から一度だけ失敗を受け付ける。先頭0秒も同じ対象とする。
+    private func handleFMP4StartFailure(item: AVPlayerItem, attempt: FMP4PlaybackState.Attempt?) -> Bool {
+        guard let attempt, let context = fmp4StartContext, !context.state.didPlay,
+              player?.currentItem === item,
+              acceptsPlaybackRequest(context.request) else { return false }
+        guard let action = fmp4StartContext?.state.failed(attempt) else { return false }
+        if action == .ignored { return true }
+        captureController.cancel()
+        player?.pause() // 準備失敗の停止は、利用者の再生/停止意図を書き換えない。
+        playbackReadyForSeek = false
+        captionMetadataOutput = nil // 失敗した項目の遅着metadataは、次の字幕世代へ入れない。
+        captionEngine.resetForNewPlayback(at: fmp4StartContext?.state.latestPosition ?? 0)
+        captionOverlayView.setImage(nil)
+        if action == .retry {
+            messageLabel.text = Self.fmp4RetryMessage
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, !self.didLeaveScreen, let current = self.fmp4StartContext,
+                      self.acceptsPlaybackRequest(current.request),
+                      current.state.isWaiting(after: attempt) else { return }
+                self.fmp4RetryWorkItem = nil
+                _ = self.resumeDeferredFMP4Recovery()
+            }
+            fmp4RetryWorkItem = work
+            // 本家8d333abの開始前セグメント生成待ち。字幕の時刻補正には使わない。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+        } else {
+            _ = resumeDeferredFMP4Recovery()
+        }
+        updatePlayPauseIcon()
+        return true
+    }
+
+    @discardableResult
+    private func resumeDeferredFMP4Recovery() -> Bool {
+        guard fmp4RetryWorkItem == nil, !didLeaveScreen, let context = fmp4StartContext,
+              acceptsPlaybackRequest(context.request),
+              let action = fmp4StartContext?.state.claimRecovery(canReplace: canRebuildSession) else { return false }
+        let position = pendingPlaybackSeek.target ?? context.state.latestPosition
+        if action == .retry {
+            startAVPlaybackFlow(url: context.fmp4URL, at: position, request: context.request,
+                initialResolution: false, isFMP4: true)
+        } else {
+            messageLabel.text = "新しい再生方式で開始できなかったため、従来の方式で再生します。"
+            startVLCPlaybackFlow(url: context.fallbackURL, at: position, request: context.request, initialResolution: false)
+        }
+        return true
     }
 
     /// 中継の用意を待つ間、知らせ欄が空いていれば読み込み中を出す
@@ -2418,7 +2546,12 @@ final class PlayerViewController: UIViewController {
     /// 渡す材料 (asset) は呼び出し側で用意する。中継が必須の方式では、
     /// 中継の URL を非同期に解決してから材料を作って渡す (用意が
     /// できなかった場合は、呼び出し側が失敗として知らせる)。
-    private func startAVPlayback(asset: AVURLAsset, at seconds: Double) {
+    private func startAVPlayback(asset: AVURLAsset, at seconds: Double, request: PlaybackRequest,
+                                 fmp4Attempt: FMP4PlaybackState.Attempt?) {
+        captureController.cancel()
+        captionSeekCoordinator.reset()
+        playbackReadyForSeek = false
+        captionOverlayView.setImage(nil)
         let item = AVPlayerItem(asset: asset)
         // 字幕データの受け取り口を、この再生項目へ付ける。
         attachCaptionMetadataOutput(to: item, at: seconds)
@@ -2430,8 +2563,10 @@ final class PlayerViewController: UIViewController {
         }
         itemEndObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main
-        ) { [weak self] _ in
-            self?.handlePlaybackEnded()
+        ) { [weak self, weak item] _ in
+            guard let self, let item, self.player?.currentItem === item,
+                  self.acceptsPlaybackRequest(request) else { return }
+            self.handlePlaybackEnded()
         }
         // 読み込みに失敗したら、真っ黒のまま無言にせず、その旨を表示する。
         itemStatusObservation?.invalidate()
@@ -2440,11 +2575,14 @@ final class PlayerViewController: UIViewController {
                 // 実行される時点で今の再生項目が別のものに替わっていたら、
                 // 古い項目の失敗を今の再生の失敗として表示しない。
                 guard let self, !self.didLeaveScreen,
-                      self.player?.currentItem === item else { return }
+                      self.player?.currentItem === item,
+                      self.acceptsPlaybackRequest(request) else { return }
                 if item.status == .readyToPlay {
+                    if let fmp4Attempt, self.fmp4StartContext?.state.accepts(fmp4Attempt) != true { return }
                     self.playbackReadyForSeek = true
                     self.applyPendingPlaybackSeek()
                 } else if item.status == .failed {
+                    if self.handleFMP4StartFailure(item: item, attempt: fmp4Attempt) { return }
                     self.messageLabel.text = "再生を開始できませんでした。"
                 }
             }
@@ -2476,30 +2614,30 @@ final class PlayerViewController: UIViewController {
             ) { [weak self] _ in
                 self?.updateProgress()
             }
-            // 一時停止中は上の定期観測が進まないため、再生状態の変化はこちらでも拾い、
-            // 画面内のボタンとロック画面の表示を追随させる。
-            timeControlObservation = newPlayer.observe(\.timeControlStatus, options: [.new]) { [weak self] _, _ in
-                guard let self, self.player === newPlayer else { return }
-                self.updatePlayPauseIcon()
-                self.updateNowPlaying()
-                // 再生が実際に始まった合図。始まる前に利用者が指定した
-                // 移動があれば、ここで反映する (開始位置の復元より優先)。
-                // セッションの作り直しで復旧した場合に、古い失敗表示が
-                // 残っていたら消す (VLCKit 経路の扱いに揃える)。
-                if newPlayer.timeControlStatus == .playing {
-                    self.playbackDidStart = true
-                    if self.messageLabel.text == "再生を開始できませんでした。" {
-                        self.messageLabel.text = nil
+        }
+        timeControlObservation?.invalidate()
+        if let currentPlayer = player {
+            timeControlObservation = currentPlayer.observe(\.timeControlStatus, options: [.new]) { [weak self, weak currentPlayer, weak item] _, _ in
+                DispatchQueue.main.async {
+                    guard let self, let currentPlayer, let item, self.player === currentPlayer,
+                          currentPlayer.currentItem === item,
+                          self.acceptsPlaybackRequest(request) else { return }
+                    // failed済み項目や旧attemptのplaying通知を再試行成功として扱わない。
+                    if let fmp4Attempt, self.fmp4StartContext?.state.accepts(fmp4Attempt) != true { return }
+                    self.updatePlayPauseIcon()
+                    self.updateNowPlaying()
+                    if currentPlayer.timeControlStatus == .playing {
+                        self.playbackDidStart = true
+                        if let fmp4Attempt { self.fmp4StartContext?.state.markPlaying(fmp4Attempt) }
+                        if self.messageLabel.text == "再生を開始できませんでした。"
+                            || self.messageLabel.text == Self.fmp4RetryMessage {
+                            self.messageLabel.text = nil
+                        }
+                        if let pending = self.pendingQualityWriteBack, pending == self.quality {
+                            SettingsStore.shared.setStreamingQuality(pending, media: .video, profile: self.profile)
+                            self.pendingQualityWriteBack = nil
+                        }
                     }
-                }
-                // 画質の切り替え後に再生が再開したら、切り替え完了時点の
-                // 書き戻しを行う (開始時点で書き戻したのと同じ値を、
-                // 完了の合図としてもう一度保存する)。
-                if newPlayer.timeControlStatus == .playing,
-                   let pending = self.pendingQualityWriteBack,
-                   pending == self.quality {
-                    SettingsStore.shared.setStreamingQuality(pending, media: .video, profile: self.profile)
-                    self.pendingQualityWriteBack = nil
                 }
             }
         }
@@ -2777,6 +2915,7 @@ final class PlayerViewController: UIViewController {
     }
 
     private func stopPlayback() {
+        cancelFMP4Start()
         playbackStart.invalidate()
         clearStartLoadingMessage()
         captureController.cancel()
@@ -2916,6 +3055,7 @@ final class PlayerViewController: UIViewController {
     }
 
     private func resumeDeferredSessionRecovery() {
+        if resumeDeferredFMP4Recovery() { return }
         guard keepAliveState.takeDeferredRecovery(context: keepAliveContext, canRecover: canRebuildSession) else { return }
         rebuildDeadSession()
     }
@@ -3166,7 +3306,8 @@ final class PlayerViewController: UIViewController {
 
     private var isPlayingForControls: Bool {
         // 位置表示とアイコンだけを再生意図へ合わせる。実再生状態の読み取りは変更しない。
-        playbackStart.inFlight ? !playbackStart.pauseRequested
+        (playbackStart.inFlight || routeResolutionPending || fmp4StartContext?.state.awaitingRecovery == true)
+            ? (playbackIntentPlaying && !playbackStart.pauseRequested)
             : (playbackIntentPlaying && (isCurrentlyPlaying()
                 || activeSeekDisplayTarget(realPosition: currentPosition()) != nil))
     }
@@ -3992,11 +4133,18 @@ final class PlayerViewController: UIViewController {
             scheduleHideControls()
             return
         }
+        if routeResolutionPending || fmp4StartContext?.state.awaitingRecovery == true {
+            if isPlayingForControls { pauseEngine() } else { playAtCurrentRate() }
+            updatePlayPauseIcon()
+            return
+        }
         // 中継の用意ができずに開始できなかった場合は、再生ボタンで
         // 始め直す (開始位置は、失敗したときに控えたものを使う)。
-        if !hasActiveEngine, let retryPosition = pendingRelayRetryPosition {
+        if let retryPosition = pendingRelayRetryPosition {
             pendingRelayRetryPosition = nil
-            startPlayback(at: retryPosition)
+            // 中継の失敗後も、待機中に利用者が指定した最新位置を優先する。
+            let latest = pendingPlaybackSeek.target ?? fmp4StartContext?.state.latestPosition ?? retryPosition
+            startPlayback(at: latest)
             return
         }
         guard hasActiveEngine else { return }
@@ -4030,6 +4178,7 @@ final class PlayerViewController: UIViewController {
             userSeekedSinceStart = true
         }
         let clamped = max(0, min(seconds, effectiveDuration))
+        if isUserInitiated { fmp4StartContext?.state.noteSeek(to: clamped) }
         // 再生が始まる前の移動は、再生部品へ送っても届かず捨てられて
         // しまうため、移動先を控えておく。再生が始まったときに反映し、
         // 開始位置の復元 (受け皿・補正) より優先する。
@@ -4339,6 +4488,8 @@ final class PlayerViewController: UIViewController {
     }
 
     private var canCaptureVideo: Bool {
+        if fmp4StartContext?.state.awaitingRecovery == true { return false }
+        if fmp4StartContext != nil, player?.currentItem?.status == .failed { return false }
         guard !audioOnly, !captureController.isCapturing, pipController?.isActive != true, pipController?.isPending != true else { return false }
 #if canImport(VLCKit)
         if let vlcPlayer { return vlcPlayer.hasVideoOut }
@@ -4467,6 +4618,7 @@ final class PlayerViewController: UIViewController {
     private func updatePiPButton() {
         pipButton.isHidden = !(pipController?.isReady == true && !audioOnly)
         pipButton.isEnabled = pipController?.isPending != true
+            && (pipController?.isActive == true || (!playbackStart.inFlight && !routeResolutionPending))
         pipButton.setImage(UIImage(systemName: pipController?.isActive == true ? "pip.exit" : "pip.enter"), for: .normal)
         pipButton.accessibilityValue = pipController?.isActive == true ? "再生中" : "停止中"
     }
@@ -4475,7 +4627,8 @@ final class PlayerViewController: UIViewController {
         playerSettingsPanel?.closePanel()
         captureController.cancel()
         guard let pip = pipController, !audioOnly else { return }
-        if pip.isActive || pip.isPending { pip.stop() } else { pip.start(owner: self) }
+        if pip.isActive || pip.isPending { pip.stop() }
+        else if !playbackStart.inFlight && !routeResolutionPending { pip.start(owner: self) }
     }
 
     @objc private func openPlayerSettings() { showPlayerSettings() }

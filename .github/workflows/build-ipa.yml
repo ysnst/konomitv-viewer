@@ -75,6 +75,16 @@ jobs:
             scripts/PlaybackLifecycleTests.swift -o artifacts/tests/playback-lifecycle-tests
           artifacts/tests/playback-lifecycle-tests
 
+      - name: Test fMP4 routing and bounded pre-play recovery
+        run: |
+          mkdir -p artifacts/tests
+          swiftc -parse-as-library \
+            KonomiTV-Viewer/KonomiTV-Viewer/PlaybackStartState.swift \
+            KonomiTV-Viewer/KonomiTV-Viewer/FMP4PlaybackState.swift \
+            KonomiTV-Viewer/KonomiTV-Viewer/PlaybackLifecycleState.swift \
+            scripts/FMP4PlaybackTests.swift -o artifacts/tests/fmp4-playback-tests
+          artifacts/tests/fmp4-playback-tests
+
       - name: Test capture JPEG metadata compatibility
         run: |
           mkdir -p artifacts/tests artifacts/ipa

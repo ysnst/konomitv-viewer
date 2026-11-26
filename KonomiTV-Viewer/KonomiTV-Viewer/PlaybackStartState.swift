@@ -32,6 +32,18 @@ struct PlaybackStartState<Context: Equatable> {
         pauseRequested = false
     }
 
+    /// 解決完了後の項目再試行でも、停止・別の開始・認証変更で古い要求を識別する。
+    func isCurrent(_ request: Request, context: Context) -> Bool {
+        request.generation == generation && request.context == context
+    }
+
+    /// 同じ要求の認証変更だけを無効化する。遅着した旧世代から新しい開始を取り消さない。
+    mutating func invalidateIfContextChanged(_ request: Request, context: Context) -> Bool {
+        guard request.generation == generation, request.context != context else { return false }
+        invalidate()
+        return true
+    }
+
     /// 同じ接続先・認証設定で最新の開始要求が返ったときだけ、開始待ちを解く。
     /// 古い通知では現在のpause意図もinFlightも触らない。
     mutating func complete(_ request: Request, context: Context) -> Bool {
