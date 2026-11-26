@@ -1,0 +1,201 @@
+name: Smoke Tests
+
+# IPA の版番号と公開フローから独立したシミュレータ検証。
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches-ignore: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-tests:
+    name: Simulator smoke tests
+    runs-on: macos-26-intel
+    timeout-minutes: 45
+    env:
+      TZ: Asia/Tokyo
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare diagnostics
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/smoke
+          xcodebuild -version | tee artifacts/smoke/xcode-version.log
+          xcodebuild -showsdks | tee artifacts/smoke/sdks.log
+          python3 -m unittest discover -s SmokeTests -p 'test_*.py' -v 2>&1 | tee artifacts/smoke/fixture-tests.log
+
+      # 専用プロセスグループで起動し、後始末では保存した PID のグループだけを止める。
+      - name: Start stub server
+        run: |
+          python3 - <<'PY'
+          import pathlib, socket, subprocess, sys, time, urllib.request
+          directory = pathlib.Path('artifacts/smoke')
+          with socket.socket() as probe:
+              if probe.connect_ex(('127.0.0.1', 18080)) == 0:
+                  raise SystemExit('Refusing to start: port 18080 is already occupied')
+          with (directory / 'stub-server.log').open('wb') as log:
+              process = subprocess.Popen([sys.executable, '-u', 'SmokeTests/stub_server.py', '18080'],
+                                         stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+          (directory / 'stub.pid').write_text(str(process.pid))
+          for _ in range(30):
+              if process.poll() is not None:
+                  raise SystemExit('Stub server exited before readiness')
+              try:
+                  with urllib.request.urlopen('http://127.0.0.1:18080/health', timeout=1) as response:
+                      if response.status == 200 and process.poll() is None:
+                          print('Stub server is ready.')
+                          break
+              except OSError:
+                  pass
+              time.sleep(1)
+          else:
+              raise SystemExit('Stub server readiness timed out')
+          PY
+
+      - name: Install CocoaPods dependencies
+        working-directory: KonomiTV-Viewer
+        run: |
+          set -o pipefail
+          pod install 2>&1 | tee ../artifacts/smoke/pod-install.log
+
+      # 既存デバイスを借用せず、利用可能な最新 iOS runtime に専用デバイスを作る。
+      - name: Create owned simulator
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          def simctl(*args):
+              return subprocess.check_output(['xcrun', 'simctl', *args], text=True)
+          runtimes = [r for r in json.loads(simctl('list', 'runtimes', '-j'))['runtimes']
+                      if r.get('isAvailable') and r['identifier'].startswith('com.apple.CoreSimulator.SimRuntime.iOS-')]
+          if not runtimes:
+              raise SystemExit('No available iOS simulator runtime')
+          runtime = max(runtimes, key=lambda r: tuple(map(int, r['version'].split('.'))))
+          # 利用可能な既存定義の deviceType を選ぶが、そのデバイス自体は操作しない。
+          devices = json.loads(simctl('list', 'devices', 'available', '-j'))['devices'].get(runtime['identifier'], [])
+          phones = [d for d in devices if d['name'].startswith('iPhone') and d.get('deviceTypeIdentifier')]
+          if not phones:
+              raise SystemExit('No compatible iPhone device type for latest iOS runtime')
+          udid = simctl('create', 'SmokeTests-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'],
+                        phones[0]['deviceTypeIdentifier'], runtime['identifier']).strip()
+          pathlib.Path('artifacts/smoke/simulator.udid').write_text(udid)
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write('SIM_UDID=' + udid + '\n')
+          print('Created simulator ' + udid)
+          PY
+          SIM_UDID=$(cat artifacts/smoke/simulator.udid)
+          xcrun simctl boot "$SIM_UDID"
+          xcrun simctl bootstatus "$SIM_UDID" -b
+
+      - name: Build for testing (simulator)
+        run: |
+          set -o pipefail
+          xcodebuild build-for-testing \
+            -workspace KonomiTV-Viewer/KonomiTV-Viewer.xcworkspace \
+            -scheme SmokeTests -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath artifacts/smoke/DerivedData \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            2>&1 | tee artifacts/smoke/build.log
+
+      - name: Run smoke tests
+        run: |
+          set -o pipefail
+          xcodebuild test-without-building \
+            -workspace KonomiTV-Viewer/KonomiTV-Viewer.xcworkspace \
+            -scheme SmokeTests -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath artifacts/smoke/DerivedData \
+            -resultBundlePath artifacts/smoke/SmokeTestResults.xcresult \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            2>&1 | tee artifacts/smoke/test.log
+
+      # 画像は UI テストが app.screenshot() で採取した attachment だけを取り出す。
+      - name: Export test attachments
+        if: always()
+        run: |
+          set -o pipefail
+          if [ -d artifacts/smoke/SmokeTestResults.xcresult ]; then
+            xcrun xcresulttool export attachments \
+              --path artifacts/smoke/SmokeTestResults.xcresult \
+              --output-path artifacts/smoke/attachments \
+              2>&1 | tee artifacts/smoke/attachment-export.log
+          fi
+
+      - name: Clean up owned resources
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, signal, socket, subprocess, time
+          directory = pathlib.Path('artifacts/smoke')
+          failures = []
+          pid_file = directory / 'stub.pid'
+          if pid_file.exists():
+              pid = int(pid_file.read_text())
+              try:
+                  group = os.getpgid(pid)
+              except ProcessLookupError:
+                  group = None
+              if group not in (None, pid):
+                  failures.append('Refusing to signal unexpected process group')
+              else:
+                  if group is not None:
+                      os.killpg(pid, signal.SIGTERM)
+                  for _ in range(50):
+                      try:
+                          os.killpg(pid, 0)
+                      except ProcessLookupError:
+                          break
+                      time.sleep(0.1)
+                  else:
+                      try:
+                          os.killpg(pid, signal.SIGKILL)
+                      except ProcessLookupError:
+                          pass
+                      time.sleep(0.5)
+                  try:
+                      os.killpg(pid, 0)
+                      failures.append('Stub process group still exists')
+                  except ProcessLookupError:
+                      print('Owned stub process group has exited.')
+              with socket.socket() as probe:
+                  if probe.connect_ex(('127.0.0.1', 18080)) == 0:
+                      failures.append('Stub port 18080 is still occupied')
+                  else:
+                      print('Stub port 18080 is free.')
+          device_file = directory / 'simulator.udid'
+          if device_file.exists():
+              udid = device_file.read_text().strip()
+              subprocess.run(['xcrun', 'simctl', 'shutdown', udid], check=False)
+              if subprocess.run(['xcrun', 'simctl', 'delete', udid]).returncode:
+                  failures.append('Owned simulator could not be deleted')
+              else:
+                  devices = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'devices', '-j'], text=True))
+                  if any(d['udid'] == udid for group in devices['devices'].values() for d in group):
+                      failures.append('Owned simulator still exists after deletion')
+                  else:
+                      print('Owned simulator deleted: ' + udid)
+          if failures:
+              raise SystemExit('; '.join(failures))
+          PY
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-results
+          path: |
+            artifacts/smoke/*.log
+            artifacts/smoke/*.pid
+            artifacts/smoke/*.udid
+            artifacts/smoke/SmokeTestResults.xcresult
+            artifacts/smoke/attachments
+          if-no-files-found: warn
