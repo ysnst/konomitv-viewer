@@ -236,6 +236,9 @@ final class SmokeTests: XCTestCase {
         window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: video.minX + video.width * 0.08 - origin.x, dy: video.midY - origin.y)).tap()
     }
     private func prepareSeekInput() -> (Int, Int)? {
+        // 直前の入力から経過したtimerの残り時間へ依存しないよう、実タップで
+        // 操作帯を出し直す。自動非表示は無効化せず、表示後の同じsnapshotで入力する。
+        if snapshot("stage.video")?.1.contains("controls=true ") == true { tapVideo() }
         // 自動非表示3.5秒を止めず、同じsnapshotで状態と座標を確定して直ちに入力する。
         let deadline = Date().addingTimeInterval(5)
         while Date() < deadline {
