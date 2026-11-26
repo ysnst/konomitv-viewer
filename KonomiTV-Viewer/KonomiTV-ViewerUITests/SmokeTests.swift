@@ -52,6 +52,7 @@ final class SmokeTests: XCTestCase {
         openRecording()
         XCTAssertTrue(app.buttons["stage.playPause"].waitForExistence(timeout: 40))
         XCTAssertTrue(waitForSeekEnd(begin: 1, end: 1, timeout: 40))
+        waitForEngineSeekCompletion(1)
         assertClockPaused()
     }
     func testLatestPlayDuringScrubContract() throws {
@@ -96,7 +97,18 @@ final class SmokeTests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.2)
         }
         XCTAssertTrue(reached, "Paused engine did not reach seek target")
+        waitForEngineSeekCompletion(counts.1 + 1)
         assertClockPaused()
+    }
+    private func waitForEngineSeekCompletion(_ count: Int) {
+        // setTime直後の仮時刻ではなく、実エンジンの完了通知まで待つ。
+        // 既存の移動先判定と同じ15秒以内。停止時計の3秒/0.25秒は変更しない。
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+            if snapshot("stage.video")?.1.contains("completed=\(count) ") == true { return }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        XCTFail("Actual engine seek completion missing")
     }
     private func actualClock() -> Double? {
         guard let label = snapshot("stage.video")?.1,

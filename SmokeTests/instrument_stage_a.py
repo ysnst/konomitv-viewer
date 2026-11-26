@@ -8,6 +8,7 @@ RECORD = r'''
     private var stageBeginCount = 0
     private var stageEndCount = 0
     private var stageTemporaryPauses = 0
+    private var stageSeekCompletions = 0
     private var stageCancellationApplied = false
     private func stageState(_ event: String) {
         guard ProcessInfo.processInfo.arguments.contains("-stage_a_diagnostics"), stageSamples < 400 else { return }
@@ -32,9 +33,9 @@ RECORD = r'''
         playing = vlcPlayer?.isPlaying ?? false
         video = vlcPlayer?.hasVideoOut ?? false
 #endif
-        captionOverlayView.accessibilityLabel = "time=\(actual.isFinite ? actual : -1) playing=\(playing) intent=\(playbackIntentPlaying) temporaryPauses=\(stageTemporaryPauses) controls=\(controlsVisible) " + (seekSlider.accessibilityLabel ?? "")
+        captionOverlayView.accessibilityLabel = "time=\(actual.isFinite ? actual : -1) playing=\(playing) intent=\(playbackIntentPlaying) temporaryPauses=\(stageTemporaryPauses) completed=\(stageSeekCompletions) controls=\(controlsVisible) " + (seekSlider.accessibilityLabel ?? "")
         stageWrite(["kind":"recorded", "event":event,"time":actual.isFinite ? actual : -1,
-                    "playing":playing,"intent":playbackIntentPlaying,"temporaryPauses":stageTemporaryPauses,"video":video,"scrub":isScrubbing,
+                    "playing":playing,"intent":playbackIntentPlaying,"temporaryPauses":stageTemporaryPauses,"completed":stageSeekCompletions,"video":video,"scrub":isScrubbing,
                     "preview":!seekPreviewView.isHidden,"density":!excitementStrip.isHidden,"begin":stageBeginCount,"end":stageEndCount])
     }
     private func stageMaybeCancelContract() {
@@ -129,6 +130,9 @@ def instrument_recorded(text):
     anchor = '    private func pauseEngine(isUserInitiated: Bool = true) {'
     assert text.count(anchor) == 1
     text = text.replace(anchor, anchor + '\n#if DEBUG && targetEnvironment(simulator)\n        if !isUserInitiated { stageTemporaryPauses += 1 }\n#endif', 1)
+    anchor = '                self.refreshCaptions()'
+    assert text.count(anchor) == 1
+    text = text.replace(anchor, '#if DEBUG && targetEnvironment(simulator)\n                self.stageSeekCompletions += 1\n                self.stageState("seek-completed")\n#endif\n' + anchor, 1)
     anchor = '            self.spriteLoadState = .loaded'
     assert text.count(anchor) == 1
     text = text.replace(anchor, anchor + '\n            self.stageState("sprite-loaded")', 1)
