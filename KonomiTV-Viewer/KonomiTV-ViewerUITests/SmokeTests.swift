@@ -69,6 +69,78 @@ final class SmokeTests: XCTestCase {
         attachScreenshot("05-after-held-seek")
     }
 
+    /// 生放送の番組時刻ではなく、試験checkoutで公開した実VLC時計を検証する。
+    func testLiveChannelLifecycle() throws {
+        openLiveFixture()
+        for (index, channel) in ["gr001", "gr002", "gr001"].enumerated() {
+            if index > 0 {
+                app.buttons["live.channelTab"].tap()
+                let title = channel == "gr001" ? "スモーク生放送1" : "スモーク生放送2"
+                let target = app.staticTexts[title].firstMatch
+                XCTAssertTrue(target.waitForExistence(timeout: 15), "Channel missing from live selector")
+                target.tap()
+            }
+            XCTAssertTrue(waitForLiveToAdvance(channel: channel, timeout: 40), "Live VLC clock did not advance: \(channel)")
+            attachScreenshot("live-" + channel)
+        }
+    }
+
+    func testRecordedSwitchLifecycle() throws {
+        for title in ["スモークテスト番組", "スモークテスト番組2", "スモークテスト番組"] {
+            openRecording(title)
+            leavePlayer()
+        }
+    }
+
+    func testRecordedAndLiveLifecycle() throws {
+        openRecording("スモークテスト番組")
+        leavePlayer()
+        openLiveFixture()
+        XCTAssertTrue(waitForLiveToAdvance(channel: "gr001", timeout: 40), "Live failed after recording")
+        leavePlayer()
+        app.descendants(matching: .any)["ビデオをみる"].firstMatch.tap()
+        openRecording("スモークテスト番組2")
+    }
+
+    private func openRecording(_ title: String) {
+        let program = app.staticTexts[title].firstMatch
+        XCTAssertTrue(program.waitForExistence(timeout: 30), "Recording fixture missing")
+        program.tap()
+        XCTAssertTrue(waitForPlaybackToAdvance(timeout: 40), "Recording failed after owner switch")
+    }
+
+    private func openLiveFixture() {
+        let tab = app.descendants(matching: .any)["テレビをみる"].firstMatch
+        XCTAssertTrue(tab.waitForExistence(timeout: 15), "Live tab missing")
+        tab.tap()
+        let channel = app.staticTexts["スモーク生放送1"].firstMatch
+        XCTAssertTrue(channel.waitForExistence(timeout: 30), "Live fixture missing")
+        channel.tap()
+    }
+
+    private func leavePlayer() {
+        let back = app.buttons["戻る"]
+        if !back.isHittable { tapVideoArea() }
+        back.tap()
+    }
+
+    private func waitForLiveToAdvance(channel: String, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        var baseline: Double?
+        while Date() < deadline {
+            let clock = app.staticTexts["live.currentTime." + channel]
+            if clock.exists, let seconds = Double(clock.label) {
+                print("Live clock sample: channel=\(channel), seconds=\(seconds), baseline=\(String(describing: baseline))")
+                if let baseline, seconds > 0, seconds > baseline { return true }
+                if baseline == nil { baseline = seconds }
+            } else {
+                tapVideoArea()
+            }
+            Thread.sleep(forTimeInterval: 0.4)
+        }
+        return false
+    }
+
     private func assertOverlays() {
         XCTAssertTrue(app.otherElements["player.commentOverlay"].waitForExistence(timeout: 15), "Comment overlay missing")
         XCTAssertTrue(app.otherElements["player.captionOverlay"].exists, "Caption overlay missing")

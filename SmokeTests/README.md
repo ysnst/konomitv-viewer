@@ -43,3 +43,11 @@ ffmpeg -i SmokeTests/media/index.m3u8 -f lavfi -i sine=frequency=1000:sample_rat
 `python3 SmokeTests/stub_server.py 18080 --fmp4 --audio`で選択します。`--audio`単独は拒否し、既定の映像のみfMP4とTSは変更しません。HTTPテストでは2トラックを含むinit、全fragmentの実バイト、形式指定なしのTS維持を確認します。
 
 映像のみのAVPlayer試験では、ready・描画可能・素材取得済みでもrateと時計が0のままになる観測があり、原因は未確定です。この音声あり素材は音声トラックの有無を切り分けるための比較条件であり、修正や原因確定を意味しません。音声なし動画自体が非対応という前提も置きません。実機・PiP・字幕・認証中継などの未確認範囲は変わりません。
+
+## 生放送・切り替えの比較
+
+手動Smoke Testsの`route=lifecycle`は既存の録画UIケースと分離し、生放送2局の切り替え、録画一覧からの連続再生、録画と生放送の相互遷移を各々新しい起動で調べます。既存のTS/fMP4試験の待機・成功条件は変更しません。
+
+仮サーバーは`--lifecycle`指定時だけ2つのGR局と`/api/streams/live/{channel}/{quality}/mpegts`を提供します。上記の180秒連続TSを188byte境界で素材尺に合わせて送り、Content-LengthなしのHTTP chunked応答にします。HLSで生放送APIを代用せず、TS自体も再生成しません。180秒で終了する有限素材なので、実際の無期限放送・音声・チューナー・実際の認証環境とは異なります。
+
+生放送の番組時刻は再生時計ではありません。使い捨てのsimulator checkoutだけで実VLC時刻をAXへ公開し、所有画面・チャンネル・player識別子・状態・映像出力・実時刻の上限付き診断を追加します。通常IPAには入りません。番組名や接続先・認証ヘッダーは診断に記録しません。fixture成功を実KonomiTVサーバー・Cloudflare Access・PiP・LiveContainerの実機成功とは扱いません。

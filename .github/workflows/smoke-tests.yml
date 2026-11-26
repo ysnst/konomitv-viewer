@@ -12,7 +12,7 @@ on:
       route:
         description: Fixed media container to exercise
         type: choice
-        options: [ts, fmp4, fmp4-audio, fmp4-fallback]
+        options: [ts, fmp4, fmp4-audio, fmp4-fallback, lifecycle]
         default: ts
       application_ref:
         description: Optional historical source ref for controlled diagnostics
@@ -88,6 +88,8 @@ jobs:
                   command.append('--fmp4')
               if os.environ['SMOKE_ROUTE'] == 'fmp4-audio':
                   command.append('--audio')
+              if os.environ['SMOKE_ROUTE'] == 'lifecycle':
+                  command.append('--lifecycle')
               process = subprocess.Popen(command,
                                          stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
           (directory / 'stub.pid').write_text(str(process.pid))
@@ -159,6 +161,15 @@ jobs:
         timeout-minutes: 10
         run: |
           set -o pipefail
+          if [ "$SMOKE_ROUTE" = lifecycle ]; then
+            tests=(
+              -only-testing:KonomiTV-ViewerUITests/SmokeTests/testLiveChannelLifecycle
+              -only-testing:KonomiTV-ViewerUITests/SmokeTests/testRecordedSwitchLifecycle
+              -only-testing:KonomiTV-ViewerUITests/SmokeTests/testRecordedAndLiveLifecycle
+            )
+          else
+            tests=(-only-testing:KonomiTV-ViewerUITests/SmokeTests/testRecordedPlaybackAndFullscreenOverlays)
+          fi
           xcodebuild test-without-building \
             -workspace app-source/KonomiTV-Viewer/KonomiTV-Viewer.xcworkspace \
             -scheme SmokeTests -sdk iphonesimulator \
@@ -166,6 +177,7 @@ jobs:
             -derivedDataPath artifacts/smoke/DerivedData \
             -resultBundlePath artifacts/smoke/SmokeTestResults.xcresult \
             -parallel-testing-enabled NO \
+            "${tests[@]}" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             2>&1 | tee artifacts/smoke/test.log
 
@@ -187,6 +199,15 @@ jobs:
           import os, pathlib, re, urllib.parse
           directory = pathlib.Path('artifacts/smoke')
           log = (directory / 'playback.log').read_text()
+          if os.environ['SMOKE_ROUTE'] == 'lifecycle':
+              for channel in ('gr001', 'gr002'):
+                  assert any(line.startswith('LIVE ') and 'channel=' + channel in line
+                             and 'playing=true' in line and 'video=true' in line
+                             and float(re.search(r' time=([0-9.]+)', line)[1]) > 0
+                             for line in log.splitlines()), 'Live engine did not progress: ' + channel
+              assert 'program=1' in log and 'program=2' in log
+              assert 'tick vlc state=' in log, 'Recording VLC route was not observed'
+              raise SystemExit(0)
           held = [line for line in log.splitlines() if 'heldSeek=true' in line]
           assert held and all('controls=true' in line for line in held), 'Controls hid during held seek'
           for direction in ('heldBack=true', 'heldForward=true'):

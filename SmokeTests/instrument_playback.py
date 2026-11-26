@@ -47,7 +47,7 @@ METHOD = r'''
         let children = surfaceView.subviews.map {
             "\(type(of: $0)):input=\($0.isUserInteractionEnabled):gestures=\(($0.gestureRecognizers ?? []).map { String(describing: type(of: $0)) })"
         }.joined(separator: ";")
-        let line = "SMOKE \(ProcessInfo.processInfo.systemUptime) \(event) \(engine) time=\(currentPosition()) ui=\(currentTimeLabel.text ?? "nil") intent=\(playbackIntentPlaying) pendingPause=\(playbackStart.pauseRequested) scrub=\(isScrubbing) heldBack=\(holdingBack) heldForward=\(holdingForward) heldSeek=\(holdingSeek) controls=\(controlsVisible) children=\(children)\n"
+        let line = "SMOKE \(ProcessInfo.processInfo.systemUptime) \(event) \(engine) time=\(currentPosition()) ui=\(currentTimeLabel.text ?? "nil") intent=\(playbackIntentPlaying) pendingPause=\(playbackStart.pauseRequested) scrub=\(isScrubbing) heldBack=\(holdingBack) heldForward=\(holdingForward) heldSeek=\(holdingSeek) controls=\(controlsVisible) program=\(program.id) owner=\(ObjectIdentifier(self)) children=\(children)\n"
         let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("smoke-playback.log")
         if !FileManager.default.fileExists(atPath: url.path) { _ = FileManager.default.createFile(atPath: url.path, contents: nil) }
         if let handle = try? FileHandle(forWritingTo: url) {
@@ -101,9 +101,76 @@ def instrument(text):
         method = '\n'.join(line for line in method.split('\n') if 'fmp4Confirmed=' not in line)
     return text.replace('    private func playAtCurrentRate() {', method + '\n    private func playAtCurrentRate() {', 1)
 
+
+LIVE_METHOD = r'''
+#if DEBUG && targetEnvironment(simulator)
+    private var smokeLiveTimer: Timer?
+    private var smokeLiveCount = 0
+    private func smokeLiveDiagnostic(_ event: String) {
+        guard ProcessInfo.processInfo.arguments.contains("-viewer_playback_diagnostics"),
+              smokeLiveCount < 240 else { return }
+        smokeLiveCount += 1
+        var state = "missing"
+        var time: Double = 0
+#if canImport(VLCKit)
+        if let vlcPlayer {
+            time = Double(vlcPlayer.time.intValue) / 1000
+            state = "state=\(vlcPlayer.state) playing=\(vlcPlayer.isPlaying) video=\(vlcPlayer.hasVideoOut) player=\(ObjectIdentifier(vlcPlayer))"
+        }
+#endif
+        liveTimeLabel.isAccessibilityElement = true
+        liveTimeLabel.accessibilityIdentifier = "live.currentTime." + channel.display_channel_id
+        liveTimeLabel.accessibilityLabel = String(time)
+        liveTimeLabel.accessibilityValue = channel.display_channel_id
+        captionOverlayView.isAccessibilityElement = true
+        captionOverlayView.accessibilityIdentifier = "player.captionOverlay"
+        channelTabButton.accessibilityIdentifier = "live.channelTab"
+        let line = "LIVE \(ProcessInfo.processInfo.systemUptime) \(event) owner=\(ObjectIdentifier(self)) channel=\(channel.display_channel_id) \(state) time=\(time) pending=\(streamStart.inFlight) controls=\(controlsVisible)\n"
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("smoke-playback.log")
+        if !FileManager.default.fileExists(atPath: url.path) { _ = FileManager.default.createFile(atPath: url.path, contents: nil) }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: Data(line.utf8))
+        }
+    }
+    private func smokeBeginLiveDiagnostics() {
+        guard ProcessInfo.processInfo.arguments.contains("-viewer_playback_diagnostics"), smokeLiveTimer == nil else { return }
+        smokeLiveTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] timer in
+            guard let self, self.smokeLiveCount < 240 else { timer.invalidate(); return }
+            self.smokeLiveDiagnostic("tick")
+        }
+    }
+#else
+    private func smokeLiveDiagnostic(_ event: String) {}
+    private func smokeBeginLiveDiagnostics() {}
+#endif
+'''
+
+
+def instrument_live(text):
+    for anchor, event in {
+        '    private func startStream() {': 'start',
+        '    private func stopStream() {': 'stop',
+        '    private func beginStreamPlayback(originURL url: URL, relayedURL: URL?) {': 'begin',
+        '    private func playStream() {': 'play',
+        '    private func pauseStream() {': 'pause',
+    }.items():
+        if text.count(anchor) != 1:
+            raise ValueError('Expected one live diagnostic anchor: ' + anchor)
+        extra = '\n        smokeBeginLiveDiagnostics()' if event == 'start' else ''
+        text = text.replace(anchor, anchor + '\n        smokeLiveDiagnostic("' + event + '")' + extra)
+    anchor = '            guard source === self.vlcPlayer else { return }'
+    if text.count(anchor) != 1:
+        raise ValueError('Expected live VLC source guard')
+    text = text.replace(anchor, anchor + '\n            self.smokeLiveDiagnostic("notification \\(state)")')
+    return text.replace('    private func startStream() {', LIVE_METHOD + '\n    private func startStream() {', 1)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('source', type=Path)
     args = parser.parse_args()
     target = args.source / 'KonomiTV-Viewer/KonomiTV-Viewer/PlayerViewController.swift'
     target.write_text(instrument(target.read_text()), encoding='utf-8')
+    live = args.source / 'KonomiTV-Viewer/KonomiTV-Viewer/LivePlayerViewController.swift'
+    live.write_text(instrument_live(live.read_text()), encoding='utf-8')

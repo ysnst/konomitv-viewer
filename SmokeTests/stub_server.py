@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -77,6 +78,8 @@ PROGRAM_2["start_time"] = "2026-11-20T20:00:00+09:00"
 PROGRAM_2["end_time"] = "2026-11-20T20:03:00+09:00"
 
 PROGRAMS = {1: PROGRAM_1, 2: PROGRAM_2}
+PROGRAM_1["next_episode_id"] = 2
+PROGRAM_2["previous_episode_id"] = 1
 
 # 過去ログコメントの材料 (時刻は再生位置の秒数)。
 COMMENTS = [
@@ -93,6 +96,13 @@ STORAGE_STATUS = {
 }
 
 EMPTY_CHANNELS = {"GR": [], "BS": [], "CS": [], "CATV": [], "SKY": [], "BS4K": []}
+LIVE_CHANNELS = dict(EMPTY_CHANNELS, GR=[{
+    "id": "gr%03d" % index, "display_channel_id": "gr%03d" % index,
+    "name": "スモーク生放送%d" % index, "type": "GR", "channel_number": "%03d" % index,
+    "is_display": True, "is_watchable": True,
+    "program_present": {"title": "生放送テスト%d" % index, "description": "合成素材",
+                        "start_time": "2026-11-20T19:00:00+09:00", "end_time": "2026-11-20T22:00:00+09:00"}
+} for index in (1, 2)])
 
 
 def playlist_body(session_id, fmp4=False, audio=False):
@@ -160,7 +170,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, STORAGE_STATUS)
             return
         if path == "/api/channels":
-            self._send_json(200, EMPTY_CHANNELS)
+            self._send_json(200, LIVE_CHANNELS if getattr(self.server, "lifecycle", False) else EMPTY_CHANNELS)
+            return
+        if (getattr(self.server, "lifecycle", False) and len(parts) == 6
+                and parts[:3] == ["api", "streams", "live"] and parts[5] == "mpegts"
+                and parts[3] in ("gr001", "gr002")):
+            self._send_live_ts()
             return
         # /api/channels/{局}/logo (録画一覧のカードが局ロゴを取りに来る)。
         if len(parts) == 4 and parts[0] == "api" and parts[1] == "channels" and parts[3] == "logo":
@@ -230,6 +245,30 @@ class Handler(BaseHTTPRequestHandler):
 
         self._send_json(404, {"detail": "not found"})
 
+    def _send_live_ts(self):
+        # 実APIと同じ連続TS。HLSで代用せず、188byte境界の塊を素材尺に合わせて流す。
+        # 180秒で終了する有限fixtureで、切断時はその接続の送出だけを終える。
+        self.send_response(200)
+        self.send_header("Content-Type", "video/mp2t")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            for name in SEGMENT_FILES:
+                with open(os.path.join(MEDIA_DIR, name), "rb") as stream:
+                    body = stream.read()
+                started = time.monotonic()
+                for offset in range(0, len(body), 188 * 128):
+                    chunk = body[offset:offset + 188 * 128]
+                    self.wfile.write(("%x\r\n" % len(chunk)).encode() + chunk + b"\r\n")
+                    self.wfile.flush()
+                    deadline = started + 6 * min(len(body), offset + len(chunk)) / len(body)
+                    time.sleep(max(0, deadline - time.monotonic()))
+            self.wfile.write(b"0\r\n\r\n")
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def do_PUT(self):
         parsed = urlparse(self.path)
         parts = [p for p in parsed.path.split("/") if p != ""]
@@ -260,6 +299,7 @@ def main():
     parser.add_argument("port", type=int, nargs="?", default=18080)
     parser.add_argument("--fmp4", action="store_true", help="Enable opt-in fMP4 fixture responses")
     parser.add_argument("--audio", action="store_true", help="Use the controlled AAC alternative with --fmp4")
+    parser.add_argument("--lifecycle", action="store_true", help="Enable two live channels and paced MPEG-TS")
     args = parser.parse_args()
     if args.audio and not args.fmp4:
         parser.error("--audio requires --fmp4")
@@ -267,6 +307,7 @@ def main():
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.supports_fmp4 = args.fmp4
     server.fixture_audio = args.audio
+    server.lifecycle = args.lifecycle
     print("Stub server listening on http://127.0.0.1:%d" % port, flush=True)
     try:
         server.serve_forever()

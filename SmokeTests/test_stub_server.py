@@ -55,6 +55,25 @@ class StubContractTests(unittest.TestCase):
         self.assertEqual(headers['Content-Type'], 'image/png')
         self.assertTrue(thumbnail.startswith(b'\x89PNG\r\n\x1a\n'))
 
+    def test_live_channel_contract_and_paced_transport_stream(self):
+        self.server.lifecycle = True
+        try:
+            _, body = self.fetch('/api/channels')
+            self.assertEqual([c['display_channel_id'] for c in json.loads(body)['GR']], ['gr001', 'gr002'])
+            for channel in ('gr001', 'gr002'):
+                with urlopen(self.base + '/api/streams/live/' + channel + '/720p/mpegts', timeout=3) as response:
+                    self.assertEqual(response.headers['Content-Type'], 'video/mp2t')
+                    self.assertIsNone(response.headers.get('Content-Length'))
+                    packets = response.read(188 * 3)
+                    self.assertEqual(len(packets), 188 * 3)
+                    self.assertTrue(all(packets[offset] == 0x47 for offset in (0, 188, 376)))
+            _, first = self.fetch('/api/videos/1')
+            _, second = self.fetch('/api/videos/2')
+            self.assertEqual(json.loads(first)['next_episode_id'], 2)
+            self.assertEqual(json.loads(second)['previous_episode_id'], 1)
+        finally:
+            self.server.lifecycle = False
+
     def test_hls_playlist_resolves_real_transport_streams(self):
         path = '/api/streams/video/1/720p-hevc/playlist?session_id=contract'
         headers, body = self.fetch(path)
