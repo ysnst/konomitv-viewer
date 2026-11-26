@@ -50,3 +50,9 @@ UIイベントの内部通知順序は実装確認だけでは保証せずnative
 旧main・integration/upstream-next・0.34ツリー・review-0.26の基準ref・旧IPA・タグ/リリースを維持。開発はcodex/0.26-stage-a。Bundle ID/Keychain service/保存キー/利用者データを変えない。既存LiveContainerを無断置換しない。
 
 [オフライン引継ぎ](rebuild/offline-research.md) / [次版の実機確認](testing/stage-a.md)
+
+## 段階Aの成果物
+
+候補0.36/build36、source `eef1a0793ecc53247b30fc86993df20ef3b0660e`。Release/Swift各群・UI3件・HTTP/relay・Python・JPEG/EXIF/Pillow・lintが成功。警告は87件/新規0。UI試験基盤のSDK・geometry・局名・AX再探索の不備は個別に修正し、アプリコードと区別した。途中0.35はseek終了欠落で不採用・保存。
+
+実機結果はまだない。[次のチェックリスト](testing/stage-a.md)でAを確認し、完了前にB〜Fの変更を重ねない。0.34案と旧main/branch/IPAは保存したまま。

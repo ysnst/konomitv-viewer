@@ -1,6 +1,10 @@
 # 0.26開発・段階Aの次版実機チェック
 
-候補IPAの版/完全SHA/hash/Actionsはビルド照合後に報告書へ記録する。**全項目は新版として実機未確認**。0.26の31件を新版へ転記しない。0.26の既存IPA・LiveContainer containerを削除せず、既存データ保持も別に確認する。
+候補は **0.36 / build 36**。ビルド元 `eef1a0793ecc53247b30fc86993df20ef3b0660e`、SHA-256 `ad723d6315a5a18a72be4ec2d99ef505925ac731393b0fc8361d98ef24e41cb8`。
+
+[Release成功](https://github.com/ysnst/konomitv-viewer/actions/runs/45813722359)、[UI/relay成功](https://github.com/ysnst/konomitv-viewer/actions/runs/45817268258)。UI3件/失敗0、通常/全画面live tap、録画の上部tap・track tap・drag・領域外終了・全画面seekと復帰・直接cancel契約を確認。遅着spriteも非表示。UI試験harnessは別コミットだがアプリ本体はIPA元と同一。実OSによるtouchCancelやPiPの実機成功を意味しない。
+
+Release警告87件・新規0。既存Swift6群、Python9件、合成HTTP fixture2件、実relay HTTP契約、JPEG/EXIF・Pillow、actionlint/diffが成功。0.35は途中案がnative seek試験で不十分だったため不採用で、既存成果物として保存した。**全項目は新版として実機未確認**。0.26の31件を新版へ転記しない。0.26の既存IPA・LiveContainer containerを削除せず、既存データ保持も別に確認する。
 
 - [ ] 生放送を開始し映像/音声を確認。映像tapで操作帯だけ切り替わり再生継続。
 - [ ] 通常/全画面で複数回tap、操作帯の自動非表示/再表示、一時停止/再開。
