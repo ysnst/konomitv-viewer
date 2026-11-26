@@ -17,6 +17,7 @@ final class SmokeTests: XCTestCase {
             "-viewer_show_captions", "YES",
             "-viewer_show_comments", "YES",
             "-viewer_repeat_video_playback", "NO",
+            "-viewer_playback_diagnostics",
         ]
         app.launch()
     }

@@ -4,6 +4,11 @@ name: Smoke Tests
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      compare_baseline:
+        description: Compare 0.27 playback with the current source
+        type: boolean
+        default: false
   push:
     branches-ignore: [main]
 
@@ -12,7 +17,11 @@ permissions:
 
 jobs:
   smoke-tests:
-    name: Simulator smoke tests
+    strategy:
+      fail-fast: false
+      matrix:
+        revision: ${{ fromJSON(inputs.compare_baseline && '["current", "baseline-027"]' || '["current"]') }}
+    name: Simulator smoke tests (${{ matrix.revision }})
     # 本家の成功済み実行と同じApple Silicon環境。IPAのIntelビルドとは分離する。
     runs-on: macos-latest
     timeout-minutes: 45
@@ -24,6 +33,23 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      # 比較元もproject/Podfileを含む全体を取得し、同じ試験・診断だけを適用する。
+      - name: Checkout application source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.revision == 'baseline-027' && '1256f686f3989ab339bf003e9052be0e17acd0c2' || github.sha }}
+          path: app-source
+          persist-credentials: false
+
+      - name: Instrument disposable simulator source
+        run: |
+          mkdir -p artifacts/smoke
+          cp KonomiTV-Viewer/KonomiTV-ViewerUITests/SmokeTests.swift app-source/KonomiTV-Viewer/KonomiTV-ViewerUITests/SmokeTests.swift
+          python3 SmokeTests/instrument_playback.py app-source
+          git rev-parse HEAD > artifacts/smoke/harness-sha.log
+          git -C app-source rev-parse HEAD > artifacts/smoke/source-sha.log
+          shasum -a 256 SmokeTests/instrument_playback.py SmokeTests/media/* > artifacts/smoke/fixture-hashes.log
 
       - name: Prepare diagnostics
         run: |
@@ -62,10 +88,12 @@ jobs:
           PY
 
       - name: Install CocoaPods dependencies
-        working-directory: KonomiTV-Viewer
+        working-directory: app-source/KonomiTV-Viewer
         run: |
           set -o pipefail
-          pod install 2>&1 | tee ../artifacts/smoke/pod-install.log
+          pod install 2>&1 | tee ../../artifacts/smoke/pod-install.log
+          shasum -a 256 Podfile.lock > ../../artifacts/smoke/dependency-hashes.log
+          find Pods -type f -name VLCKit -exec shasum -a 256 {} \; >> ../../artifacts/smoke/dependency-hashes.log
 
       # 既存デバイスを借用せず、利用可能な最新 iOS runtime に専用デバイスを作る。
       - name: Create owned simulator
@@ -101,7 +129,7 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild build-for-testing \
-            -workspace KonomiTV-Viewer/KonomiTV-Viewer.xcworkspace \
+            -workspace app-source/KonomiTV-Viewer/KonomiTV-Viewer.xcworkspace \
             -scheme SmokeTests -sdk iphonesimulator \
             -destination "platform=iOS Simulator,id=$SIM_UDID" \
             -derivedDataPath artifacts/smoke/DerivedData \
@@ -113,7 +141,7 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild test-without-building \
-            -workspace KonomiTV-Viewer/KonomiTV-Viewer.xcworkspace \
+            -workspace app-source/KonomiTV-Viewer/KonomiTV-Viewer.xcworkspace \
             -scheme SmokeTests -sdk iphonesimulator \
             -destination "platform=iOS Simulator,id=$SIM_UDID" \
             -derivedDataPath artifacts/smoke/DerivedData \
@@ -121,6 +149,17 @@ jobs:
             -parallel-testing-enabled NO \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             2>&1 | tee artifacts/smoke/test.log
+
+      - name: Collect playback diagnostics
+        if: always()
+        run: |
+          if [ -n "$SIM_UDID" ]; then
+            container=$(xcrun simctl get_app_container "$SIM_UDID" jp.tatsuya0902.konomitv.viewer data 2>/dev/null || true)
+            if [ -n "$container" ] && [ -f "$container/Documents/smoke-playback.log" ]; then
+              cp "$container/Documents/smoke-playback.log" artifacts/smoke/playback.log
+              cat artifacts/smoke/playback.log
+            fi
+          fi
 
       # 画像は UI テストが app.screenshot() で採取した attachment だけを取り出す。
       - name: Export test attachments
@@ -195,7 +234,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smoke-test-results
+          name: smoke-test-results-${{ matrix.revision }}
           path: |
             artifacts/smoke/*.log
             artifacts/smoke/*.pid
