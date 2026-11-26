@@ -169,11 +169,15 @@ final class SmokeTests: XCTestCase {
 
     private func tapVideoArea() {
         let overlay = app.otherElements["player.captionOverlay"]
-        if overlay.exists {
-            let window = try? app.windows.firstMatch.snapshot().frame
-            let video = try? overlay.snapshot().frame
-            print("Reveal controls: device=\(XCUIDevice.shared.orientation.rawValue), window=\(String(describing: window)), video=\(String(describing: video)), normalized=(0.5,0.12)")
-            overlay.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
+        let window = app.windows.firstMatch
+        if let windowFrame = try? window.snapshot().frame,
+           let video = try? overlay.snapshot().frame, windowFrame.contains(video) {
+            // 非操作の字幕レイヤーを座標の基準にせず、windowを基準に映像左端寄りを押す。
+            // このfixtureでは前の番組が無効で、中央の再生ボタン・ヘッダー・下端バーからも離れる。
+            let point = CGPoint(x: video.minX + video.width * 0.08, y: video.midY)
+            print("Reveal controls: device=\(XCUIDevice.shared.orientation.rawValue), window=\(windowFrame), video=\(video), point=\(point)")
+            window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+                dx: point.x - windowFrame.minX, dy: point.y - windowFrame.minY)).tap()
         }
     }
 
