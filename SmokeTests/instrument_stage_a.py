@@ -22,7 +22,6 @@ RECORD = r'''
         seekSlider.accessibilityLabel = "scrub=\(isScrubbing) preview=\(!seekPreviewView.isHidden) density=\(!excitementStrip.isHidden) begin=\(stageBeginCount) end=\(stageEndCount)"
         playPauseButton.accessibilityIdentifier = "stage.playPause"
         playPauseButton.accessibilityValue = playbackIntentPlaying ? "playing" : "paused"
-        captionOverlayView.accessibilityLabel = "time=\(actual.isFinite ? actual : -1) intent=\(playbackIntentPlaying) temporaryPauses=\(stageTemporaryPauses) controls=\(controlsVisible) " + (seekSlider.accessibilityLabel ?? "")
         seekPreviewView.isAccessibilityElement = true
         seekPreviewView.accessibilityIdentifier = "stage.preview"
         excitementStrip.isAccessibilityElement = true
@@ -33,6 +32,7 @@ RECORD = r'''
         playing = vlcPlayer?.isPlaying ?? false
         video = vlcPlayer?.hasVideoOut ?? false
 #endif
+        captionOverlayView.accessibilityLabel = "time=\(actual.isFinite ? actual : -1) playing=\(playing) intent=\(playbackIntentPlaying) temporaryPauses=\(stageTemporaryPauses) controls=\(controlsVisible) " + (seekSlider.accessibilityLabel ?? "")
         stageWrite(["kind":"recorded", "event":event,"time":actual.isFinite ? actual : -1,
                     "playing":playing,"intent":playbackIntentPlaying,"temporaryPauses":stageTemporaryPauses,"video":video,"scrub":isScrubbing,
                     "preview":!seekPreviewView.isHidden,"density":!excitementStrip.isHidden,"begin":stageBeginCount,"end":stageEndCount])

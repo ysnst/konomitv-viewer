@@ -51,7 +51,7 @@ final class SmokeTests: XCTestCase {
     func testLatestPauseDuringScrubContract() throws {
         openRecording()
         XCTAssertTrue(app.buttons["stage.playPause"].waitForExistence(timeout: 40))
-        XCTAssertTrue(waitForSeekEnd(begin: 1, end: 1))
+        XCTAssertTrue(waitForSeekEnd(begin: 1, end: 1, timeout: 40))
         assertClockPaused()
     }
     func testLatestPlayDuringScrubContract() throws {
@@ -106,10 +106,11 @@ final class SmokeTests: XCTestCase {
     private func assertClockPaused() {
         // 既存clock観測と同じ実時計を3秒観測し、表示用の先行位置を使用しない。
         let deadline = Date().addingTimeInterval(5)
-        while Date() < deadline, app.buttons["stage.playPause"].value as? String != "paused" {
+        while Date() < deadline, snapshot("stage.video")?.1.contains("playing=false intent=false ") != true {
             Thread.sleep(forTimeInterval: 0.2)
         }
         XCTAssertEqual(app.buttons["stage.playPause"].value as? String, "paused")
+        XCTAssertTrue(snapshot("stage.video")?.1.contains("playing=false intent=false ") == true)
         guard let start = actualClock() else { XCTFail("Actual clock missing"); return }
         let end = Date().addingTimeInterval(3)
         while Date() < end {
@@ -173,8 +174,8 @@ final class SmokeTests: XCTestCase {
         }
         return false
     }
-    private func waitForSeekEnd(begin: Int, end: Int) -> Bool {
-        let deadline = Date().addingTimeInterval(5)
+    private func waitForSeekEnd(begin: Int, end: Int, timeout: TimeInterval = 5) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if let (_, state) = snapshot("stage.video"),
                state.hasSuffix("scrub=false preview=false density=false begin=\(begin) end=\(end)") { return true }
