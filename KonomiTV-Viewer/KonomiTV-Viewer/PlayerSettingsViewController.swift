@@ -55,7 +55,6 @@ class ViewerNavigationController: UINavigationController {
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
         topViewController?.supportedInterfaceOrientations ?? super.supportedInterfaceOrientations
     }
-    override var shouldAutorotate: Bool { topViewController?.shouldAutorotate ?? true }
     override var childForStatusBarHidden: UIViewController? { topViewController }
     override var childForHomeIndicatorAutoHidden: UIViewController? { topViewController }
 }

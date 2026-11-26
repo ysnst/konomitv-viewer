@@ -41,3 +41,5 @@ af52d19の表示追従は時刻/バー/操作表示だけに採用し、実位�
 通常の情報欄は通常映像位置のLayoutGuideを基準とし、全画面で映像を広げても非表示の情報欄へ負の高さを要求しない。全画面のシーク/操作はSafe Areaへ合わせる。設定は同じ所有元のisFullscreenで下/右を切り替え、入退出前に閉じる。ナビバーは通常も隠したままで、向き/ステータスバー/ホームインジケーターを親へ伝える。PiPで画面を離れる場合は共通の退出処理で制約とタブも戻し、PiPの所有者とnative出力は維持する。
 
 独立レビューを配置/回転/設定/BMLと、再生寿命/PiP/字幕/撮影に分けた。生放送の隠れたリモコンに通常用の「映像下」制約が残る問題を修正し、映像制約を切り替える前に解除、後で適切な通常/右側配置へ再構成する。再レビューで修正必須指摘なし。実機画面の取得はできず、回転・復帰・BML・全画面中の画質変更・字幕付き撮影の座標は実機未確認。
+
+実行25のRelease/各Swiftテストは成功し、IPA 0.25も取得・照合した。ただし親コンテナに追加したshouldAutorotate転送で非推奨警告が2件増えた。対応対象はiOS16以降であり、[Appleの仕様](https://developer.apple.com/documentation/uikit/uiviewcontroller/shouldautorotate)に従い、新設した2つの転送だけを除去する。既定の回転許可と、supportedInterfaceOrientationsの転送/setNeedsUpdateOfSupportedInterfaceOrientationsによる制御は維持する。最終版はこの修正を再ビルドして別保存する。

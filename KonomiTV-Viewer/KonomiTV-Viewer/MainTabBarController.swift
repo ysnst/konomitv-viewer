@@ -27,7 +27,6 @@ final class MainTabBarController: UIViewController {
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
         selectedTabViewController?.supportedInterfaceOrientations ?? super.supportedInterfaceOrientations
     }
-    override var shouldAutorotate: Bool { selectedTabViewController?.shouldAutorotate ?? true }
     override var childForStatusBarHidden: UIViewController? { selectedTabViewController }
     override var childForHomeIndicatorAutoHidden: UIViewController? { selectedTabViewController }
 
