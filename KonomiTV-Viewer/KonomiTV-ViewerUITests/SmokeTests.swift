@@ -42,7 +42,7 @@ final class SmokeTests: XCTestCase {
         attachScreenshot("02-normal-playback")
 
         let enterButton = app.buttons["全画面"]
-        tapControlsButton(enterButton, timeout: 20)
+        tapControlsButton("全画面", timeout: 20)
         let exitButton = app.buttons["全画面を解除"]
         // 端末は縦向きのまま、ボタン自身による画面回転を確認する。
         XCTAssertTrue(waitForVideoGeometry(landscape: true, timeout: 15), "Fullscreen geometry did not settle")
@@ -51,7 +51,7 @@ final class SmokeTests: XCTestCase {
         XCTAssertTrue(waitForPlaybackToAdvance(timeout: 15), "Playback clock did not advance in fullscreen")
         attachScreenshot("03-fullscreen")
 
-        tapControlsButton(exitButton, timeout: 20)
+        tapControlsButton("全画面を解除", timeout: 20)
         // 解除状態と縦画面復帰を確認し、端末の回転操作で復帰不良を隠さない。
         XCTAssertTrue(enterButton.waitForExistence(timeout: 15), "Fullscreen did not close")
         XCTAssertTrue(app.staticTexts["番組情報"].waitForExistence(timeout: 15), "Info tabs did not return")
@@ -147,24 +147,29 @@ final class SmokeTests: XCTestCase {
         return element.exists && element.isHittable
     }
 
-    private func tapControlsButton(_ element: XCUIElement, timeout: TimeInterval) {
+    private func tapControlsButton(_ label: String, timeout: TimeInterval) {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if element.exists && element.isHittable {
-                let window = app.windows.firstMatch
-                if let windowFrame = try? window.snapshot().frame,
-                   let button = try? element.snapshot().frame,
-                   button.width > 0, button.height > 0, windowFrame.contains(button) {
-                    // ボタンと再表示操作の座標基準を揃え、実frameの中心へ送る。
+            // 複数のexists/frame取得で自動非表示の期限を消費しない。同じsnapshotの座標を使う。
+            if let snapshot = try? app.snapshot(),
+               let windowFrame = snapshot.children.first(where: { $0.elementType == .window })?.frame {
+                var pending: [any XCUIElementSnapshot] = [snapshot]
+                var button: CGRect?
+                while let element = pending.popLast() {
+                    if element.elementType == .button, element.label == label, element.isEnabled {
+                        button = element.frame
+                        break
+                    }
+                    pending.append(contentsOf: element.children)
+                }
+                if let button, button.width > 0, button.height > 0, windowFrame.contains(button),
+                   app.buttons[label].isHittable {
                     print("Tap control: window=\(windowFrame), button=\(button)")
-                    window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+                    app.windows.firstMatch.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
                         dx: button.midX - windowFrame.minX, dy: button.midY - windowFrame.minY)).tap()
                     return
                 }
             }
-            // 回転中の一時的な非操作状態を待ってから、alpha で隠れた操作帯も出し直す。
-            Thread.sleep(forTimeInterval: 0.5)
-            if element.exists && element.isHittable { continue }
             tapVideoArea()
             Thread.sleep(forTimeInterval: 0.4)
         }
@@ -172,15 +177,19 @@ final class SmokeTests: XCTestCase {
     }
 
     private func tapVideoArea() {
-        let overlay = app.otherElements["player.captionOverlay"]
-        let window = app.windows.firstMatch
-        if let windowFrame = try? window.snapshot().frame,
-           let video = try? overlay.snapshot().frame, windowFrame.contains(video) {
-            // 非操作の字幕レイヤーを座標の基準にせず、windowを基準に映像左端寄りを押す。
-            // このfixtureでは前の番組が無効で、中央の再生ボタン・ヘッダー・下端バーからも離れる。
+        if let snapshot = try? app.snapshot(),
+           let windowFrame = snapshot.children.first(where: { $0.elementType == .window })?.frame {
+            var pending: [any XCUIElementSnapshot] = [snapshot]
+            var video: CGRect?
+            while let element = pending.popLast() {
+                if element.identifier == "player.captionOverlay" { video = element.frame; break }
+                pending.append(contentsOf: element.children)
+            }
+            guard let video, video.width > 0, video.height > 0, windowFrame.contains(video) else { return }
+            // 中央の再生ボタン・ヘッダー・下端バーを避け、親surfaceの表示切替を操作する。
             let point = CGPoint(x: video.minX + video.width * 0.08, y: video.midY)
-            print("Reveal controls: device=\(XCUIDevice.shared.orientation.rawValue), window=\(windowFrame), video=\(video), point=\(point)")
-            window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            print("Reveal controls: window=\(windowFrame), video=\(video), point=\(point)")
+            app.windows.firstMatch.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
                 dx: point.x - windowFrame.minX, dy: point.y - windowFrame.minY)).tap()
         }
     }
