@@ -14,6 +14,8 @@ final class SmokeTests: XCTestCase {
                                "-viewer_show_captions", "YES", "-viewer_show_comments", "YES",
                                "-viewer_repeat_video_playback", "NO", "-stage_a_diagnostics"]
         if name.contains("CancelTracking") { app.launchArguments += ["-stage_a_cancel_contract"] }
+        if name.contains("LatestPause") { app.launchArguments += ["-stage_a_latest_pause"] }
+        if name.contains("LatestPlay") { app.launchArguments += ["-stage_a_latest_play"] }
         app.launch()
     }
     override func tearDownWithError() throws {
@@ -45,6 +47,18 @@ final class SmokeTests: XCTestCase {
         tapControl("全画面を解除")
         XCTAssertTrue(waitForGeometry(landscape: false), "Portrait did not return")
         XCTAssertTrue(waitForClock(timeout: 15), "Recorded playback stopped after fullscreen")
+    }
+    func testLatestPauseDuringScrubContract() throws {
+        openRecording()
+        XCTAssertTrue(app.buttons["stage.playPause"].waitForExistence(timeout: 40))
+        XCTAssertTrue(waitForSeekEnd(begin: 1, end: 1))
+        assertClockPaused()
+    }
+    func testLatestPlayDuringScrubContract() throws {
+        openRecording()
+        XCTAssertTrue(waitForClock(timeout: 40))
+        XCTAssertTrue(waitForSeekEnd(begin: 1, end: 1))
+        XCTAssertEqual(app.buttons["stage.playPause"].value as? String, "playing")
     }
     func testSeekPreservesPlaybackIntent() throws {
         openRecording()

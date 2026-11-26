@@ -286,7 +286,6 @@ final class PlayerViewController: UIViewController {
     private var qualityBeforeAudioOnly: String?
     private var audioOnly = false
     private var isScrubbing = false
-    private var wasPlayingBeforeScrub = false
     /// CM自動スキップの判定用。前回の時刻チェックで見た再生位置。
     /// 「CM 区間の開始を跨いだ瞬間」だけを拾うため、シークしたときは
     /// 移動先の位置で上書きする (区間の真ん中へ移った直後は発動させない)。
@@ -3165,7 +3164,7 @@ final class PlayerViewController: UIViewController {
         // 位置表示とアイコンだけを再生意図へ合わせる。実再生状態の読み取りは変更しない。
         playbackStart.inFlight ? !playbackStart.pauseRequested
             : (playbackIntentPlaying && (isCurrentlyPlaying()
-                || activeSeekDisplayTarget(realPosition: currentPosition()) != nil))
+                || isScrubbing || activeSeekDisplayTarget(realPosition: currentPosition()) != nil))
     }
 
     private func updatePlayPauseIcon() {
@@ -4129,8 +4128,9 @@ final class PlayerViewController: UIViewController {
         beginCaptionSeek()
         isScrubbing = true
         excitementStrip.isHidden = excitementDensity == nil || (isFullscreen && !SettingsStore.shared.showExcitementInFullscreen)
-        wasPlayingBeforeScrub = playbackIntentPlaying
-        pauseEngine(isUserInitiated: false)
+        // スクラブは表示位置だけを先行させ、再生/一時停止の意図を変えない。
+        // VLCのpause/playは別queueへ送られるため、短いtapでもseekと競合する
+        // 一時停止・即時再開を発行しない。明示的な再生操作は従来の入口へ任せる。
         hideTimer?.invalidate()
         hideTimer = nil
         scrubChanged()
@@ -4152,16 +4152,8 @@ final class PlayerViewController: UIViewController {
         clearScrubPresentation()
         let target = Double(seekSlider.value) * effectiveDuration
         seek(to: target)
-        if wasPlayingBeforeScrub, playbackIntentPlaying {
-            playAtCurrentRate()
-#if canImport(VLCKit)
-            // バーを動かすために一時的に止めていただけなので、飛び先で
-            // 止まったままになってしまった場合は、スキップと同じく
-            // 再開の対象にする。
-            vlcResumeAfterSeek = true
-#endif
-            chaseUserPaused = false
-        }
+        // 再開判断はseek完了の共通処理へ任せる。操作開始時の状態を
+        // 書き戻さず、待機中の再生/一時停止を含む最新の利用者操作を保つ。
         scheduleHideControls()
     }
 

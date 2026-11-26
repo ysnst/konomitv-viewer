@@ -38,8 +38,21 @@ RECORD = r'''
                     "preview":!seekPreviewView.isHidden,"density":!excitementStrip.isHidden,"begin":stageBeginCount,"end":stageEndCount])
     }
     private func stageMaybeCancelContract() {
-        guard ProcessInfo.processInfo.arguments.contains("-stage_a_cancel_contract"),
-              !stageCancellationApplied, currentPosition() > 1 else { return }
+        let arguments = ProcessInfo.processInfo.arguments
+        guard !stageCancellationApplied, currentPosition() > 1 else { return }
+        if arguments.contains("-stage_a_latest_pause") || arguments.contains("-stage_a_latest_play") {
+            stageCancellationApplied = true
+            // nativeタッチとは別の契約。実所有元へ開始→最新操作→終了を同じturnで渡す。
+            if arguments.contains("-stage_a_latest_play") { pauseEngine() }
+            scrubBegan()
+            seekSlider.value = 0.5
+            if arguments.contains("-stage_a_latest_pause") { pauseEngine() }
+            else { playAtCurrentRate() }
+            scrubEnded()
+            stageState("latest-intent-contract")
+            return
+        }
+        guard arguments.contains("-stage_a_cancel_contract") else { return }
         stageCancellationApplied = true
         // 実OSのtouchCancelではなく、実UIKit overrideと所有元の結線を直接検証する別契約。
         scrubBegan()
