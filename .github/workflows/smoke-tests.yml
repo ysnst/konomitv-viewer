@@ -11,6 +11,9 @@ permissions:
   contents: read
 
 jobs:
+  relay-contracts:
+    uses: ./.github/workflows/relay-tests.yml
+
   smoke-tests:
     name: Upstream stage 0 simulator smoke
     runs-on: macos-latest

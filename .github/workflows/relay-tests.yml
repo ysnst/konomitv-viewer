@@ -1,0 +1,30 @@
+name: Relay contracts (shared)
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    name: Actual upstream relay HTTP contracts
+    runs-on: macos-latest
+    timeout-minutes: 10
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      TZ: Asia/Tokyo
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test actual relay and extractors
+        run: python3 scripts/run-relay-contract-tests.py
+      - name: Upload relay evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-contracts
+          path: artifacts/relay-contracts/
+          if-no-files-found: error
