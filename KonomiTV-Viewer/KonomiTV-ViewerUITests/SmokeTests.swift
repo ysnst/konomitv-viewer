@@ -54,7 +54,7 @@ final class SmokeTests: XCTestCase {
         let tab = app.descendants(matching: .any)["テレビをみる"].firstMatch
         XCTAssertTrue(tab.waitForExistence(timeout: 30))
         tab.tap()
-        let channel = app.staticTexts["段階A生放送"].firstMatch
+        let channel = app.staticTexts["Ch: 001 段階A生放送"].firstMatch
         XCTAssertTrue(channel.waitForExistence(timeout: 30))
         channel.tap()
         XCTAssertTrue(waitForClock(timeout: 40), "Live VLC clock did not advance")
