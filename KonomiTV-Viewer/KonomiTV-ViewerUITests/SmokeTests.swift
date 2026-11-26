@@ -46,6 +46,64 @@ final class SmokeTests: XCTestCase {
         XCTAssertTrue(waitForGeometry(landscape: false), "Portrait did not return")
         XCTAssertTrue(waitForClock(timeout: 15), "Recorded playback stopped after fullscreen")
     }
+    func testSeekPreservesPlaybackIntent() throws {
+        openRecording()
+        XCTAssertTrue(waitForClock(timeout: 40))
+        // 再生中のtap/dragは既存試験でも実時計の継続を確認する。
+        performSeek(targetRatio: 0.3) { self.seekPoint(0.3).tap() }
+        XCTAssertTrue(snapshot("stage.video")?.1.contains("temporaryPauses=0 ") == true,
+                      "Scrubbing issued an asynchronous temporary pause")
+        tapControl("stage.playPause")
+        assertClockPaused()
+        performPausedSeek(targetRatio: 0.65) { self.seekPoint(0.65).tap() }
+        performPausedSeek(targetRatio: 0.4) {
+            self.seekPoint(0.6).press(forDuration: 0.2, thenDragTo: self.seekPoint(0.4))
+        }
+        // 最新の明示的な再生操作の後、連続したnative入力でも継続する。
+        tapControl("stage.playPause")
+        XCTAssertTrue(waitForClock(timeout: 15))
+        guard let counts = prepareSeekInput() else { XCTFail("Seek geometry unavailable"); return }
+        seekPoint(0.5).tap()
+        seekPoint(0.7).tap()
+        XCTAssertTrue(waitForSeekEnd(begin: counts.0 + 2, end: counts.1 + 2))
+        XCTAssertTrue(waitForClock(timeout: 15), "Consecutive seeks did not continue playback")
+        XCTAssertTrue(snapshot("stage.video")?.1.contains("temporaryPauses=0 ") == true)
+    }
+    private func performPausedSeek(targetRatio: CGFloat, action: () -> Void) {
+        guard let counts = prepareSeekInput() else { XCTFail("Seek geometry unavailable"); return }
+        action()
+        XCTAssertTrue(waitForSeekEnd(begin: counts.0 + 1, end: counts.1 + 1))
+        let deadline = Date().addingTimeInterval(15)
+        var reached = false
+        while Date() < deadline {
+            if let actual = actualClock(), abs(actual - Double(targetRatio) * 180) <= 6 {
+                reached = true; break
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        XCTAssertTrue(reached, "Paused engine did not reach seek target")
+        assertClockPaused()
+    }
+    private func actualClock() -> Double? {
+        guard let label = snapshot("stage.video")?.1,
+              let field = label.split(separator: " ").first else { return nil }
+        return Double(field.dropFirst(5))
+    }
+    private func assertClockPaused() {
+        // 既存clock観測と同じ実時計を3秒観測し、表示用の先行位置を使用しない。
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline, app.buttons["stage.playPause"].value as? String != "paused" {
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        XCTAssertEqual(app.buttons["stage.playPause"].value as? String, "paused")
+        guard let start = actualClock() else { XCTFail("Actual clock missing"); return }
+        let end = Date().addingTimeInterval(3)
+        while Date() < end {
+            guard let actual = actualClock() else { XCTFail("Actual clock missing"); return }
+            XCTAssertLessThanOrEqual(abs(actual - start), 0.25, "Paused playback advanced")
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+    }
     func testSliderCancelTrackingContract() throws {
         // 公開API cancelTrackingを直接呼ぶ別契約。実OSのtouchCancelが起きたという主張はしない。
         openRecording()

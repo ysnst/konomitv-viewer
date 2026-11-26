@@ -7,6 +7,7 @@ RECORD = r'''
     private var stageSamples = 0
     private var stageBeginCount = 0
     private var stageEndCount = 0
+    private var stageTemporaryPauses = 0
     private var stageCancellationApplied = false
     private func stageState(_ event: String) {
         guard ProcessInfo.processInfo.arguments.contains("-stage_a_diagnostics"), stageSamples < 400 else { return }
@@ -19,7 +20,9 @@ RECORD = r'''
         captionOverlayView.accessibilityIdentifier = "stage.video"
         seekSlider.accessibilityIdentifier = "stage.seekSlider"
         seekSlider.accessibilityLabel = "scrub=\(isScrubbing) preview=\(!seekPreviewView.isHidden) density=\(!excitementStrip.isHidden) begin=\(stageBeginCount) end=\(stageEndCount)"
-        captionOverlayView.accessibilityLabel = "time=\(actual.isFinite ? actual : -1) controls=\(controlsVisible) " + (seekSlider.accessibilityLabel ?? "")
+        playPauseButton.accessibilityIdentifier = "stage.playPause"
+        playPauseButton.accessibilityValue = playbackIntentPlaying ? "playing" : "paused"
+        captionOverlayView.accessibilityLabel = "time=\(actual.isFinite ? actual : -1) intent=\(playbackIntentPlaying) temporaryPauses=\(stageTemporaryPauses) controls=\(controlsVisible) " + (seekSlider.accessibilityLabel ?? "")
         seekPreviewView.isAccessibilityElement = true
         seekPreviewView.accessibilityIdentifier = "stage.preview"
         excitementStrip.isAccessibilityElement = true
@@ -31,7 +34,7 @@ RECORD = r'''
         video = vlcPlayer?.hasVideoOut ?? false
 #endif
         stageWrite(["kind":"recorded", "event":event,"time":actual.isFinite ? actual : -1,
-                    "playing":playing,"video":video,"scrub":isScrubbing,
+                    "playing":playing,"intent":playbackIntentPlaying,"temporaryPauses":stageTemporaryPauses,"video":video,"scrub":isScrubbing,
                     "preview":!seekPreviewView.isHidden,"density":!excitementStrip.isHidden,"begin":stageBeginCount,"end":stageEndCount])
     }
     private func stageMaybeCancelContract() {
@@ -61,7 +64,9 @@ LIVE = r'''
         liveTimeLabel.accessibilityLabel = String(actual)
         captionOverlayView.isAccessibilityElement = true
         captionOverlayView.accessibilityIdentifier = "stage.video"
-        captionOverlayView.accessibilityLabel = "time=\(actual)"
+        playPauseButton.accessibilityIdentifier = "stage.playPause"
+        playPauseButton.accessibilityValue = playbackIntentPlaying ? "playing" : "paused"
+        captionOverlayView.accessibilityLabel = "intent=\(playbackIntentPlaying) temporaryPauses=\(stageTemporaryPauses) time=\(actual)"
         var playing = false
         var video = false
 #if canImport(VLCKit)
@@ -110,6 +115,9 @@ def instrument_recorded(text):
         assert text.count(anchor) == 1
         counter = '\n        stageBeginCount += 1' if method == 'scrubBegan' else ('\n        if isScrubbing { stageEndCount += 1 }' if method == 'scrubEnded' else '')
         text = text.replace(anchor, anchor + counter + '\n        defer { stageState("' + event + '") }', 1)
+    anchor = '    private func pauseEngine(isUserInitiated: Bool = true) {'
+    assert text.count(anchor) == 1
+    text = text.replace(anchor, anchor + '\n#if DEBUG && targetEnvironment(simulator)\n        if !isUserInitiated { stageTemporaryPauses += 1 }\n#endif', 1)
     anchor = '            self.spriteLoadState = .loaded'
     assert text.count(anchor) == 1
     text = text.replace(anchor, anchor + '\n            self.stageState("sprite-loaded")', 1)
