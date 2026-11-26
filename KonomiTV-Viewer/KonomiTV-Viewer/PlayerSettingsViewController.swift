@@ -232,7 +232,9 @@ final class PlayerSettingsViewController: UITableViewController {
 /// 下端基準なので、波形表示や操作行の高さにトラック位置が影響されない。
 final class PlayerSeekSlider: UISlider {
     // UIControlの終端イベント送信に依存せず、所有元へ終了/取消を一度通知する。
+    var onTrackingBegan: (() -> Void)?
     var onTrackingEnded: (() -> Void)?
+    private var gestureIsActive = false
     override init(frame: CGRect) {
         super.init(frame: frame)
         let image = UIGraphicsImageRenderer(size: CGSize(width: 11, height: 11)).image { _ in
@@ -241,6 +243,14 @@ final class PlayerSeekSlider: UISlider {
         }
         setThumbImage(image, for: .normal)
         setThumbImage(image, for: .highlighted)
+        // 0秒long-pressでtapとdragを同じ公開状態遷移へまとめる。
+        // 任意位置でUISliderの内部追跡が終わらないケースへ依存しない。
+        let tracking = UILongPressGestureRecognizer(target: self, action: #selector(trackGesture(_:)))
+        tracking.minimumPressDuration = 0
+        tracking.allowableMovement = .greatestFiniteMagnitude
+        // 標準追跡はbeginTrackingで拒否済み。自身の認識でcancelTrackingを誘発しない。
+        tracking.cancelsTouchesInView = false
+        addGestureRecognizer(tracking)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func trackRect(forBounds bounds: CGRect) -> CGRect {
@@ -252,32 +262,47 @@ final class PlayerSeekSlider: UISlider {
                       y: rect.midY - 5.5, width: 11, height: 11)
     }
     override func beginTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
-        // 任意位置のタップを受けるため、thumb命中を前提とするUISliderの追跡へ
-        // 途中だけ委譲しない。開始を受理し、終了/取消まで同じUIControl追跡を使う。
-        guard isEnabled, trackRect(forBounds: bounds).width > 0 else { return false }
-        updateValue(for: touch)
-        return true
+        // 標準touchDown/値変更と独自ジェスチャーを二重に動かさない。
+        false
     }
 
-    override func continueTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
-        updateValue(for: touch)
-        sendActions(for: .valueChanged)
-        return true
-    }
-
-    override func endTracking(_ touch: UITouch?, with event: UIEvent?) {
-        if let touch { updateValue(for: touch) }
-        onTrackingEnded?()
+    @objc private func trackGesture(_ gesture: UILongPressGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            guard isEnabled, trackRect(forBounds: bounds).width > 0 else { return }
+            gestureIsActive = true
+            updateValue(at: gesture.location(in: self))
+            onTrackingBegan?()
+        case .changed:
+            guard gestureIsActive else { return }
+            updateValue(at: gesture.location(in: self))
+            sendActions(for: .valueChanged)
+        case .ended:
+            guard gestureIsActive else { return }
+            updateValue(at: gesture.location(in: self))
+            finishTrackingGesture()
+        case .cancelled, .failed:
+            guard gestureIsActive else { return }
+            finishTrackingGesture()
+        default:
+            break
+        }
     }
 
     override func cancelTracking(with event: UIEvent?) {
+        // 公開cancelTrackingからも同じ終了経路へ。所有元が二重確定を除外する。
+        finishTrackingGesture()
+    }
+
+    private func finishTrackingGesture() {
+        gestureIsActive = false
         onTrackingEnded?()
     }
 
-    private func updateValue(for touch: UITouch) {
+    private func updateValue(at point: CGPoint) {
         let rect = trackRect(forBounds: bounds)
         guard rect.width > 0 else { return }
-        let ratio = min(1, max(0, (touch.location(in: self).x - rect.minX) / rect.width))
+        let ratio = min(1, max(0, (point.x - rect.minX) / rect.width))
         value = minimumValue + Float(ratio) * (maximumValue - minimumValue)
     }
 }

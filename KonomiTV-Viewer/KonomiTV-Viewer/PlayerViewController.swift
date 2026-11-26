@@ -935,7 +935,7 @@ final class PlayerViewController: UIViewController {
         captionButton.addTarget(self, action: #selector(toggleCaptions), for: .touchUpInside)
         updateCaptionButton()
 
-        seekSlider.addTarget(self, action: #selector(scrubBegan), for: .touchDown)
+        seekSlider.onTrackingBegan = { [weak self] in self?.scrubBegan() }
         seekSlider.addTarget(self, action: #selector(scrubChanged), for: .valueChanged)
         seekSlider.onTrackingEnded = { [weak self] in self?.scrubEnded() }
         stylePlayerSeekSlider(seekSlider)
