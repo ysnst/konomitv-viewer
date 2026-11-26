@@ -43,22 +43,17 @@ final class SmokeTests: XCTestCase {
         let enterButton = app.buttons["全画面"]
         tapControlsButton(enterButton, timeout: 20)
         let exitButton = app.buttons["全画面を解除"]
-        // まずボタン自身による画面回転を確認し、端末の回転操作で不具合を隠さない。
+        // 端末は縦向きのまま、ボタン自身による画面回転を確認する。
         XCTAssertTrue(waitForVideoGeometry(landscape: true, timeout: 15), "Fullscreen geometry did not settle")
-        // appの横向きと自動操作側の物理的な向きを合わせ、再表示タップの座標変換を揃える。
-        // interfaceのLandscape Rightに対するdevice orientationはLandscape Leftになる。
-        XCUIDevice.shared.orientation = .landscapeLeft
-        XCTAssertTrue(waitForVideoGeometry(landscape: true, timeout: 15), "Landscape automation geometry did not settle")
         XCTAssertTrue(waitForExistenceWithControls(exitButton, timeout: 15), "Fullscreen did not open")
         assertOverlays()
         XCTAssertTrue(waitForPlaybackToAdvance(timeout: 15), "Playback clock did not advance in fullscreen")
         attachScreenshot("03-fullscreen")
 
         tapControlsButton(exitButton, timeout: 20)
-        // 通常画面は端末の向きに追従するため、横向きのままで解除状態を先に確かめる。
+        // 解除状態と縦画面復帰を確認し、端末の回転操作で復帰不良を隠さない。
         XCTAssertTrue(enterButton.waitForExistence(timeout: 15), "Fullscreen did not close")
         XCTAssertTrue(app.staticTexts["番組情報"].waitForExistence(timeout: 15), "Info tabs did not return")
-        XCUIDevice.shared.orientation = .portrait
         XCTAssertTrue(waitForVideoGeometry(landscape: false, timeout: 15), "Portrait automation geometry did not settle")
         XCTAssertTrue(waitForExistenceWithControls(enterButton, timeout: 15), "Normal view did not return")
         assertOverlays()
@@ -155,8 +150,16 @@ final class SmokeTests: XCTestCase {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if element.exists && element.isHittable {
-                element.tap()
-                return
+                let window = app.windows.firstMatch
+                if let windowFrame = try? window.snapshot().frame,
+                   let button = try? element.snapshot().frame,
+                   button.width > 0, button.height > 0, windowFrame.contains(button) {
+                    // ボタンと再表示操作の座標基準を揃え、実frameの中心へ送る。
+                    print("Tap control: window=\(windowFrame), button=\(button)")
+                    window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+                        dx: button.midX - windowFrame.minX, dy: button.midY - windowFrame.minY)).tap()
+                    return
+                }
             }
             // 回転中の一時的な非操作状態を待ってから、alpha で隠れた操作帯も出し直す。
             Thread.sleep(forTimeInterval: 0.5)
