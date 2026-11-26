@@ -23,8 +23,9 @@ final class SmokeTests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
-        if let app = app, testRun?.hasSucceeded == false {
-            attachScreenshot("failure")
+        // tearDown中は実行結果が未確定のため、終了画像の名前で失敗と断定しない。
+        if app != nil {
+            attachScreenshot("final-state")
         }
         app?.terminate()
         app = nil
