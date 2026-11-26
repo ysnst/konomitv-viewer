@@ -117,13 +117,20 @@ final class SmokeTests: XCTestCase {
 
     /// 各状態で新たに基準値を取り、正の秒数へ実際に増加するまで待つ。
     private func waitForPlaybackToAdvance(timeout: TimeInterval) -> Bool {
-        let timeLabel = app.descendants(matching: .any)["player.currentTime"].firstMatch
         let deadline = Date().addingTimeInterval(timeout)
         var baseline: Int?
         while Date() < deadline {
-            // exists確認とlabel取得の間に自動非表示が入るため、同じsnapshotの値を読む。
-            // 取得中に消えた場合は期限内で再表示し、空文字を成功として扱わない。
-            if let snapshot = try? timeLabel.snapshot(), let seconds = playbackSeconds(snapshot.label) {
+            // 消えたlabelの検索リトライで長時間待たず、同じapp snapshotから有無と値を読む。
+            var text: String?
+            if let snapshot = try? app.snapshot() {
+                var pending: [any XCUIElementSnapshot] = [snapshot]
+                while let element = pending.popLast() {
+                    if element.identifier == "player.currentTime" { text = element.label; break }
+                    pending.append(contentsOf: element.children)
+                }
+            }
+            if let text = text, let seconds = playbackSeconds(text) {
+                print("Playback clock sample: seconds=\(seconds), baseline=\(String(describing: baseline))")
                 if let baseline = baseline, seconds > 0 && seconds > baseline { return true }
                 if baseline == nil { baseline = seconds }
             } else {

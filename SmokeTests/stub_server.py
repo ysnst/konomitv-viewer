@@ -18,8 +18,13 @@ from urllib.parse import urlparse, parse_qs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MEDIA_DIR = os.path.join(HERE, "media")
-# 画面遷移とスクリーンショット採取中に終端へ達しない長さを確保する。
-SEGMENT_COUNT = 30
+# 時刻が連続した長いfixtureを使い、短いTS反復による時計の巻き戻りを避ける。
+with open(os.path.join(MEDIA_DIR, "index.m3u8"), encoding="utf-8") as stream:
+    PLAYLIST_LINES = stream.read().splitlines()
+SEGMENT_FILES = [line for line in PLAYLIST_LINES if line and not line.startswith("#")]
+SEGMENT_COUNT = len(SEGMENT_FILES)
+FIXTURE_DURATION = sum(float(line.split(":", 1)[1].split(",", 1)[0])
+                       for line in PLAYLIST_LINES if line.startswith("#EXTINF:"))
 
 
 # 録画番組の材料 (形はアプリ側 Models.swift の読み取りに合わせる)。
@@ -28,8 +33,8 @@ PROGRAM_1 = {
     "recorded_video": {
         "id": 1,
         "status": "Recorded",
-        "duration": 180.0,
-        "file_size": 1408000,
+        "duration": FIXTURE_DURATION,
+        "file_size": sum(os.path.getsize(os.path.join(MEDIA_DIR, name)) for name in SEGMENT_FILES),
         "video_codec": "H.265",
         "video_resolution_width": 640,
         "video_resolution_height": 360,
@@ -48,7 +53,7 @@ PROGRAM_1 = {
     "is_partially_recorded": False,
     "start_time": "2026-11-20T19:00:00+09:00",
     "end_time": "2026-11-20T19:03:00+09:00",
-    "duration": 180.0,
+    "duration": FIXTURE_DURATION,
     "is_protected": False,
     "watched_ratio": 0.0,
     "recording_start_margin": 0.0,
@@ -82,20 +87,15 @@ EMPTY_CHANNELS = {"GR": [], "BS": [], "CS": [], "CATV": [], "SKY": [], "BS4K": [
 
 
 def playlist_body(session_id):
-    """元の3 segment を繰り返し、時刻の巻き戻りを discontinuity で明示する。"""
-    lines = [
-        "#EXTM3U",
-        "#EXT-X-VERSION:3",
-        "#EXT-X-TARGETDURATION:6",
-        "#EXT-X-MEDIA-SEQUENCE:0",
-        "#EXT-X-PLAYLIST-TYPE:VOD",
-    ]
-    for seq in range(SEGMENT_COUNT):
-        if seq > 0 and seq % 3 == 0:
-            lines.append("#EXT-X-DISCONTINUITY")
-        lines.append("#EXTINF:6.000000,")
-        lines.append("segment?session_id=%s&sequence=%d" % (session_id, seq))
-    lines.append("#EXT-X-ENDLIST")
+    """実際の分割尺と連続タイムスタンプを保持し、URIだけAPI形式へ置き換える。"""
+    lines = []
+    seq = 0
+    for line in PLAYLIST_LINES:
+        if line and not line.startswith("#"):
+            lines.append("segment?session_id=%s&sequence=%d" % (session_id, seq))
+            seq += 1
+        else:
+            lines.append(line)
     lines.append("")
     return "\n".join(lines).encode("utf-8")
 
@@ -197,10 +197,11 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         seq = int(query.get("sequence", ["0"])[0])
                     except ValueError:
-                        seq = 0
-                    seq = min(max(seq, 0), SEGMENT_COUNT - 1) % 3
-                    self._send_file(os.path.join(MEDIA_DIR, "seg%d.ts" % seq),
-                                    "video/MP2T")
+                        seq = -1
+                    if 0 <= seq < SEGMENT_COUNT:
+                        self._send_file(os.path.join(MEDIA_DIR, SEGMENT_FILES[seq]), "video/MP2T")
+                    else:
+                        self._send_json(404, {"detail": "not found"})
                     return
 
         self._send_json(404, {"detail": "not found"})

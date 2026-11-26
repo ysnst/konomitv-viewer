@@ -1,5 +1,6 @@
 """Fixture の HTTP 契約を実通信で確認する。実ユーザーのサーバーや素材は使わない。"""
 import json
+import hashlib
 from pathlib import Path
 import threading
 import unittest
@@ -60,19 +61,28 @@ class StubContractTests(unittest.TestCase):
         self.assertIn('#EXT-X-ENDLIST', playlist)
         segments = [line for line in playlist.splitlines() if line and not line.startswith('#')]
         self.assertEqual(len(segments), 30)
-        self.assertEqual(playlist.count("#EXT-X-DISCONTINUITY"), 9)
+        self.assertNotIn("#EXT-X-DISCONTINUITY", playlist)
+        durations = [float(line.split(':', 1)[1].split(',', 1)[0])
+                     for line in playlist.splitlines() if line.startswith('#EXTINF:')]
+        self.assertAlmostEqual(sum(durations), stub_server.PROGRAM_1['duration'], places=6)
+        self.assertGreaterEqual(sum(durations), 180)
+        hashes = set()
         for index, relative in enumerate(segments):
             headers, stream = self.fetch(urljoin(path, relative))
             self.assertEqual(headers['Content-Type'], 'video/MP2T')
-            self.assertEqual(stream, (Path(stub_server.MEDIA_DIR) / ('seg%d.ts' % (index % 3))).read_bytes())
+            self.assertEqual(stream, (Path(stub_server.MEDIA_DIR) / ('seg%d.ts' % index)).read_bytes())
+            hashes.add(hashlib.sha256(stream).digest())
             self.assertGreater(len(stream), 188)
             self.assertEqual(len(stream) % 188, 0)
             self.assertTrue(all(stream[offset] == 0x47 for offset in range(0, len(stream), 188)))
+        self.assertEqual(len(hashes), 30, 'Repeated transport streams must not reset the fixture clock')
         self.fetch('/api/streams/video/1/720p-hevc/keep-alive', method='PUT')
         self.fetch('/api/videos/1/watched', method='POST', body=b'{"position": 2}')
 
     def test_unknown_resource_fails(self):
-        for path in ('/unknown', '/api/videos/999', '/api/streams/video/999/720p-hevc/playlist'):
+        for path in ('/unknown', '/api/videos/999', '/api/streams/video/999/720p-hevc/playlist',
+                     '/api/streams/video/1/720p-hevc/segment?sequence=-1',
+                     '/api/streams/video/1/720p-hevc/segment?sequence=30'):
             with self.subTest(path=path):
                 with self.assertRaises(HTTPError) as error:
                     self.fetch(path)
