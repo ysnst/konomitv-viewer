@@ -128,6 +128,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('checkout', type=Path)
     args = parser.parse_args()
+    # 0.26はSDKROOT未指定のためscheme解決がMacとなる。試験コピーだけに明示する。
+    project = args.checkout / 'KonomiTV-Viewer/KonomiTV-Viewer.xcodeproj/project.pbxproj'
+    project.write_text(project.read_text().replace('PRODUCT_NAME = "$(TARGET_NAME)";',
+                       'PRODUCT_NAME = "$(TARGET_NAME)";\n\t\t\t\tSDKROOT = iphoneos;'), encoding='utf8')
     app = args.checkout / 'KonomiTV-Viewer/KonomiTV-Viewer'
     path = app / 'PlayerViewController.swift'
     path.write_text(instrument_recorded(path.read_text()).replace('private func stageWrite(', 'func stageWrite('), encoding='utf8')

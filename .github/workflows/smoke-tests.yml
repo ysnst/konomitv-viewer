@@ -197,10 +197,13 @@ jobs:
               else:
                   if group is not None:
                       os.killpg(pid, signal.SIGTERM)
+                  # macOSでは終了済みgroupへのkillpg(...,0)がEPERMとなる場合がある。
+                  # signalの成否だけでなく、実プロセス一覧から子を含むgroup消滅を確認する。
+                  def members():
+                      rows = subprocess.check_output(['ps', '-axo', 'pid=,pgid='], text=True).splitlines()
+                      return [row for row in rows if len(row.split()) == 2 and int(row.split()[1]) == pid]
                   for _ in range(50):
-                      try:
-                          os.killpg(pid, 0)
-                      except ProcessLookupError:
+                      if not members():
                           break
                       time.sleep(0.1)
                   else:
@@ -209,11 +212,10 @@ jobs:
                       except ProcessLookupError:
                           pass
                       time.sleep(0.5)
-                  try:
-                      os.killpg(pid, 0)
-                      failures.append('Stub process group still exists')
-                  except ProcessLookupError:
-                      print('Owned stub process group has exited.')
+                  if members():
+                      failures.append('Owned stub process group still exists')
+                  else:
+                      print('Owned stub process group has exited (process table).')
               with socket.socket() as probe:
                   if probe.connect_ex(('127.0.0.1', 18080)) == 0:
                       failures.append('Stub port 18080 is still occupied')
