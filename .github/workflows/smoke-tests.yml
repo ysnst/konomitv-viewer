@@ -187,6 +187,11 @@ jobs:
           import os, pathlib, re, urllib.parse
           directory = pathlib.Path('artifacts/smoke')
           log = (directory / 'playback.log').read_text()
+          held = [line for line in log.splitlines() if 'heldSeek=true' in line]
+          assert held and all('controls=true' in line for line in held), 'Controls hid during held seek'
+          for direction in ('heldBack=true', 'heldForward=true'):
+              times = [float(line.split()[1]) for line in held if direction in line]
+              assert times and max(times) - min(times) > 3.5, 'Held seek must outlast auto-hide: ' + direction
           if os.environ['SMOKE_ROUTE'] == 'fmp4-fallback':
               plays = [line for line in log.splitlines() if ' play-request ' in line]
               av = [line for line in plays if 'play-request av ' in line]
@@ -223,7 +228,7 @@ jobs:
               assert 'tick vlc state=' in log, 'VLC route was not observed'
           PY
 
-      # 画像は UI テストが app.screenshot() で採取した attachment だけを取り出す。
+      # 画像は UI テストが XCUIScreen.main.screenshot() で採取した attachment だけを取り出す。
       - name: Export test attachments
         if: always()
         run: |

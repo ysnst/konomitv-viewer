@@ -18,7 +18,7 @@ METHOD = r'''
     }
     private func smokeDiagnostic(_ event: String) {
         guard ProcessInfo.processInfo.arguments.contains("-viewer_playback_diagnostics"),
-              smokeDiagnosticCount < 400 else { return }
+              smokeDiagnosticCount < 800 else { return }
         smokeDiagnosticCount += 1
         var engine = "av ready=\(player?.currentItem?.status == .readyToPlay) playing=\(player?.timeControlStatus == .playing) rate=\(player?.rate ?? 0) control=\(player?.timeControlStatus.rawValue ?? -1) playerStatus=\(player?.status.rawValue ?? -1)"
 #if canImport(VLCKit)
@@ -36,10 +36,18 @@ METHOD = r'''
             engine += " baseRate=\(CMTimebaseGetRate(timebase)) baseEffectiveRate=\(CMTimebaseGetEffectiveRate(timebase)) baseTime=\(CMTimebaseGetTime(timebase).seconds) hostTime=\(CMClockGetTime(CMClockGetHostTimeClock()).seconds)"
         }
         engine += " fmp4Confirmed=\(fmp4StartContext?.state.didPlay ?? false) recoveryPending=\(fmp4StartContext?.state.awaitingRecovery ?? false)"
+        func held(_ button: UIButton) -> Bool {
+            (button.gestureRecognizers ?? []).contains { recognizer in
+                recognizer is UILongPressGestureRecognizer && (recognizer.state == .began || recognizer.state == .changed)
+            }
+        }
+        let holdingBack = held(skipBackButton)
+        let holdingForward = held(skipForwardButton)
+        let holdingSeek = holdingBack || holdingForward
         let children = surfaceView.subviews.map {
             "\(type(of: $0)):input=\($0.isUserInteractionEnabled):gestures=\(($0.gestureRecognizers ?? []).map { String(describing: type(of: $0)) })"
         }.joined(separator: ";")
-        let line = "SMOKE \(ProcessInfo.processInfo.systemUptime) \(event) \(engine) time=\(currentPosition()) ui=\(currentTimeLabel.text ?? "nil") intent=\(playbackIntentPlaying) pendingPause=\(playbackStart.pauseRequested) scrub=\(isScrubbing) controls=\(controlsVisible) children=\(children)\n"
+        let line = "SMOKE \(ProcessInfo.processInfo.systemUptime) \(event) \(engine) time=\(currentPosition()) ui=\(currentTimeLabel.text ?? "nil") intent=\(playbackIntentPlaying) pendingPause=\(playbackStart.pauseRequested) scrub=\(isScrubbing) heldBack=\(holdingBack) heldForward=\(holdingForward) heldSeek=\(holdingSeek) controls=\(controlsVisible) children=\(children)\n"
         let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("smoke-playback.log")
         if !FileManager.default.fileExists(atPath: url.path) { _ = FileManager.default.createFile(atPath: url.path, contents: nil) }
         if let handle = try? FileHandle(forWritingTo: url) {
@@ -77,6 +85,13 @@ def instrument(text):
         if text.count(anchor) != 1:
             raise ValueError('Expected accepted fMP4 failure guard')
         text = text.replace(anchor, anchor + '\n        smokeDiagnostic("fmp4-start-failure")')
+    # 長押しの実UI操作用IDは使い捨ての試験checkoutにだけ付ける。
+    import re
+    for button in ('skipForwardButton', 'skipBackButton'):
+        pattern = r'(?m)^( +configure\(' + button + r',.*)$'
+        text, count = re.subn(pattern, lambda match: match.group(0) + '\n        ' + button + '.accessibilityIdentifier = "player.' + button + '"', text)
+        if count != 1:
+            raise ValueError('Expected skip button configuration')
     anchor = '            guard source === vlcPlayer else { return }'
     if text.count(anchor) != 1:
         raise ValueError('Expected VLC state guard')

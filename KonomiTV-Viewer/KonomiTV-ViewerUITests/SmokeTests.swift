@@ -60,6 +60,12 @@ final class SmokeTests: XCTestCase {
         assertOverlays()
         XCTAssertTrue(waitForPlaybackToAdvance(timeout: 15), "Playback clock did not advance after returning")
         attachScreenshot("04-returned-normal")
+        // 3.5秒の非表示期限と1秒の診断観測を超えて保持し、長押し中の入力取消しを検出する。
+        tapControlsButton("player.skipForwardButton", timeout: 20, holdDuration: 6)
+        XCTAssertTrue(waitForPlaybackToAdvance(timeout: 15), "Playback did not resume after forward long press")
+        tapControlsButton("player.skipBackButton", timeout: 20, holdDuration: 6)
+        XCTAssertTrue(waitForPlaybackToAdvance(timeout: 15), "Playback did not resume after backward long press")
+        attachScreenshot("05-after-held-seek")
     }
 
     private func assertOverlays() {
@@ -147,29 +153,21 @@ final class SmokeTests: XCTestCase {
         return element.exists && element.isHittable
     }
 
-    private func tapControlsButton(_ label: String, timeout: TimeInterval) {
+    private func tapControlsButton(_ label: String, timeout: TimeInterval, holdDuration: TimeInterval? = nil) {
         let deadline = Date().addingTimeInterval(timeout)
+        let button = app.buttons[label]
         while Date() < deadline {
-            // 期限切れ直前の操作帯へ遅れて座標を送らず、自然な非表示を同じ期限内で確認する。
-            guard let snapshot = try? app.snapshot() else { continue }
-            var pending: [any XCUIElementSnapshot] = [snapshot]
-            var visible = false
-            while let element = pending.popLast() {
-                if element.elementType == .button, element.label == label,
-                   element.frame.width > 0, element.frame.height > 0 {
-                    visible = true
-                    break
-                }
-                pending.append(contentsOf: element.children)
-            }
-            if visible {
+            // AX階層に残るボタンもあるため、存在やframeを実表示と混同しない。
+            // isHittableは要素が無い場合もfalseを返す公開API。
+            if button.isHittable {
                 Thread.sleep(forTimeInterval: 0.4)
                 continue
             }
             // 再表示後は追加照会を挟まない。native tapが最新ボタンの解決と操作可否を確認する。
             tapVideoArea()
             print("Tap freshly revealed native control: \(label)")
-            app.buttons[label].tap()
+            if let holdDuration { button.press(forDuration: holdDuration) }
+            else { button.tap() }
             return
         }
         XCTFail("Controls did not auto-hide before tapping the requested button")
@@ -194,7 +192,7 @@ final class SmokeTests: XCTestCase {
     }
 
     private func attachScreenshot(_ name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
