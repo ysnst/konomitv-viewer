@@ -64,9 +64,7 @@ LIVE = r'''
         liveTimeLabel.accessibilityLabel = String(actual)
         captionOverlayView.isAccessibilityElement = true
         captionOverlayView.accessibilityIdentifier = "stage.video"
-        playPauseButton.accessibilityIdentifier = "stage.playPause"
-        playPauseButton.accessibilityValue = playbackIntentPlaying ? "playing" : "paused"
-        captionOverlayView.accessibilityLabel = "intent=\(playbackIntentPlaying) temporaryPauses=\(stageTemporaryPauses) time=\(actual)"
+        captionOverlayView.accessibilityLabel = "time=\(actual)"
         var playing = false
         var video = false
 #if canImport(VLCKit)
