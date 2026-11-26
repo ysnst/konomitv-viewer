@@ -395,6 +395,29 @@ final class PlayerViewController: UIViewController {
     /// サーバー側で数秒かかる実測があるため、用意が間に合う程度の
     /// 間を置く。
     private static let fmp4RetryDelay: TimeInterval = 3
+    /// fMP4 経路のこの試みで、再生位置が開始位置から実際に進んだか
+    /// どうか。「再生が始まった」ことの判定を、再生状態が「再生中」に
+    /// なることで行うと、最初の区切りが届いた時点で状態だけ先に
+    /// 「再生中」になり、位置が進まないまま項目が失敗する形では
+    /// 受け皿の入口で弾かれてしまう (実機で確認済み)。そのため、
+    /// 位置が意味のある幅だけ進んだことをもって「始まった」とし、
+    /// 開始失敗の受け皿の条件にはこちらの印を使う。
+    private var fmp4PlaybackProgressed = false
+    /// fMP4 経路のこの試みの開始位置 (秒)。進み具合の判定の基準。
+    /// 取り直しのたびに、その試みの開始位置で置き直す。
+    private var fmp4AttemptStartPosition: Double = 0
+    /// 「始まった」とみなす進み幅 (秒)。この幅を超えるまでは開始の
+    /// 失敗として受け皿の対象にし、超えたあとの失敗 (視聴の途中で
+    /// 止まる形) は今までどおり対象外にする。
+    private static let fmp4ProgressThreshold: TimeInterval = 2
+    /// fMP4 経路の開始の見張り。開始からしばらくたっても位置が
+    /// 進んでいなければ、項目が失敗扱いになっていなくても受け皿へ
+    /// つなぐ (固まったまま失敗表示も出ない形への備え)。
+    private var fmp4StartWatchdog: Timer?
+    /// 開始の見張りが働くまでの時間 (秒)。サーバー側の用意 (位置の
+    /// 解決と詰め替え) に数秒かかる実測があるため、通常の開始では
+    /// 働かない程度の余裕を持たせる。
+    private static let fmp4StartWatchdogDelay: TimeInterval = 12
     /// 開始の後に、利用者が自分で位置を動かしたかどうか。動かして
     /// いたら、遅れて返ってきた続きの位置の確認では移らない。
     private var userSeekedSinceStart = false
@@ -2346,6 +2369,9 @@ final class PlayerViewController: UIViewController {
         fmp4StartContext = nil
         fmp4RetryWorkItem?.cancel()
         fmp4RetryWorkItem = nil
+        fmp4StartWatchdog?.invalidate()
+        fmp4StartWatchdog = nil
+        fmp4PlaybackProgressed = false
         // 新しい開始では、再生はまだ始まっていないものとして扱う
         // (開始前の移動の控えと、その反映の判定に使う)。
         playbackDidStart = false
@@ -2456,6 +2482,10 @@ final class PlayerViewController: UIViewController {
                 fmp4URL: url, fallbackURL: fallbackURL,
                 seconds: seconds, startCount: startCount, retried: false)
         }
+        // この試みの進み具合の判定は、この開始位置から数え直す
+        // (取り直しの開始でも、その試みの開始位置が基準になる)。
+        fmp4AttemptStartPosition = seconds
+        fmp4PlaybackProgressed = false
 #if canImport(MobileVLCKit)
         teardownVLCPlayback()
 #endif
@@ -2476,6 +2506,7 @@ final class PlayerViewController: UIViewController {
                 self.startAVPlayback(asset: AVURLAsset(url: relayedURL), at: seconds)
                 self.pendingRelayRetryPosition = nil
                 self.finishStartPlayback(at: seconds)
+                self.armFMP4StartWatchdog(startCount: startCount)
             }
             return
         }
@@ -2484,22 +2515,27 @@ final class PlayerViewController: UIViewController {
         startAVPlayback(asset: APIClient.shared.playerAsset(url: url), at: seconds)
         pendingRelayRetryPosition = nil
         finishStartPlayback(at: seconds)
+        armFMP4StartWatchdog(startCount: startCount)
     }
 
-    /// fMP4 経路で、再生が始まる前に再生部品の項目が失敗したときの
-    /// 受け皿。続きの位置から開始すると、再生部品の最初の取りに行きは
-    /// 「続きの位置の区切り」になるが、サーバー側でその区切りの用意が
-    /// 間に合わないと 422 が返ることがあり、再生部品はそのまま項目を
-    /// 失敗扱いにして取り直さない (実機で確認済み)。受け皿が無いと、
-    /// そのまま「再生を開始できませんでした。」で行き止まりになる。
-    /// まず少し待ってから再生部品でもう一度だけ始め直し (用意が
-    /// 間に合えば新しい経路のまま開始できる)、それでも駄目なら
-    /// 同じセッション・同じ位置のまま従来の VLC 経路へ落とす。
-    /// 対象は「再生が始まる前」の失敗だけ。再生が始まったあとの失敗と、
-    /// 他の経路 (通常画質・生放送など) の開始失敗は扱わず、今まで
-    /// どおり呼び出し側の失敗表示に任せる。扱えた場合は true を返す。
+    /// fMP4 経路で、再生位置が実際に進む前に再生部品の項目が失敗
+    /// したときの受け皿。続きの位置から開始すると、再生部品の最初の
+    /// 取りに行きは「続きの位置の区切り」になるが、サーバー側でその
+    /// 区切りの用意が間に合わないと 422 が返ることがあり、再生部品は
+    /// そのまま項目を失敗扱いにして取り直さない (実機で確認済み)。
+    /// 受け皿が無いと、そのまま「再生を開始できませんでした。」で
+    /// 行き止まりになる。まず少し待ってから再生部品でもう一度だけ
+    /// 始め直し (用意が間に合えば新しい経路のまま開始できる)、
+    /// それでも駄目なら同じセッション・同じ位置のまま従来の VLC
+    /// 経路へ落とす。
+    /// 対象は「再生位置が実際に進む前」の失敗だけ。「始まった」
+    /// ことの判定は再生状態ではなく位置の進み具合で行う (状態だけ
+    /// 先に「再生中」になり、位置が進まないまま失敗する形がある
+    /// ため)。位置が進んだあとの失敗と、他の経路 (通常画質・生放送
+    /// など) の開始失敗は扱わず、今までどおり呼び出し側の失敗表示に
+    /// 任せる。扱えた場合は true を返す。
     private func handleFMP4StartFailureIfNeeded() -> Bool {
-        guard !playbackDidStart,
+        guard !fmp4PlaybackProgressed,
               var context = fmp4StartContext,
               context.startCount == startPlaybackCount else { return false }
         if !context.retried {
@@ -2512,7 +2548,7 @@ final class PlayerViewController: UIViewController {
                 guard let self, !self.didLeaveScreen,
                       let context = self.fmp4StartContext,
                       context.startCount == self.startPlaybackCount,
-                      !self.playbackDidStart else { return }
+                      !self.fmp4PlaybackProgressed else { return }
                 self.fmp4RetryWorkItem = nil
                 self.retryFMP4Playback(context: context)
             }
@@ -2526,6 +2562,8 @@ final class PlayerViewController: UIViewController {
         // 読み込み表示は、知らせ欄が空でないため上書きしない。再生が
         // 始まったあとも知らせは残る)。
         fmp4StartContext = nil
+        fmp4StartWatchdog?.invalidate()
+        fmp4StartWatchdog = nil
         let position = pendingPreStartSeek ?? context.seconds
         pendingPreStartSeek = nil
         let intentPlaying = playbackIntentPlaying
@@ -2555,6 +2593,60 @@ final class PlayerViewController: UIViewController {
         if !intentPlaying {
             pauseEngine()
             updatePlayPauseIcon()
+        }
+    }
+
+    /// fMP4 経路のこの試みで、再生位置が開始位置から意味のある幅
+    /// だけ進んだかどうかを確認し、進んでいたら「始まった」印を
+    /// 立てる。進み具合の定期観測 (0.5 秒ごと) から呼ばれる。
+    /// 始まる前に利用者が指定した移動先がまだ反映待ちの間は判定
+    /// しない (移動先へ実際に移ったあと、その位置を開始位置として
+    /// 数え直す。反映前の位置と移動先との距離で誤らないため)。
+    /// 印が立ったら、開始の見張りは役目を終えるため止める。
+    private func refreshFMP4ProgressMark() {
+        guard fmp4StartContext != nil, !fmp4PlaybackProgressed,
+              pendingPreStartSeek == nil else { return }
+        let current = currentPosition()
+        if current.isFinite,
+           current > fmp4AttemptStartPosition + Self.fmp4ProgressThreshold {
+            fmp4PlaybackProgressed = true
+            fmp4StartWatchdog?.invalidate()
+            fmp4StartWatchdog = nil
+        }
+    }
+
+    /// fMP4 経路の開始の見張りを仕掛ける。見張りの時点で再生位置が
+    /// 開始位置から進んでいなければ、項目が失敗扱いになっていなく
+    /// ても受け皿 (取り直し→駄目なら VLC へ) へつなぐ。材料が全部
+    /// 届いたのに次へ進めず、失敗扱いにもならないまま固まる形への
+    /// 備え (失敗表示すら出ないまま黒画面で止まってしまう)。
+    /// 見張りはタイマーだけなので、待っている間も画面の操作は
+    /// 止まらない。通常の開始では、位置が進んだ時点で見張りが
+    /// 止まるため働かない。
+    private func armFMP4StartWatchdog(startCount: Int) {
+        fmp4StartWatchdog?.invalidate()
+        fmp4StartWatchdog = Timer.scheduledTimer(
+            withTimeInterval: Self.fmp4StartWatchdogDelay, repeats: false
+        ) { [weak self] _ in
+            guard let self, !self.didLeaveScreen,
+                  self.startPlaybackCount == startCount,
+                  let context = self.fmp4StartContext,
+                  context.startCount == startCount else { return }
+            self.fmp4StartWatchdog = nil
+            // 進み具合は、見張りの時点の位置でも確かめ直す (定期
+            // 観測が回っていない間に進んでいた場合に備える)。
+            self.refreshFMP4ProgressMark()
+            // 位置が進んでいたら、開始は成り立っている。利用者が
+            // 止めている場合は、始まらないのが正常なので見張りは
+            // 働かせない。取り直しが既に予約されている場合は、
+            // そちらの開始で見張りも仕掛け直される。
+            guard !self.fmp4PlaybackProgressed,
+                  self.playbackIntentPlaying,
+                  self.fmp4RetryWorkItem == nil else { return }
+            if self.handleFMP4StartFailureIfNeeded() { return }
+            // 受け皿でも扱えなかった場合は、真っ黒のまま無言に
+            // せず、失敗を知らせる。
+            self.messageLabel.text = "再生を開始できませんでした。"
         }
     }
 
@@ -2736,6 +2828,12 @@ final class PlayerViewController: UIViewController {
                     self.playbackDidStart = true
                     if let pendingSeek = self.pendingPreStartSeek {
                         self.pendingPreStartSeek = nil
+                        // fMP4 経路の試みでは、進み具合の判定の基準を
+                        // 実際に移った先へ合わせる (移動先へ飛んだ
+                        // だけで「始まった」ことにしないため)。
+                        if self.fmp4StartContext?.startCount == self.startPlaybackCount {
+                            self.fmp4AttemptStartPosition = pendingSeek
+                        }
                         self.seek(to: pendingSeek)
                     }
                     if self.messageLabel.text == "再生を開始できませんでした。" {
@@ -3010,6 +3108,8 @@ final class PlayerViewController: UIViewController {
         fmp4RetryWorkItem?.cancel()
         fmp4RetryWorkItem = nil
         fmp4StartContext = nil
+        fmp4StartWatchdog?.invalidate()
+        fmp4StartWatchdog = nil
         commentOverlay.stop()
         cancelAutoplayCountdown()
         fastSeekBackController.invalidate()
@@ -3267,6 +3367,9 @@ final class PlayerViewController: UIViewController {
         guard hasActiveEngine else { return }
         let current = currentPosition()
         if current.isFinite {
+            // fMP4 経路の試みでは、位置の進み具合から「始まった」
+            // 印を立てる (開始失敗の受け皿の条件に使う)。
+            refreshFMP4ProgressMark()
             // 表示は、利用者が指定した移動先に合わせる。再生が始まる
             // 前は開始前の移動先、始まってからは飛び先へ移るまでの間
             // の合わせ分 (再生部品の位置はまだ古いままなので、そのまま
