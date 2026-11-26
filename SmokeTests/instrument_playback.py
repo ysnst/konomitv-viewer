@@ -32,6 +32,9 @@ METHOD = r'''
             let underlying = error?.userInfo[NSUnderlyingErrorKey] as? NSError
             engine += " itemStatus=\(item.status.rawValue) error=\(error?.domain ?? "nil"):\(error?.code ?? 0) underlying=\(underlying?.domain ?? "nil"):\(underlying?.code ?? 0) errors=\(errors) waiting=\(player?.reasonForWaitingToPlay?.rawValue ?? "nil") empty=\(item.isPlaybackBufferEmpty) full=\(item.isPlaybackBufferFull) likely=\(item.isPlaybackLikelyToKeepUp) duration=\(item.duration.seconds) size=\(item.presentationSize) rendered=\(playerLayer?.isReadyForDisplay ?? false) loaded=\(item.loadedTimeRanges.map { $0.timeRangeValue.start.seconds.description + ":" + $0.timeRangeValue.duration.seconds.description })"
         }
+        if let timebase = player?.currentItem?.timebase {
+            engine += " baseRate=\(CMTimebaseGetRate(timebase)) baseEffectiveRate=\(CMTimebaseGetEffectiveRate(timebase)) baseTime=\(CMTimebaseGetTime(timebase).seconds) hostTime=\(CMClockGetTime(CMClockGetHostTimeClock()).seconds)"
+        }
         let children = surfaceView.subviews.map {
             "\(type(of: $0)):input=\($0.isUserInteractionEnabled):gestures=\(($0.gestureRecognizers ?? []).map { String(describing: type(of: $0)) })"
         }.joined(separator: ";")

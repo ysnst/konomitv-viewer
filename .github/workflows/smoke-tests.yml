@@ -12,8 +12,12 @@ on:
       route:
         description: Fixed media container to exercise
         type: choice
-        options: [ts, fmp4]
+        options: [ts, fmp4, fmp4-audio]
         default: ts
+      application_ref:
+        description: Optional historical source ref for controlled diagnostics
+        type: string
+        default: ''
   push:
     branches-ignore: [main]
 
@@ -44,7 +48,7 @@ jobs:
       - name: Checkout application source
         uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.revision == 'baseline-027' && '1256f686f3989ab339bf003e9052be0e17acd0c2' || github.sha }}
+          ref: ${{ matrix.revision == 'baseline-027' && '1256f686f3989ab339bf003e9052be0e17acd0c2' || inputs.application_ref || github.sha }}
           path: app-source
           persist-credentials: false
 
@@ -52,14 +56,14 @@ jobs:
         run: |
           mkdir -p artifacts/smoke
           cp KonomiTV-Viewer/KonomiTV-ViewerUITests/SmokeTests.swift app-source/KonomiTV-Viewer/KonomiTV-ViewerUITests/SmokeTests.swift
-          if [ "$SMOKE_ROUTE" = fmp4 ] && [ "${{ matrix.revision }}" != current ]; then
+          if [ "$SMOKE_ROUTE" != ts ] && [ "${{ matrix.revision }}" != current ]; then
             echo 'fMP4 routing is absent from the baseline; run comparisons with TS.' >&2
             exit 1
           fi
           python3 SmokeTests/instrument_playback.py app-source
           git rev-parse HEAD > artifacts/smoke/harness-sha.log
           git -C app-source rev-parse HEAD > artifacts/smoke/source-sha.log
-          shasum -a 256 SmokeTests/instrument_playback.py SmokeTests/media/* SmokeTests/media-fmp4/* > artifacts/smoke/fixture-hashes.log
+          shasum -a 256 SmokeTests/instrument_playback.py SmokeTests/media/* SmokeTests/media-fmp4/* SmokeTests/media-fmp4-audio/* > artifacts/smoke/fixture-hashes.log
 
       - name: Prepare diagnostics
         run: |
@@ -80,8 +84,10 @@ jobs:
                   raise SystemExit('Refusing to start: port 18080 is already occupied')
           with (directory / 'stub-server.log').open('wb') as log:
               command = [sys.executable, '-u', 'SmokeTests/stub_server.py', '18080']
-              if os.environ['SMOKE_ROUTE'] == 'fmp4':
+              if os.environ['SMOKE_ROUTE'].startswith('fmp4'):
                   command.append('--fmp4')
+              if os.environ['SMOKE_ROUTE'] == 'fmp4-audio':
+                  command.append('--audio')
               process = subprocess.Popen(command,
                                          stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
           (directory / 'stub.pid').write_text(str(process.pid))
@@ -181,7 +187,7 @@ jobs:
           import os, pathlib
           directory = pathlib.Path('artifacts/smoke')
           log = (directory / 'playback.log').read_text()
-          if os.environ['SMOKE_ROUTE'] == 'fmp4':
+          if os.environ['SMOKE_ROUTE'].startswith('fmp4'):
               assert any('tick av ready=true playing=true rate=' in line and 'rate=0.0 ' not in line for line in log.splitlines()), 'Ready and playing AVPlayer was not observed'
               assert 'tick vlc state=' not in log, 'Unexpected VLC fallback'
               network = (directory / 'stub-server.log').read_text()

@@ -7,7 +7,7 @@ Python の標準機能だけで書いてある (追加の部品は要らない)�
 実在のサーバー情報・認証情報は一切含まない。番組名なども
 テスト専用の作り物。
 
-使い方: python3 stub_server.py [ポート番号] [--fmp4]  (既定 18080、TSのみ)
+使い方: python3 stub_server.py [ポート番号] [--fmp4 [--audio]]  (既定 18080、TSのみ)
 """
 
 import argparse
@@ -28,6 +28,10 @@ FMP4_MEDIA_DIR = os.path.join(HERE, "media-fmp4")
 with open(os.path.join(FMP4_MEDIA_DIR, "index.m3u8"), encoding="utf-8") as stream:
     FMP4_PLAYLIST_LINES = stream.read().splitlines()
 FMP4_SEGMENT_FILES = [line for line in FMP4_PLAYLIST_LINES if line and not line.startswith("#")]
+FMP4_AUDIO_MEDIA_DIR = os.path.join(HERE, "media-fmp4-audio")
+with open(os.path.join(FMP4_AUDIO_MEDIA_DIR, "index.m3u8"), encoding="utf-8") as stream:
+    FMP4_AUDIO_PLAYLIST_LINES = stream.read().splitlines()
+FMP4_AUDIO_SEGMENT_FILES = [line for line in FMP4_AUDIO_PLAYLIST_LINES if line and not line.startswith("#")]
 FIXTURE_DURATION = sum(float(line.split(":", 1)[1].split(",", 1)[0])
                        for line in PLAYLIST_LINES if line.startswith("#EXTINF:"))
 
@@ -91,11 +95,11 @@ STORAGE_STATUS = {
 EMPTY_CHANNELS = {"GR": [], "BS": [], "CS": [], "CATV": [], "SKY": [], "BS4K": []}
 
 
-def playlist_body(session_id, fmp4=False):
+def playlist_body(session_id, fmp4=False, audio=False):
     """実際の分割尺と連続タイムスタンプを保持し、URIだけAPI形式へ置き換える。"""
     lines = []
     seq = 0
-    source = FMP4_PLAYLIST_LINES if fmp4 else PLAYLIST_LINES
+    source = (FMP4_AUDIO_PLAYLIST_LINES if audio else FMP4_PLAYLIST_LINES) if fmp4 else PLAYLIST_LINES
     format_query = "&segment_format=fmp4" if fmp4 else ""
     for line in source:
         if line.startswith("#EXT-X-MAP:"):
@@ -200,21 +204,24 @@ class Handler(BaseHTTPRequestHandler):
                 # 対応を明示した仮サーバーだけfMP4を返す。形式指定なしのTS経路は残す。
                 fmp4 = (getattr(self.server, "supports_fmp4", False)
                         and query.get("segment_format") == ["fmp4"])
+                audio = fmp4 and getattr(self.server, "fixture_audio", False)
+                fmp4_directory = FMP4_AUDIO_MEDIA_DIR if audio else FMP4_MEDIA_DIR
                 if kind == "playlist":
                     session_id = query.get("session_id", ["smoke"])[0]
-                    self._send(200, playlist_body(session_id, fmp4=fmp4),
+                    self._send(200, playlist_body(session_id, fmp4=fmp4, audio=audio),
                                "application/vnd.apple.mpegurl")
                     return
                 if kind == "init" and fmp4:
-                    self._send_file(os.path.join(FMP4_MEDIA_DIR, "init.mp4"), "video/mp4")
+                    self._send_file(os.path.join(fmp4_directory, "init.mp4"), "video/mp4")
                     return
                 if kind == "segment":
                     try:
                         seq = int(query.get("sequence", ["0"])[0])
                     except ValueError:
                         seq = -1
-                    files = FMP4_SEGMENT_FILES if fmp4 else SEGMENT_FILES
-                    directory = FMP4_MEDIA_DIR if fmp4 else MEDIA_DIR
+                    fmp4_files = FMP4_AUDIO_SEGMENT_FILES if audio else FMP4_SEGMENT_FILES
+                    files = fmp4_files if fmp4 else SEGMENT_FILES
+                    directory = fmp4_directory if fmp4 else MEDIA_DIR
                     if 0 <= seq < len(files):
                         self._send_file(os.path.join(directory, files[seq]), "video/mp4" if fmp4 else "video/MP2T")
                     else:
@@ -252,10 +259,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("port", type=int, nargs="?", default=18080)
     parser.add_argument("--fmp4", action="store_true", help="Enable opt-in fMP4 fixture responses")
+    parser.add_argument("--audio", action="store_true", help="Use the controlled AAC alternative with --fmp4")
     args = parser.parse_args()
+    if args.audio and not args.fmp4:
+        parser.error("--audio requires --fmp4")
     port = args.port
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.supports_fmp4 = args.fmp4
+    server.fixture_audio = args.audio
     print("Stub server listening on http://127.0.0.1:%d" % port, flush=True)
     try:
         server.serve_forever()

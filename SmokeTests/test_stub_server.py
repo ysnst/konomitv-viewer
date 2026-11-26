@@ -1,6 +1,8 @@
 """Fixture の HTTP 契約を実通信で確認する。実ユーザーのサーバーや素材は使わない。"""
 import json
 import hashlib
+import subprocess
+import sys
 from pathlib import Path
 import threading
 import unittest
@@ -134,6 +136,48 @@ class StubContractTests(unittest.TestCase):
             self.assertEqual(stream, (Path(stub_server.MEDIA_DIR) / 'seg0.ts').read_bytes())
         finally:
             self.server.supports_fmp4 = False
+
+    def test_fmp4_audio_alternative_has_two_tracks_and_preserves_ts(self):
+        self.server.supports_fmp4 = True
+        self.server.fixture_audio = True
+        try:
+            path = '/api/streams/video/1/720p-hevc/playlist?session_id=audio-contract&segment_format=fmp4'
+            _, body = self.fetch(path)
+            playlist = body.decode('utf-8')
+            init_line = next(line for line in playlist.splitlines() if line.startswith('#EXT-X-MAP:'))
+            init_uri = init_line.split('URI="', 1)[1].split('"', 1)[0]
+            headers, init = self.fetch(urljoin(path, init_uri))
+            self.assertEqual(headers['Content-Type'], 'video/mp4')
+            self.assertEqual(init, (Path(stub_server.FMP4_AUDIO_MEDIA_DIR) / 'init.mp4').read_bytes())
+            self.assertIn(b'hvc1', init)
+            self.assertIn(b'mp4a', init)
+            self.assertEqual(init.count(b'trak'), 2)
+            segments = [line for line in playlist.splitlines() if line and not line.startswith('#')]
+            self.assertEqual(len(segments), 30)
+            durations = [float(line.split(':', 1)[1].split(',', 1)[0])
+                         for line in playlist.splitlines() if line.startswith('#EXTINF:')]
+            self.assertAlmostEqual(sum(durations), stub_server.FIXTURE_DURATION, places=6)
+            for index, relative in enumerate(segments):
+                headers, fragment = self.fetch(urljoin(path, relative))
+                self.assertEqual(headers['Content-Type'], 'video/mp4')
+                self.assertEqual(fragment, (Path(stub_server.FMP4_AUDIO_MEDIA_DIR) / ('seg%d.m4s' % index)).read_bytes())
+                self.assertEqual(fragment.count(b'traf'), 2)
+            fallback_path = '/api/streams/video/1/720p-hevc/playlist?session_id=audio-contract'
+            _, fallback = self.fetch(fallback_path)
+            self.assertNotIn(b'#EXT-X-MAP:', fallback)
+            first = next(line for line in fallback.decode().splitlines() if line and not line.startswith('#'))
+            headers, stream = self.fetch(urljoin(fallback_path, first))
+            self.assertEqual(headers['Content-Type'], 'video/MP2T')
+            self.assertEqual(stream, (Path(stub_server.MEDIA_DIR) / 'seg0.ts').read_bytes())
+        finally:
+            self.server.fixture_audio = False
+            self.server.supports_fmp4 = False
+
+    def test_audio_flag_requires_fmp4(self):
+        result = subprocess.run([sys.executable, str(Path(stub_server.__file__)), '--audio'],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('--audio requires --fmp4', result.stderr)
 
     def test_unknown_resource_fails(self):
         for path in ('/unknown', '/api/videos/999', '/api/streams/video/999/720p-hevc/playlist',
