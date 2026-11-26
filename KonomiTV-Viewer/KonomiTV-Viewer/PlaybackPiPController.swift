@@ -194,6 +194,9 @@ final class PlaybackPiPController: NSObject, VLCDrawable, VLCPictureInPictureDra
             guard let self, !self.disposed, !self.rendererRetired, let host = self.videoView else { return }
             view.frame = host.bounds
             view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            // VLC描画子ViewのtapをlibVLCへ流さず、親の操作帯ジェスチャーへ渡す。
+            // 映像layerとPiPのdrawable所有関係は変更しない。
+            view.isUserInteractionEnabled = false
             host.addSubview(view)
         }
     }
