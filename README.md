@@ -111,7 +111,7 @@ Web 版にはあるものの、次の機能には対応していません。
 署名なしの IPA で配布しているため、App Store のアプリのようには入りません。サイドロード用の入れ物が要ります。ここでは LiveContainer の例です。
 
 1. LiveContainer を iPhone に入れる
-2. このフォークの Actions の成功したビルドから Artifact `KonomiTV-Viewer-unsigned-ipa` をダウンロードし、中の IPA を取り出す。Releasesの案内を使う場合は、このフォークで公開されている対象版か確認してください。基準版0.20のビルドは[Actions run45650873099](https://github.com/ysnst/konomitv-viewer/actions/runs/45650873099)です
+2. このフォークの Actions の成功したビルドから Artifact `KonomiTV-Viewer-unsigned-ipa` をダウンロードし、中の IPA を取り出す。Releasesの案内を使う場合は、このフォークで公開されている対象版か確認してください。実機検証済み基準版0.26のビルドは[Actions実行26](https://github.com/ysnst/konomitv-viewer/actions/runs/45726618175)です
 3. LiveContainer で IPA を開いて入れる
 
 AltStoreやSideStoreなどを使う場合は、その仕組みに応じた署名・導入手順が必要です。このフォークでの個別の動作は未確認です。未署名IPAを通常のiOSへそのままインストールすることはできません。
