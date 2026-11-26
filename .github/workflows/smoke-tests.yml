@@ -1,121 +1,205 @@
 name: Smoke Tests
 
-# 自動テスト (シミュレータでの起動確認)。IPA のビルド (build.yml) とは
-# 別の実行ファイルに分けてあり、版番号 (build.yml の実行番号) の
-# 数え方には一切触らない。テストが不安定でも、IPA の公開が
-# 止まったり遅れたりすることはない。
-#
-# 起動のタイミングは、プルリクエストと手動を基本にする。
-# main 以外のブランチへの push でも走る (main への push は IPA の
-# ビルド側が担うため、こちらでは走らせない)。
-
+# 上流のUIテスト・素材・アプリを変更せず、専用資源の所有と終了だけを管理する。
 on:
   pull_request:
   workflow_dispatch:
   push:
-    branches-ignore:
-      - main
+    branches-ignore: [main]
 
 permissions:
   contents: read
 
 jobs:
   smoke-tests:
-    name: Simulator smoke tests
+    name: Upstream stage 0 simulator smoke
     runs-on: macos-latest
     timeout-minutes: 45
     env:
       TZ: Asia/Tokyo
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      UPSTREAM_BASE: a2de08583aec2ea66c31ba9605acc84e394c5e15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
 
-      - name: Show Xcode version
-        run: xcodebuild -version
-
-      # アプリの接続先になる仮サーバー (SmokeTests/stub_server.py) を
-      # 裏で起動し、応答が返るまで待つ。シミュレータの 127.0.0.1 は
-      # 実行マシン自身につながるため、アプリからはこのサーバーが見える。
-      - name: Start stub server
+      - name: Verify unchanged upstream app and test fixtures
         run: |
-          nohup python3 SmokeTests/stub_server.py 18080 > stub-server.log 2>&1 &
-          for i in $(seq 1 30); do
-            if curl -sf "http://127.0.0.1:18080/api/videos" > /dev/null; then
-              echo "Stub server is ready."
-              break
-            fi
-            sleep 1
-          done
-          curl -sf "http://127.0.0.1:18080/api/videos" | head -c 200
-          echo
+          git diff --exit-code "$UPSTREAM_BASE" HEAD -- KonomiTV-Viewer SmokeTests
+          mkdir -p artifacts/smoke
+          git rev-parse HEAD > artifacts/smoke/source-sha.log
+          git rev-parse "$UPSTREAM_BASE:KonomiTV-Viewer" > artifacts/smoke/upstream-app-tree.log
+          xcodebuild -version | tee artifacts/smoke/xcode-version.log
 
-      # 再生部品 (MobileVLCKit) と字幕の部品 (libaribcaption) を
-      # CocoaPods で入れる (IPA のビルドと同じ)。
-      - name: Install CocoaPods dependencies
+      - name: Start owned stub server
+        run: |
+          python3 - <<'PY'
+          import pathlib, socket, subprocess, sys, time, urllib.request
+          directory = pathlib.Path('artifacts/smoke')
+          with socket.socket() as probe:
+              if probe.connect_ex(('127.0.0.1', 18080)) == 0:
+                  raise SystemExit('Refusing to start: port 18080 is already occupied')
+          with (directory / 'stub-server.log').open('wb') as log:
+              process = subprocess.Popen([sys.executable, '-u', 'SmokeTests/stub_server.py', '18080'],
+                                         stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+          (directory / 'stub.pid').write_text(str(process.pid))
+          for _ in range(30):
+              if process.poll() is not None:
+                  raise SystemExit('Stub server exited before readiness')
+              try:
+                  with urllib.request.urlopen('http://127.0.0.1:18080/api/videos', timeout=1) as response:
+                      if response.status == 200 and process.poll() is None:
+                          print('Stub server is ready.')
+                          break
+              except OSError:
+                  pass
+              time.sleep(1)
+          else:
+              raise SystemExit('Stub server readiness timed out')
+          PY
+
+      - name: Install original CocoaPods dependencies
         working-directory: KonomiTV-Viewer
-        run: pod install
-
-      # 使える iPhone シミュレータのうち、最も新しい iOS のものを選ぶ
-      # (名前で固定すると、実行環境の世代交代で無くなることがあるため)。
-      - name: Pick a simulator
         run: |
-          SIM_UDID=$(xcrun simctl list devices available -j | python3 -c '
-          import json, sys
-          data = json.load(sys.stdin)
-          candidates = []
-          for runtime, devices in data["devices"].items():
-              if "SimRuntime.iOS-" not in runtime:
-                  continue
-              version = runtime.rsplit("iOS-", 1)[1]
-              for d in devices:
-                  if d.get("isAvailable") and d["name"].startswith("iPhone"):
-                      candidates.append((version, d["udid"], d["name"]))
-          candidates.sort(key=lambda c: [int(x) for x in c[0].split("-")])
-          if candidates:
-              print(candidates[-1][1])
-          ')
-          if [ -z "$SIM_UDID" ]; then
-            echo "使える iPhone シミュレータが見つかりませんでした。"
-            xcrun simctl list devices available
-            exit 1
-          fi
-          echo "SIM_UDID=$SIM_UDID" >> "$GITHUB_ENV"
-          xcrun simctl list devices available | grep -F "$SIM_UDID" || true
+          set -o pipefail
+          pod install 2>&1 | tee ../artifacts/smoke/pod-install.log
+          cp Podfile.lock ../artifacts/smoke/Podfile.lock
 
-      # シミュレータ向けにビルドだけ先に行う (テストの土台の確認。
-      # 再生部品 VLCKit がシミュレータで使えるかもここで分かる)。
-      - name: Build for testing (simulator)
+      - name: Create owned simulator
+        timeout-minutes: 12
         run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          def simctl(*args):
+              return subprocess.check_output(['xcrun', 'simctl', *args], text=True)
+          runtimes = [r for r in json.loads(simctl('list', 'runtimes', '-j'))['runtimes']
+                      if r.get('isAvailable') and r['identifier'].startswith('com.apple.CoreSimulator.SimRuntime.iOS-')]
+          if not runtimes:
+              raise SystemExit('No available iOS simulator runtime')
+          runtime = max(runtimes, key=lambda r: tuple(map(int, r['version'].split('.'))))
+          # 利用可能な既存定義の deviceType を選ぶが、そのデバイス自体は操作しない。
+          devices = json.loads(simctl('list', 'devices', 'available', '-j'))['devices'].get(runtime['identifier'], [])
+          phones = [d for d in devices if d['name'].startswith('iPhone') and d.get('deviceTypeIdentifier')]
+          if not phones:
+              raise SystemExit('No compatible iPhone device type for latest iOS runtime')
+          udid = simctl('create', 'SmokeTests-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'],
+                        phones[0]['deviceTypeIdentifier'], runtime['identifier']).strip()
+          pathlib.Path('artifacts/smoke/simulator.udid').write_text(udid)
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write('SIM_UDID=' + udid + '\n')
+          print('Created simulator ' + udid)
+          PY
+          SIM_UDID=$(cat artifacts/smoke/simulator.udid)
+          xcrun simctl boot "$SIM_UDID"
+          xcrun simctl bootstatus "$SIM_UDID" -b
+
+      - name: Build original upstream tests
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
           xcodebuild build-for-testing \
             -workspace KonomiTV-Viewer/KonomiTV-Viewer.xcworkspace \
-            -scheme SmokeTests \
+            -scheme SmokeTests -sdk iphonesimulator \
             -destination "platform=iOS Simulator,id=$SIM_UDID" \
-            -derivedDataPath build/DerivedData \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY=""
+            -derivedDataPath artifacts/smoke/DerivedData \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            2>&1 | tee artifacts/smoke/build.log
 
-      # ビルド済みのものでテストを実行する。
-      - name: Run smoke tests
+      - name: Run original upstream smoke tests
+        timeout-minutes: 10
         run: |
+          set -o pipefail
           xcodebuild test-without-building \
             -workspace KonomiTV-Viewer/KonomiTV-Viewer.xcworkspace \
-            -scheme SmokeTests \
+            -scheme SmokeTests -sdk iphonesimulator \
             -destination "platform=iOS Simulator,id=$SIM_UDID" \
-            -derivedDataPath build/DerivedData \
-            -resultBundlePath build/SmokeTestResults.xcresult \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY=""
+            -derivedDataPath artifacts/smoke/DerivedData \
+            -resultBundlePath artifacts/smoke/SmokeTestResults.xcresult \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            2>&1 | tee artifacts/smoke/test.log
 
-      # 失敗したときに切り分けられるよう、結果一式 (画面写真つき) と
-      # 仮サーバーのログを残す。
+      - name: Export original test attachments
+        if: always()
+        run: |
+          set -o pipefail
+          if [ -d artifacts/smoke/SmokeTestResults.xcresult ]; then
+            xcrun xcresulttool export attachments \
+              --path artifacts/smoke/SmokeTestResults.xcresult \
+              --output-path artifacts/smoke/attachments \
+              2>&1 | tee artifacts/smoke/attachment-export.log
+          fi
+
+      - name: Clean up owned resources
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, signal, socket, subprocess, time
+          directory = pathlib.Path('artifacts/smoke')
+          failures = []
+          pid_file = directory / 'stub.pid'
+          if pid_file.exists():
+              pid = int(pid_file.read_text())
+              try:
+                  group = os.getpgid(pid)
+              except ProcessLookupError:
+                  group = None
+              if group not in (None, pid):
+                  failures.append('Refusing to signal unexpected process group')
+              else:
+                  if group is not None:
+                      os.killpg(pid, signal.SIGTERM)
+                  for _ in range(50):
+                      try:
+                          os.killpg(pid, 0)
+                      except ProcessLookupError:
+                          break
+                      time.sleep(0.1)
+                  else:
+                      try:
+                          os.killpg(pid, signal.SIGKILL)
+                      except ProcessLookupError:
+                          pass
+                      time.sleep(0.5)
+                  try:
+                      os.killpg(pid, 0)
+                      failures.append('Stub process group still exists')
+                  except ProcessLookupError:
+                      print('Owned stub process group has exited.')
+              with socket.socket() as probe:
+                  if probe.connect_ex(('127.0.0.1', 18080)) == 0:
+                      failures.append('Stub port 18080 is still occupied')
+                  else:
+                      print('Stub port 18080 is free.')
+          device_file = directory / 'simulator.udid'
+          if device_file.exists():
+              udid = device_file.read_text().strip()
+              subprocess.run(['xcrun', 'simctl', 'shutdown', udid], check=False)
+              if subprocess.run(['xcrun', 'simctl', 'delete', udid]).returncode:
+                  failures.append('Owned simulator could not be deleted')
+              else:
+                  devices = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'devices', '-j'], text=True))
+                  if any(d['udid'] == udid for group in devices['devices'].values() for d in group):
+                      failures.append('Owned simulator still exists after deletion')
+                  else:
+                      print('Owned simulator deleted: ' + udid)
+          if failures:
+              raise SystemExit('; '.join(failures))
+          PY
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smoke-test-results
+          name: smoke-test-results-stage0
           path: |
-            build/SmokeTestResults.xcresult
-            stub-server.log
-          if-no-files-found: ignore
+            artifacts/smoke/*.log
+            artifacts/smoke/Podfile.lock
+            artifacts/smoke/*.pid
+            artifacts/smoke/*.udid
+            artifacts/smoke/SmokeTestResults.xcresult
+            artifacts/smoke/attachments
+          if-no-files-found: warn

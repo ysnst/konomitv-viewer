@@ -3,3 +3,7 @@ Pods/
 *.xcworkspace/xcuserdata/
 xcuserdata/
 .DS_Store
+
+# Local verification artifacts
+artifacts/
+__pycache__/

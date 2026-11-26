@@ -1,28 +1,16 @@
 name: Build (unsigned IPA)
 
-# ビルド。main への push で自動で回り、手動でも回せる。
-# 本体は build-ipa.yml (共通) にある。
-# このファイル名 (build.yml) は変えないこと。版番号はこのワークフローの
-# 実行番号で数えており、ファイル名が変わると数え直しになってしまう。
-# 以前は拡張版用の build-household.yml もあったが、版を1本にまとめたため
-# 廃止した (改造版サーバー向けの機能はアプリ内の設定トグルで出し入れする)。
-
+# 作業ブランチでも基準IPAを作る。Artifact保存のみで、リリース公開は行わない。
+# 版番号の数え方を保つため、このファイル名は変更しない。
 on:
   push:
-    branches: [main]
-    # 記録だけの変更ではビルドを回さない。
-    paths-ignore:
-      - 'build-result-v1.md'
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 
-# 固定タグのリリースへ IPA を置くため、リリースへの書き込み権限が要る。
 permissions:
-  contents: write
+  contents: read
 
-# 同じブランチの実行は重ねず、順番に1つずつ回す。重なると、
-# 遅れて終わった古い実行が、新しい IPA を固定リリースから
-# 消してしまうことがあるため。
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: false
@@ -30,5 +18,3 @@ concurrency:
 jobs:
   build:
     uses: ./.github/workflows/build-ipa.yml
-    permissions:
-      contents: write

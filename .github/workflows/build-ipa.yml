@@ -1,58 +1,67 @@
 name: Build IPA (shared)
 
-# 署名なし IPA を作る本体。呼び出し側 (build.yml) から呼ばれる。
-# このワークフローは署名を一切しない (証明書・プロファイルは使わない)。
-#
-# 版番号は呼び出し側ワークフローの実行番号で決める。以前は一般版 / 拡張版の
-# 2種類を別の呼び出し側から作っていたが、版を1本にまとめたため、
-# 呼び出し側は build.yml だけになった。改造版サーバー向けの機能は、
-# アプリ内の設定トグルで出し入れする (AppEdition.swift)。
-
+# ビルドと Artifact 保存だけを行い、タグ・リリースを変更する権限は持たない。
 on:
   workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   build:
     name: Build unsigned IPA
-    runs-on: macos-latest
-    # 成果物 zip に記録される時刻がビルド機の現地時刻 (世界標準時) の壁時計になり、
-    # 解凍したときに日本時間とずれて見えるのを防ぐため、ジョブ全体を日本時間にする。
+    # 既存フォークのReleaseと同じIntel/Xcodeを使い、UI試験のApple Silicon環境と分離する。
+    runs-on: macos-26-intel
     env:
       TZ: Asia/Tokyo
+      UPSTREAM_BASE: a2de08583aec2ea66c31ba9605acc84e394c5e15
+      # 成功済みのビルドと同じ Xcode を選び、ホスト CPU 変更の影響を切り分ける。
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
 
-      - name: Set timezone to Asia/Tokyo
-        run: |
-          sudo systemsetup -settimezone "Asia/Tokyo"
-          systemsetup -gettimezone
-          date
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       - name: Show Xcode version
-        run: xcodebuild -version
-
-      # 版番号と IPA のファイル名をここで確定させる。
-      # 表示版は「0.<実行番号>」、内部のビルド番号も同じ数。
-      - name: Compute version and IPA name
         run: |
-          NUM=${{ github.run_number }}
-          echo "APP_VERSION=0.$NUM" >> "$GITHUB_ENV"
-          echo "BUILD_NUMBER=$NUM" >> "$GITHUB_ENV"
-          echo "IPA_NAME=KonomiTV-Viewer-unsigned-0.$NUM.ipa" >> "$GITHUB_ENV"
-          echo "Version: 0.$NUM (run ${{ github.run_number }})"
+          uname -m
+          xcodebuild -version
 
-      # 再生部品 (MobileVLCKit) と字幕の文字化の部品 (libaribcaption) を
-      # CocoaPods で入れる。libaribcaption は公式の podspec が無いため、
-      # ソースを KonomiTV-Viewer/Vendor/ に置いたローカルの pod として
-      # Podfile から取り込む (この pod install の中で一緒に組み立てられる)。
-      # 以後のビルドはプロジェクト単体ではなくワークスペース経由になる。
+      - name: Test artifact verification
+        run: python3 scripts/test_verify_ipa.py
+
+      # PR ではマージコミットをビルドするため、実際の checkout の SHA を記録する。
+      - name: Compute version and source commit
+        run: |
+          echo "APP_VERSION=0.$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+          echo "SOURCE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      # 段階0は上流のアプリ・project・依存宣言を一切変更しない。
+      - name: Verify unchanged upstream application tree
+        run: |
+          git diff --exit-code "$UPSTREAM_BASE" HEAD -- KonomiTV-Viewer
+          echo "APP_TREE_SHA=$(git rev-parse HEAD:KonomiTV-Viewer)" >> "$GITHUB_ENV"
+          echo "UPSTREAM_APP_TREE_SHA=$(git rev-parse "$UPSTREAM_BASE:KonomiTV-Viewer")" >> "$GITHUB_ENV"
+
       - name: Install CocoaPods dependencies
         working-directory: KonomiTV-Viewer
-        run: pod install
+        run: |
+          set -o pipefail
+          mkdir -p ../artifacts/ipa
+          pod install 2>&1 | tee ../artifacts/ipa/pod-install.log
 
       - name: Build (no code signing)
         run: |
+          set -o pipefail
+          mkdir -p artifacts/ipa
           xcodebuild build \
             -workspace KonomiTV-Viewer/KonomiTV-Viewer.xcworkspace \
             -scheme KonomiTV-Viewer \
@@ -61,99 +70,62 @@ jobs:
             -derivedDataPath build/DerivedData \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY=""
+            CODE_SIGN_IDENTITY="" 2>&1 | tee artifacts/ipa/xcodebuild.log
 
-      # アプリ本体・リリース説明・IPA のファイル名の3か所へ同じ版番号を入れて、
-      # 「何を入れたか」が見分けられるようにする。
+      # アプリ内と Artifact に同じ来歴を残し、ファイル名にも短い SHA を含める。
       - name: Package unsigned IPA
         run: |
           mkdir -p build/Payload
-          cp -R "build/DerivedData/Build/Products/Release-iphoneos/KonomiTV-Viewer.app" build/Payload/
-          PLIST="build/Payload/KonomiTV-Viewer.app/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PLIST"
-          echo "CFBundleShortVersionString: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")"
-          echo "CFBundleVersion: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")"
-          cd build
-          zip -r "$IPA_NAME" Payload
-          ls -lh "$IPA_NAME"
+          cp -R build/DerivedData/Build/Products/Release-iphoneos/KonomiTV-Viewer.app build/Payload/
+          python3 - <<'PY'
+          import datetime, hashlib, json, os, pathlib, plistlib, subprocess
 
-      - name: Upload unsigned IPA
+          app = pathlib.Path('build/Payload/KonomiTV-Viewer.app')
+          output = pathlib.Path('artifacts/ipa')
+          sha = os.environ['SOURCE_SHA']
+          ipa_name = f"KonomiTV-Viewer-unsigned-{os.environ['APP_VERSION']}-{sha[:12]}.ipa"
+          info = {
+              'commit_sha': sha,
+              'rebuild_stage': 0,
+              'upstream_base_sha': os.environ['UPSTREAM_BASE'],
+              'app_tree_sha': os.environ['APP_TREE_SHA'],
+              'upstream_app_tree_sha': os.environ['UPSTREAM_APP_TREE_SHA'],
+              'repository': os.environ['GITHUB_REPOSITORY'],
+              'ref': os.environ['GITHUB_REF'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'version': os.environ['APP_VERSION'],
+              'build_number': os.environ['BUILD_NUMBER'],
+              'built_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              'xcode': subprocess.check_output(['xcodebuild', '-version'], text=True).strip(),
+          }
+          assert info['app_tree_sha'] == info['upstream_app_tree_sha'], 'Upstream application tree changed'
+          metadata = json.dumps(info, ensure_ascii=False, indent=2) + '\n'
+          (app / 'build-info.json').write_text(metadata, encoding='utf-8')
+          (output / 'build-info.json').write_text(metadata, encoding='utf-8')
+          plist_path = app / 'Info.plist'
+          plist = plistlib.loads(plist_path.read_bytes())
+          plist.update(CFBundleShortVersionString=info['version'],
+                       CFBundleVersion=info['build_number'], KonomiTVViewerCommitSHA=sha,
+                       KonomiTVViewerUpstreamBaseSHA=info['upstream_base_sha'],
+                       KonomiTVViewerAppTreeSHA=info['app_tree_sha'])
+          plist_path.write_bytes(plistlib.dumps(plist, fmt=plistlib.FMT_BINARY))
+          subprocess.run(['zip', '-qry', str((output / ipa_name).resolve()), 'Payload'],
+                         cwd='build', check=True)
+          with (output / ipa_name).open('rb') as stream:
+              digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+          (output / 'checksums.txt').write_text(f'{digest}  {ipa_name}\n', encoding='utf-8')
+          PY
+          cp KonomiTV-Viewer/Podfile.lock artifacts/ipa/Podfile.lock
+          python3 scripts/verify-ipa.py artifacts/ipa --expected-sha "$SOURCE_SHA" --expected-upstream-sha "$UPSTREAM_BASE"
+          cat artifacts/ipa/build-info.json >> "$GITHUB_STEP_SUMMARY"
+          cat artifacts/ipa/checksums.txt >> "$GITHUB_STEP_SUMMARY"
+
+      # ビルド失敗時にもログを持ち帰れるようにする。
+      - name: Upload build artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: KonomiTV-Viewer-unsigned-ipa
-          path: build/${{ env.IPA_NAME }}
+          path: artifacts/ipa/
           if-no-files-found: error
-
-      # 取り方の本線は「固定タグのリリースに IPA をそのまま置く」形。
-      # 毎回のビルドで同じリリースの中身 (IPA と説明) を差し替える。
-      # あわせて、公開の最後に固定タグ自体をこの実行のコミットへ進める。
-      # タグが動かないと、リリースページに自動で付くソースコード (zip) が
-      # タグの指す古い版のままになり、中身の IPA と版が合わなくなるため。
-      # IPA のファイル名には版番号が入るため、--clobber では名前違いの古い IPA が
-      # 差し替わらずに残ってしまう。そのため、新しい IPA を先に上げてから、
-      # 名前が違う古い IPA 資産を消し、最終的に「最新の IPA が1つだけ」に
-      # なるようにする。先に消してから上げると、差し替えの間にリリースに
-      # IPA が1つも無い時間ができ、その間に開くと 404 になってしまう
-      # (2026-11-24 に実際に報告があったため、この順番にした)。
-      # Source code の自動資産は .ipa で終わらないので、この削除には掛からない。
-      - name: Publish IPA to fixed release
-        if: github.event_name != 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: sideload-latest
-        run: |
-          # この実行のコミットが main の先端でなくなっていたら、
-          # 固定リリースへの公開は省く (遅れて終わった古い実行が、
-          # 新しい IPA を消したり説明を巻き戻したりしないため)。
-          LATEST_SHA=$(gh api "repos/${{ github.repository }}/commits/main" --jq '.sha')
-          if [ "$LATEST_SHA" != "${{ github.sha }}" ]; then
-            echo "この実行のコミット (${{ github.sha }}) は main の先端 ($LATEST_SHA) ではないため、公開を省きます。"
-            exit 0
-          fi
-          IPA="build/$IPA_NAME"
-          TITLE="最新の IPA"
-          NOTES="版番号: $APP_VERSION
-          ビルド日時 (日本時間): $(date '+%Y/%m/%d %H:%M')
-          Actions 実行 ID: ${{ github.run_id }}
-          実行ページ: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          # 変更履歴 (CHANGELOG.md) の一番新しい版の要約を、説明へ足す。
-          # 要約は、版の見出し (## 0.00) の直後から、詳しい一覧の見出し
-          # (### ...) の前まで。変更履歴が無い・要約が空のときは足さない。
-          if [ -f CHANGELOG.md ]; then
-            SUMMARY=$(awk '
-              /^## / { if (in_section) exit; in_section = 1; next }
-              in_section && /^### / { exit }
-              in_section { lines[++count] = $0 }
-              END {
-                while (count > 0 && lines[count] == "") count--
-                for (i = 1; i <= count; i++) print lines[i]
-              }
-            ' CHANGELOG.md)
-            if [ -n "$SUMMARY" ]; then
-              NOTES="$NOTES
-
-          この版の変更点:
-          $SUMMARY"
-            fi
-          fi
-          NOTES="$NOTES
-
-          変更履歴 (すべての版): ${{ github.server_url }}/${{ github.repository }}/blob/main/CHANGELOG.md"
-          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --title "$TITLE" --notes "$NOTES" --prerelease
-          else
-            gh release create "$RELEASE_TAG" --target "${{ github.sha }}" --title "$TITLE" --notes "$NOTES" --prerelease
-          fi
-          gh release upload "$RELEASE_TAG" "$IPA" --clobber
-          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name | select(endswith(".ipa"))' | while IFS= read -r asset; do
-            if [ "$asset" != "$IPA_NAME" ]; then
-              echo "Deleting old IPA asset: $asset"
-              gh release delete-asset "$RELEASE_TAG" "$asset"
-            fi
-          done
-          # 固定タグを、この実行のコミットへ進める (上のコメント参照)。
-          # リリースの編集だけではタグは動かないため、参照を直接書き換える。
-          gh api -X PATCH "repos/${{ github.repository }}/git/refs/tags/$RELEASE_TAG" -f sha="${{ github.sha }}" -F force=true > /dev/null
-          echo "タグ $RELEASE_TAG を ${{ github.sha }} へ更新しました。"
-          gh release view "$RELEASE_TAG"
